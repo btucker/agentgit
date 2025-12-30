@@ -501,28 +501,6 @@ def _run_watch_mode(
 
 
 @main.command()
-@click.argument("transcript", type=click.Path(exists=True, path_type=Path), required=False)
-def prompts(transcript: Path | None) -> None:
-    """List prompts from a transcript with their md5 IDs.
-
-    If TRANSCRIPT is not provided, lists prompts from all transcripts
-    discovered for the current project.
-    """
-    _, parsed = load_and_display_transcript_header(transcript, "prompts")
-    click.echo(f"Found {len(parsed.prompts)} prompts:\n")
-
-    for i, prompt in enumerate(parsed.prompts, 1):
-        text_preview = prompt.text[:80].replace("\n", " ")
-        if len(prompt.text) > 80:
-            text_preview += "..."
-
-        click.echo(f"{i}. [{prompt.short_id}] {text_preview}")
-        click.echo(f"   Timestamp: {prompt.timestamp}")
-        click.echo(f"   Full ID: {prompt.prompt_id}")
-        click.echo()
-
-
-@main.command()
 @click.option(
     "--project",
     type=click.Path(exists=True, path_type=Path),
@@ -683,13 +661,13 @@ def discover(
 
 
 @main.command()
-def types() -> None:
-    """List available transcript format plugins."""
+def agents() -> None:
+    """List supported agent transcript formats."""
     from agentgit.plugins import get_configured_plugin_manager
 
     pm = get_configured_plugin_manager()
 
-    click.echo("Available transcript format plugins:\n")
+    click.echo("Supported agents:\n")
 
     for info in pm.hook.agentgit_get_plugin_info():
         if info:

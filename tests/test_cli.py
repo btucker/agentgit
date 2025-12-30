@@ -68,13 +68,6 @@ class TestCLI:
         assert result.exit_code == 0
         assert "0.1.0" in result.output
 
-    def test_prompts_command(self, runner, sample_jsonl):
-        """Should list prompts from transcript."""
-        result = runner.invoke(main, ["prompts", str(sample_jsonl)])
-        assert result.exit_code == 0
-        assert "Found 1 prompts" in result.output
-        assert "Create a hello world function" in result.output
-
     def test_process_command(self, runner, sample_jsonl, tmp_path):
         """Should process transcript to git repo."""
         output_dir = tmp_path / "output"
@@ -113,11 +106,6 @@ class TestCLI:
         )
         assert result.exit_code == 0
 
-    def test_prompts_nonexistent_file(self, runner):
-        """Should error on nonexistent file."""
-        result = runner.invoke(main, ["prompts", "/nonexistent/file.jsonl"])
-        assert result.exit_code != 0
-
     def test_process_nonexistent_file(self, runner):
         """Should error on nonexistent file."""
         result = runner.invoke(main, ["process", "/nonexistent/file.jsonl"])
@@ -132,9 +120,9 @@ class TestCLI:
         assert result.exit_code == 0
         assert "Created git repository" in result.output
 
-    def test_types_command(self, runner):
-        """Should list available plugin types."""
-        result = runner.invoke(main, ["types"])
+    def test_agents_command(self, runner):
+        """Should list supported agent formats."""
+        result = runner.invoke(main, ["agents"])
         assert result.exit_code == 0
         assert "claude_code" in result.output
 
