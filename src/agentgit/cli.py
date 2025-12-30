@@ -546,5 +546,183 @@ def types() -> None:
             click.echo(f"  {name}: {description}")
 
 
+@main.command()
+@click.argument("session_id", required=False)
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(path_type=Path),
+    help="Output directory for git repo.",
+)
+@click.option(
+    "--token",
+    help="API access token (auto-detected from keychain on macOS).",
+)
+@click.option(
+    "--org-uuid",
+    help="Organization UUID (auto-detected from ~/.claude.json).",
+)
+@click.option(
+    "--author",
+    default="Agent",
+    help="Author name for git commits.",
+)
+@click.option(
+    "--email",
+    default="agent@local",
+    help="Author email for git commits.",
+)
+def web(
+    session_id: str | None,
+    output: Path | None,
+    token: str | None,
+    org_uuid: str | None,
+    author: str,
+    email: str,
+) -> None:
+    """Process a Claude Code web session.
+
+    Fetches sessions from the Claude API and processes them into a git repository.
+    If SESSION_ID is not provided, displays an interactive session picker.
+
+    Credentials are auto-detected on macOS from the keychain and ~/.claude.json.
+    On other platforms, provide --token and --org-uuid manually.
+
+    Examples:
+
+        agentgit web                    # Interactive session picker
+
+        agentgit web abc123             # Process specific session
+
+        agentgit web --token=... --org-uuid=...  # Manual credentials
+    """
+    from agentgit.web_sessions import (
+        WebSessionError,
+        fetch_session_data,
+        fetch_sessions,
+        find_matching_local_project,
+        resolve_credentials,
+        session_to_jsonl_entries,
+    )
+
+    try:
+        resolved_token, resolved_org_uuid = resolve_credentials(token, org_uuid)
+    except WebSessionError as e:
+        raise click.ClickException(str(e)) from e
+
+    if session_id is None:
+        # Interactive session picker
+        click.echo("Fetching web sessions...")
+        try:
+            sessions = fetch_sessions(resolved_token, resolved_org_uuid)
+        except WebSessionError as e:
+            raise click.ClickException(str(e)) from e
+
+        if not sessions:
+            raise click.ClickException("No web sessions found.")
+
+        click.echo(f"\nFound {len(sessions)} session(s):\n")
+
+        # Show sessions with local project detection
+        for i, session in enumerate(sessions, 1):
+            local_project = find_matching_local_project(session)
+            local_indicator = " [LOCAL]" if local_project else ""
+            title_preview = session.title[:60] if session.title else "Untitled"
+            if len(session.title) > 60:
+                title_preview += "..."
+
+            click.echo(f"  {i}. {title_preview}{local_indicator}")
+            click.echo(f"     ID: {session.id}")
+            click.echo(f"     Created: {session.created_at}")
+            if session.project_path:
+                click.echo(f"     Project: {session.project_path}")
+            click.echo()
+
+        # Prompt for selection
+        while True:
+            try:
+                choice = click.prompt(
+                    "Select a session (number or ID)",
+                    type=str,
+                )
+                # Try as number first
+                try:
+                    idx = int(choice)
+                    if 1 <= idx <= len(sessions):
+                        selected_session = sessions[idx - 1]
+                        break
+                    click.echo(f"Please enter a number between 1 and {len(sessions)}")
+                except ValueError:
+                    # Try as session ID
+                    matching = [s for s in sessions if s.id == choice]
+                    if matching:
+                        selected_session = matching[0]
+                        break
+                    click.echo(f"No session found with ID: {choice}")
+            except click.Abort:
+                click.echo("\nCancelled.")
+                return
+
+        session_id = selected_session.id
+        click.echo(f"\nSelected: {selected_session.title}")
+    else:
+        selected_session = None
+
+    # Fetch the session data
+    click.echo(f"Fetching session {session_id}...")
+    try:
+        session_data = fetch_session_data(resolved_token, resolved_org_uuid, session_id)
+    except WebSessionError as e:
+        raise click.ClickException(str(e)) from e
+
+    # Convert to JSONL entries and process
+    entries = session_to_jsonl_entries(session_data)
+    if not entries:
+        raise click.ClickException("No transcript entries found in session.")
+
+    # Create a temporary transcript file for processing
+    import json
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".jsonl",
+        delete=False,
+        prefix=f"web-session-{session_id[:8]}-",
+    ) as f:
+        for entry in entries:
+            f.write(json.dumps(entry) + "\n")
+        temp_path = Path(f.name)
+
+    try:
+        # Determine output directory
+        if output is None:
+            # Check for local project match
+            project_path = session_data.get("project_path")
+            if project_path:
+                output = Path.home() / ".agentgit" / "projects" / encode_path_as_name(
+                    Path(project_path)
+                )
+                local_project = Path(project_path)
+                if local_project.exists():
+                    click.echo(f"Matched local project: {local_project}")
+            else:
+                # Fall back to session-based naming
+                output = Path.home() / ".agentgit" / "web-sessions" / session_id
+
+        _run_process(
+            transcripts=[temp_path],
+            output=output,
+            plugin_type=None,
+            author=author,
+            email=email,
+            source_repo=None,
+        )
+
+    finally:
+        # Clean up temp file
+        temp_path.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     main()
