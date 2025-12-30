@@ -81,7 +81,8 @@ class FileOperation:
     content: Optional[str] = None  # For WRITE operations
     old_string: Optional[str] = None  # For EDIT operations
     new_string: Optional[str] = None  # For EDIT operations
-    replace_all: bool = False  # For EDIT operations
+    replace_all: bool = False  # For EDIT: replace all occurrences vs first
+    recursive: bool = False  # For DELETE: recursive directory delete
     original_content: Optional[str] = None  # Pre-edit content from tool result
 
     # Rich metadata for commit messages

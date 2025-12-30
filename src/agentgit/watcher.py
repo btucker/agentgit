@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
-if TYPE_CHECKING:
-    from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 from agentgit import parse_transcript
 from agentgit.git_builder import GitRepoBuilder
@@ -43,6 +45,7 @@ class TranscriptWatcher:
         self.on_update = on_update
         self._observer: Observer | None = None
         self._last_mtime: float = 0
+        self._lock = threading.Lock()
 
     def _do_incremental_build(self) -> int:
         """Perform an incremental build and return number of new commits."""
@@ -74,38 +77,32 @@ class TranscriptWatcher:
 
         except Exception as e:
             # Log error but don't crash the watcher
-            import sys
-
             print(f"Error during incremental build: {e}", file=sys.stderr)
             return 0
 
     def _handle_change(self) -> None:
-        """Handle a file change event."""
-        # Check if file actually changed (debounce)
-        try:
-            current_mtime = self.transcript_path.stat().st_mtime
-            if current_mtime <= self._last_mtime:
+        """Handle a file change event.
+
+        Thread-safe: uses a lock to prevent concurrent builds and
+        ensure consistent mtime comparison.
+        """
+        with self._lock:
+            # Check if file actually changed (debounce)
+            try:
+                current_mtime = self.transcript_path.stat().st_mtime
+                if current_mtime <= self._last_mtime:
+                    return
+                self._last_mtime = current_mtime
+            except FileNotFoundError:
                 return
-            self._last_mtime = current_mtime
-        except FileNotFoundError:
-            return
 
-        new_commits = self._do_incremental_build()
+            new_commits = self._do_incremental_build()
 
-        if self.on_update and new_commits > 0:
-            self.on_update(new_commits)
+            if self.on_update and new_commits > 0:
+                self.on_update(new_commits)
 
     def start(self) -> None:
         """Start watching for changes."""
-        try:
-            from watchdog.events import FileSystemEventHandler
-            from watchdog.observers import Observer
-        except ImportError as e:
-            raise ImportError(
-                "watchdog is required for watch mode. "
-                "Install with: pip install agentgit[watch]"
-            ) from e
-
         # Do initial build
         self._last_mtime = self.transcript_path.stat().st_mtime
         self._do_incremental_build()

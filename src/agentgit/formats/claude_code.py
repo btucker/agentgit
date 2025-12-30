@@ -17,6 +17,9 @@ from agentgit.core import (
 )
 from agentgit.plugins import hookimpl
 
+# Format identifier for Claude Code JSONL transcripts
+FORMAT_CLAUDE_CODE_JSONL = "claude_code_jsonl"
+
 RM_COMMAND_PATTERN = re.compile(r"^\s*rm\s+(?:-[rfivI]+\s+)*(.+)$")
 
 
@@ -45,7 +48,7 @@ class ClaudeCodePlugin:
                     try:
                         obj = json.loads(line.strip())
                         if obj.get("type") in ("user", "assistant", "summary"):
-                            return "claude_code_jsonl"
+                            return FORMAT_CLAUDE_CODE_JSONL
                     except json.JSONDecodeError:
                         continue
         except Exception:
@@ -55,7 +58,7 @@ class ClaudeCodePlugin:
     @hookimpl
     def agentgit_parse_transcript(self, path: Path, format: str) -> Transcript | None:
         """Parse Claude Code JSONL transcript."""
-        if format != "claude_code_jsonl":
+        if format != FORMAT_CLAUDE_CODE_JSONL:
             return None
 
         entries = []
@@ -110,7 +113,7 @@ class ClaudeCodePlugin:
             entries=entries,
             prompts=prompts,
             source_path=str(path),
-            source_format="claude_code_jsonl",
+            source_format=FORMAT_CLAUDE_CODE_JSONL,
             session_id=session_id,
             session_cwd=session_cwd,
         )
@@ -118,7 +121,7 @@ class ClaudeCodePlugin:
     @hookimpl
     def agentgit_extract_operations(self, transcript: Transcript) -> list[FileOperation]:
         """Extract file operations from Claude Code transcript."""
-        if transcript.source_format != "claude_code_jsonl":
+        if transcript.source_format != FORMAT_CLAUDE_CODE_JSONL:
             return []
 
         operations = []
@@ -156,31 +159,35 @@ class ClaudeCodePlugin:
                 tool_input = block.get("input", {})
 
                 if tool_name == "Write":
-                    operations.append(
-                        FileOperation(
-                            file_path=tool_input.get("file_path", ""),
-                            operation_type=OperationType.WRITE,
-                            timestamp=entry.timestamp,
-                            tool_id=tool_id,
-                            content=tool_input.get("content", ""),
-                            raw_tool_use=block,
+                    file_path = tool_input.get("file_path", "")
+                    if file_path:  # Skip if file_path is empty or missing
+                        operations.append(
+                            FileOperation(
+                                file_path=file_path,
+                                operation_type=OperationType.WRITE,
+                                timestamp=entry.timestamp,
+                                tool_id=tool_id,
+                                content=tool_input.get("content", ""),
+                                raw_tool_use=block,
+                            )
                         )
-                    )
 
                 elif tool_name == "Edit":
-                    operations.append(
-                        FileOperation(
-                            file_path=tool_input.get("file_path", ""),
-                            operation_type=OperationType.EDIT,
-                            timestamp=entry.timestamp,
-                            tool_id=tool_id,
-                            old_string=tool_input.get("old_string", ""),
-                            new_string=tool_input.get("new_string", ""),
-                            replace_all=tool_input.get("replace_all", False),
-                            original_content=tool_id_to_original.get(tool_id),
-                            raw_tool_use=block,
+                    file_path = tool_input.get("file_path", "")
+                    if file_path:  # Skip if file_path is empty or missing
+                        operations.append(
+                            FileOperation(
+                                file_path=file_path,
+                                operation_type=OperationType.EDIT,
+                                timestamp=entry.timestamp,
+                                tool_id=tool_id,
+                                old_string=tool_input.get("old_string", ""),
+                                new_string=tool_input.get("new_string", ""),
+                                replace_all=tool_input.get("replace_all", False),
+                                original_content=tool_id_to_original.get(tool_id),
+                                raw_tool_use=block,
+                            )
                         )
-                    )
 
                 elif tool_name == "Bash":
                     command = tool_input.get("command", "")
@@ -194,7 +201,7 @@ class ClaudeCodePlugin:
                                 operation_type=OperationType.DELETE,
                                 timestamp=entry.timestamp,
                                 tool_id=tool_id,
-                                replace_all=is_recursive,
+                                recursive=is_recursive,
                                 raw_tool_use=block,
                             )
                         )
@@ -209,7 +216,7 @@ class ClaudeCodePlugin:
         transcript: Transcript,
     ) -> FileOperation:
         """Enrich operation with prompt and assistant context."""
-        if transcript.source_format != "claude_code_jsonl":
+        if transcript.source_format != FORMAT_CLAUDE_CODE_JSONL:
             return operation
 
         # Find the prompt that triggered this operation

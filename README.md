@@ -14,32 +14,57 @@ Convert agent transcripts into git repositories where each file operation become
 ## Installation
 
 ```bash
-pip install agentgit
+# Install globally with uv
+uv tool install agentgit
 
-# With watch mode support
-pip install agentgit[watch]
+# Or use directly without installing
+uvx agentgit
+
+# Traditional pip install
+pip install agentgit
 ```
 
 ## Quick Start
 
 ```bash
-# Process a transcript (auto-detects format)
-agentgit session.jsonl -o ./output
-
-# Auto-discover and process the most recent transcript for current project
+# Auto-discover and process all transcripts for current project
 agentgit
 
+# Process a specific transcript
+agentgit session.jsonl -o ./output
+
 # Watch mode - auto-commit as the transcript grows
-agentgit --watch
+agentgit --watch session.jsonl
 
-# List prompts from a transcript
-agentgit prompts session.jsonl
+# List prompts from all project transcripts
+agentgit prompts
 
-# List file operations
-agentgit operations session.jsonl
+# List file operations from all project transcripts
+agentgit operations
 
 # Discover transcripts for current project
 agentgit discover
+```
+
+## Git Passthrough
+
+Any unrecognized command is passed through to git, running on the agentgit-created repository. This lets you use familiar git commands to explore the generated history:
+
+```bash
+# View commit history
+agentgit log --oneline -10
+
+# View recent changes
+agentgit diff HEAD~5..HEAD
+
+# Show a specific commit
+agentgit show HEAD
+
+# Search commit messages
+agentgit log --grep="config"
+
+# View file history
+agentgit log --follow -p -- src/config.py
 ```
 
 ## Programmatic Usage

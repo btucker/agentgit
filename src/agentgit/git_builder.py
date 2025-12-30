@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
@@ -10,9 +11,11 @@ from pathlib import Path
 from typing import Union
 
 from git import Repo
-from git.exc import InvalidGitRepositoryError
+from git.exc import GitCommandError, InvalidGitRepositoryError
 
 from agentgit.core import FileOperation, OperationType, SourceCommit
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -78,8 +81,11 @@ def get_processed_operations(repo: Repo) -> set[str]:
             elif metadata.timestamp:
                 # Fallback to timestamp if no tool_id
                 processed.add(f"ts:{metadata.timestamp}")
-    except Exception:
+    except ValueError:
+        # Empty repository has no commits
         pass
+    except GitCommandError as e:
+        logger.warning("Failed to read commits from repository: %s", e)
 
     return processed
 
@@ -98,8 +104,11 @@ def get_last_processed_timestamp(repo: Repo) -> str | None:
             metadata = parse_commit_trailers(commit.message)
             if metadata.timestamp:
                 return metadata.timestamp
-    except Exception:
+    except ValueError:
+        # Empty repository has no commits
         pass
+    except GitCommandError as e:
+        logger.warning("Failed to read commits from repository: %s", e)
 
     return None
 
@@ -269,6 +278,54 @@ class GitRepoBuilder:
             return operation.tool_id
         return f"ts:{operation.timestamp}"
 
+    def _setup_repo(self, incremental: bool) -> bool:
+        """Initialize or load the git repository.
+
+        Args:
+            incremental: If True and repo exists, load processed operations.
+
+        Returns:
+            True if existing repo was found, False if new repo was created.
+        """
+        if self.output_dir is None:
+            self.output_dir = Path(tempfile.mkdtemp(prefix="agentgit_"))
+        else:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            self.repo = Repo(self.output_dir)
+            if incremental:
+                self._processed_ops = get_processed_operations(self.repo)
+                self._load_file_states_from_repo()
+            return True
+        except InvalidGitRepositoryError:
+            self.repo = Repo.init(self.output_dir)
+            return False
+
+    def _get_merged_timeline(
+        self,
+        operations: list[FileOperation],
+        source_repo: Path | None,
+    ) -> list[Union[FileOperation, SourceCommit]]:
+        """Merge operations with source repo commits by timestamp.
+
+        Args:
+            operations: List of operations to include.
+            source_repo: Optional source repository to include commits from.
+
+        Returns:
+            Combined list of operations and commits sorted by timestamp.
+        """
+        if not source_repo or not operations:
+            return list(operations)
+
+        start_time = min(op.timestamp for op in operations)
+        end_time = max(op.timestamp for op in operations)
+        source_commits = get_commits_in_timeframe(source_repo, start_time, end_time)
+        timeline = merge_timeline(operations, source_commits)
+        timeline.sort(key=lambda x: x.timestamp)
+        return timeline
+
     def build(
         self,
         operations: list[FileOperation],
@@ -292,22 +349,7 @@ class GitRepoBuilder:
         Returns:
             Tuple of (repo, repo_path, path_mapping).
         """
-        if self.output_dir is None:
-            self.output_dir = Path(tempfile.mkdtemp(prefix="agentgit_"))
-        else:
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Check if repo already exists
-        existing_repo = False
-        try:
-            self.repo = Repo(self.output_dir)
-            existing_repo = True
-            if incremental:
-                self._processed_ops = get_processed_operations(self.repo)
-                # Load current file states from the repo
-                self._load_file_states_from_repo()
-        except InvalidGitRepositoryError:
-            self.repo = Repo.init(self.output_dir)
+        existing_repo = self._setup_repo(incremental)
 
         with self.repo.config_writer() as config:
             config.set_value("user", "name", author_name)
@@ -323,21 +365,11 @@ class GitRepoBuilder:
         if not operations:
             return self.repo, self.output_dir, self.path_mapping
 
-        # Merge with source repo commits if provided
-        if source_repo and operations:
-            start_time = min(op.timestamp for op in operations)
-            end_time = max(op.timestamp for op in operations)
-            source_commits = get_commits_in_timeframe(source_repo, start_time, end_time)
-            timeline = merge_timeline(operations, source_commits)
-        else:
-            timeline = list(operations)
-
-        timeline.sort(key=lambda x: x.timestamp)
+        timeline = self._get_merged_timeline(operations, source_repo)
 
         for item in timeline:
             if isinstance(item, FileOperation):
                 self._apply_operation(item)
-                # Track as processed
                 self._processed_ops.add(self._get_operation_id(item))
             elif isinstance(item, SourceCommit):
                 self._apply_source_commit(item, source_repo)
@@ -350,14 +382,20 @@ class GitRepoBuilder:
             return
 
         try:
-            for item in self.repo.head.commit.tree.traverse():
-                if item.type == "blob":
-                    rel_path = item.path
-                    full_path = self.output_dir / rel_path
-                    if full_path.exists():
+            tree = self.repo.head.commit.tree
+        except ValueError:
+            # Empty repository has no HEAD commit
+            return
+
+        for item in tree.traverse():
+            if item.type == "blob":
+                rel_path = item.path
+                full_path = self.output_dir / rel_path
+                if full_path.exists():
+                    try:
                         self.file_states[str(full_path)] = full_path.read_text()
-        except Exception:
-            pass
+                    except (OSError, UnicodeDecodeError) as e:
+                        logger.debug("Could not read file %s: %s", full_path, e)
 
     def _apply_operation(self, operation: FileOperation) -> None:
         """Apply a single operation and create a commit."""
@@ -418,12 +456,11 @@ class GitRepoBuilder:
 
     def _apply_delete(self, operation: FileOperation) -> None:
         """Apply a delete operation."""
-        is_recursive = operation.replace_all
         delete_path = operation.file_path
 
         files_to_remove = []
 
-        if is_recursive:
+        if operation.recursive:
             delete_prefix = delete_path.rstrip("/") + "/"
             for orig_path, rel_path in self.path_mapping.items():
                 if orig_path.startswith(delete_prefix) or orig_path == delete_path:
@@ -442,14 +479,16 @@ class GitRepoBuilder:
                 file_abs.unlink()
                 try:
                     self.repo.index.remove([rel_path])
-                except Exception:
-                    pass
+                except GitCommandError:
+                    # File may not be tracked in git
+                    logger.debug("Could not remove %s from index (may not be tracked)", rel_path)
 
             commit_msg = format_commit_message(operation)
             try:
                 self.repo.index.commit(commit_msg)
-            except Exception:
-                pass
+            except GitCommandError as e:
+                # May fail if nothing to commit
+                logger.debug("Could not commit delete operation: %s", e)
 
     def _apply_source_commit(
         self,
@@ -480,8 +519,9 @@ class GitRepoBuilder:
                         full_path.unlink()
                         try:
                             self.repo.index.remove([rel_path])
-                        except Exception:
-                            pass
+                        except GitCommandError:
+                            # File may not be tracked in git
+                            logger.debug("Could not remove %s from index", rel_path)
                 elif diff.new_file or diff.a_blob:
                     if diff.b_blob:
                         content = diff.b_blob.data_stream.read().decode("utf-8", errors="replace")
@@ -493,5 +533,6 @@ class GitRepoBuilder:
         message = f"{commit.message}\n\nSource-Commit: {commit.sha}\nSource-Author: {commit.author} <{commit.author_email}>"
         try:
             self.repo.index.commit(message)
-        except Exception:
-            pass
+        except GitCommandError as e:
+            # May fail if nothing to commit
+            logger.debug("Could not commit source commit %s: %s", commit.sha[:8], e)

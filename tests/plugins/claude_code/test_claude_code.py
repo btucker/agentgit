@@ -139,6 +139,58 @@ class TestClaudeCodePlugin:
         operations = plugin.agentgit_extract_operations(transcript)
         assert operations == []
 
+    def test_extract_operations_skips_empty_file_path(self, plugin, tmp_path):
+        """Should skip operations with empty or missing file_path."""
+        content = [
+            {
+                "type": "assistant",
+                "timestamp": "2025-01-01T10:00:05.000Z",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_001",
+                            "name": "Write",
+                            "input": {
+                                "file_path": "",  # Empty path
+                                "content": "should be skipped",
+                            },
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_002",
+                            "name": "Write",
+                            "input": {
+                                # Missing file_path
+                                "content": "should also be skipped",
+                            },
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_003",
+                            "name": "Write",
+                            "input": {
+                                "file_path": "/valid/path.py",
+                                "content": "valid",
+                            },
+                        },
+                    ]
+                },
+            },
+        ]
+
+        jsonl_path = tmp_path / "session.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        transcript = plugin.agentgit_parse_transcript(jsonl_path, "claude_code_jsonl")
+        operations = plugin.agentgit_extract_operations(transcript)
+
+        # Should only have the valid operation
+        assert len(operations) == 1
+        assert operations[0].file_path == "/valid/path.py"
+
     def test_enrich_operation(self, plugin, sample_jsonl):
         """Should enrich operations with prompt context."""
         transcript = plugin.agentgit_parse_transcript(sample_jsonl, "claude_code_jsonl")

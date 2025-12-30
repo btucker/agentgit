@@ -10,10 +10,9 @@ import click
 
 def get_available_types() -> list[str]:
     """Get list of available plugin types."""
-    from agentgit.plugins import get_plugin_manager, register_builtin_plugins
+    from agentgit.plugins import get_configured_plugin_manager
 
-    pm = get_plugin_manager()
-    register_builtin_plugins(pm)
+    pm = get_configured_plugin_manager()
 
     types = []
     for info in pm.hook.agentgit_get_plugin_info():
@@ -57,10 +56,9 @@ def get_default_output_dir(transcript_path: Path) -> Path:
         Path to the default output directory.
     """
     from agentgit import find_git_root
-    from agentgit.plugins import get_plugin_manager, register_builtin_plugins
+    from agentgit.plugins import get_configured_plugin_manager
 
-    pm = get_plugin_manager()
-    register_builtin_plugins(pm)
+    pm = get_configured_plugin_manager()
 
     # Ask plugins to get the project name from transcript location
     project_name = pm.hook.agentgit_get_project_name(transcript_path=transcript_path)
@@ -78,10 +76,14 @@ def get_default_output_dir(transcript_path: Path) -> Path:
     return Path.home() / ".agentgit" / "projects" / project_name
 
 
-def resolve_transcript(transcript: Path | None) -> Path:
-    """Resolve transcript path, using auto-discovery if not provided."""
+def resolve_transcripts(transcript: Path | None) -> list[Path]:
+    """Resolve transcript paths, using auto-discovery if not provided.
+
+    If a transcript is explicitly provided, returns a single-item list.
+    Otherwise, discovers all transcripts for the current project.
+    """
     if transcript is not None:
-        return transcript
+        return [transcript]
 
     from agentgit import discover_transcripts
 
@@ -92,12 +94,75 @@ def resolve_transcript(transcript: Path | None) -> Path:
             "Please specify a transcript file explicitly."
         )
 
-    # Use most recent transcript
-    return transcripts[0]
+    return transcripts
+
+
+def load_and_display_transcript_header(transcript: Path | None, item_name: str) -> tuple:
+    """Load transcripts and display a header with count.
+
+    Common helper for prompts and operations commands.
+
+    Args:
+        transcript: Optional transcript path.
+        item_name: Name of items being listed (e.g., "prompts", "operations").
+
+    Returns:
+        Tuple of (transcripts list, parsed Transcript).
+    """
+    from agentgit import parse_transcripts
+
+    transcripts = resolve_transcripts(transcript)
+    parsed = parse_transcripts(transcripts)
+
+    if len(transcripts) == 1:
+        click.echo(f"Transcript: {transcripts[0].name}")
+    else:
+        click.echo(f"Transcripts: {len(transcripts)} files")
+
+    return transcripts, parsed
+
+
+def get_agentgit_repo_path() -> Path | None:
+    """Get the agentgit output repo path for the current project.
+
+    Returns:
+        Path to the agentgit repo, or None if not determinable.
+    """
+    from agentgit import discover_transcripts, find_git_root
+
+    # Try to find transcripts for current project
+    git_root = find_git_root()
+    if not git_root:
+        return None
+
+    transcripts = discover_transcripts(git_root)
+    if not transcripts:
+        return None
+
+    # Use the first transcript to determine output path
+    return get_default_output_dir(transcripts[0])
+
+
+def run_git_passthrough(args: list[str]) -> None:
+    """Run a git command on the agentgit repo."""
+    import subprocess
+
+    repo_path = get_agentgit_repo_path()
+    if not repo_path or not repo_path.exists():
+        raise click.ClickException(
+            "No agentgit repository found. Run 'agentgit' first to create one."
+        )
+
+    # Run git with the provided args in the agentgit repo
+    result = subprocess.run(
+        ["git", "-C", str(repo_path)] + args,
+        capture_output=False,
+    )
+    raise SystemExit(result.returncode)
 
 
 class DefaultGroup(click.Group):
-    """A click Group that allows a default command."""
+    """A click Group that allows a default command and git passthrough."""
 
     def __init__(self, *args: Any, default_cmd: str | None = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -105,19 +170,32 @@ class DefaultGroup(click.Group):
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         """Insert default command if no subcommand given."""
+        # If no args at all, use the default command
+        if not args and self.default_cmd:
+            args = [self.default_cmd]
+            return super().parse_args(ctx, args)
+
         if not args:
-            return args
+            return super().parse_args(ctx, args)
 
         # Don't intercept top-level options like --help, --version
         if args[0].startswith("-"):
             return super().parse_args(ctx, args)
 
         # Check if first arg is a known command
-        if args[0] not in self.commands and self.default_cmd:
-            # Prepend the default command
-            args = [self.default_cmd] + args
+        if args[0] in self.commands:
+            return super().parse_args(ctx, args)
 
-        return super().parse_args(ctx, args)
+        # Check if first arg looks like a file path (for process command)
+        first_arg_path = Path(args[0])
+        if first_arg_path.exists() and first_arg_path.is_file():
+            # Prepend the default command for file arguments
+            args = [self.default_cmd] + args
+            return super().parse_args(ctx, args)
+
+        # Otherwise, treat as git passthrough
+        run_git_passthrough(args)
+        return []  # Never reached due to SystemExit
 
 
 @click.group(cls=DefaultGroup, default_cmd="process")
@@ -129,13 +207,21 @@ def main() -> None:
     If no transcript is specified, automatically discovers transcripts
     for the current git repository.
 
+    Any unrecognized command is passed through to git, running on the
+    agentgit-created repository. This allows you to use familiar git
+    commands like 'log', 'diff', 'show', etc.
+
     Examples:
 
-        agentgit session.jsonl -o ./output
+        agentgit                           # Process all transcripts for current project
 
-        agentgit process session.jsonl --watch
+        agentgit session.jsonl -o ./output # Process specific transcript
 
-        agentgit prompts session.jsonl
+        agentgit log --oneline -10         # View recent commits in agentgit repo
+
+        agentgit diff HEAD~5..HEAD         # View changes in agentgit repo
+
+        agentgit prompts                   # List prompts from transcripts
     """
     pass
 
@@ -185,44 +271,55 @@ def process(
 ) -> None:
     """Process a transcript into a git repository.
 
-    If TRANSCRIPT is not provided, uses the most recent transcript
-    discovered for the current project.
+    If TRANSCRIPT is not provided, discovers and processes all transcripts
+    for the current project, merging their operations by timestamp.
 
     With --watch, monitors the transcript file and automatically commits
-    new operations as they are added.
+    new operations as they are added (only works with a single transcript).
     """
-    transcript = resolve_transcript(transcript)
+    transcripts = resolve_transcripts(transcript)
 
     if watch:
-        _run_watch_mode(transcript, output, author, email, source_repo)
+        if len(transcripts) > 1:
+            raise click.ClickException(
+                "Watch mode only supports a single transcript. "
+                "Please specify a transcript file explicitly."
+            )
+        _run_watch_mode(transcripts[0], output, author, email, source_repo)
     else:
-        _run_process(transcript, output, plugin_type, author, email, source_repo)
+        _run_process(transcripts, output, plugin_type, author, email, source_repo)
 
 
 def _run_process(
-    transcript: Path,
+    transcripts: list[Path],
     output: Path | None,
     plugin_type: str | None,
     author: str,
     email: str,
     source_repo: Path | None,
 ) -> None:
-    """Run a single processing."""
-    from agentgit import transcript_to_repo
+    """Run processing of one or more transcripts."""
+    from agentgit import build_repo, parse_transcripts
 
     # Use default output directory if not specified
     if output is None:
-        output = get_default_output_dir(transcript)
+        output = get_default_output_dir(transcripts[0])
 
-    click.echo(f"Processing transcript: {transcript}")
+    if len(transcripts) == 1:
+        click.echo(f"Processing transcript: {transcripts[0]}")
+    else:
+        click.echo(f"Processing {len(transcripts)} transcripts:")
+        for t in transcripts:
+            click.echo(f"  - {t.name}")
 
-    repo, repo_path, parsed = transcript_to_repo(
-        transcript_path=transcript,
+    parsed = parse_transcripts(transcripts, plugin_type=plugin_type)
+
+    repo, repo_path, _ = build_repo(
+        operations=parsed.operations,
         output_dir=output,
         author_name=author,
         author_email=email,
         source_repo=source_repo,
-        plugin_type=plugin_type,
     )
 
     click.echo(f"Created git repository at: {repo_path}")
@@ -292,15 +389,10 @@ def _run_watch_mode(
 def prompts(transcript: Path | None) -> None:
     """List prompts from a transcript with their md5 IDs.
 
-    If TRANSCRIPT is not provided, uses the most recent transcript
+    If TRANSCRIPT is not provided, lists prompts from all transcripts
     discovered for the current project.
     """
-    from agentgit import parse_transcript
-
-    transcript = resolve_transcript(transcript)
-    parsed = parse_transcript(transcript)
-
-    click.echo(f"Transcript: {transcript.name}")
+    _, parsed = load_and_display_transcript_header(transcript, "prompts")
     click.echo(f"Found {len(parsed.prompts)} prompts:\n")
 
     for i, prompt in enumerate(parsed.prompts, 1):
@@ -319,15 +411,10 @@ def prompts(transcript: Path | None) -> None:
 def operations(transcript: Path | None) -> None:
     """List file operations from a transcript.
 
-    If TRANSCRIPT is not provided, uses the most recent transcript
+    If TRANSCRIPT is not provided, lists operations from all transcripts
     discovered for the current project.
     """
-    from agentgit import parse_transcript
-
-    transcript = resolve_transcript(transcript)
-    parsed = parse_transcript(transcript)
-
-    click.echo(f"Transcript: {transcript.name}")
+    _, parsed = load_and_display_transcript_header(transcript, "operations")
     click.echo(f"Found {len(parsed.operations)} operations:\n")
 
     for i, op in enumerate(parsed.operations, 1):
@@ -389,10 +476,9 @@ def discover(project: Path | None) -> None:
 @main.command()
 def types() -> None:
     """List available transcript format plugins."""
-    from agentgit.plugins import get_plugin_manager, register_builtin_plugins
+    from agentgit.plugins import get_configured_plugin_manager
 
-    pm = get_plugin_manager()
-    register_builtin_plugins(pm)
+    pm = get_configured_plugin_manager()
 
     click.echo("Available transcript format plugins:\n")
 

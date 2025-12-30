@@ -15,12 +15,15 @@ from agentgit.core import (
     TranscriptEntry,
 )
 from agentgit.git_builder import GitRepoBuilder, format_commit_message
-from agentgit.plugins import get_plugin_manager, hookimpl, hookspec, register_builtin_plugins
+from agentgit.plugins import get_configured_plugin_manager, hookimpl, hookspec
 
 if TYPE_CHECKING:
     from git import Repo
 
 __version__ = "0.1.0"
+
+# Format identifier for merged transcripts
+FORMAT_MERGED = "merged"
 
 __all__ = [
     # Core types
@@ -36,6 +39,7 @@ __all__ = [
     "hookimpl",
     # Main functions
     "parse_transcript",
+    "parse_transcripts",
     "build_repo",
     "transcript_to_repo",
     "format_commit_message",
@@ -60,26 +64,14 @@ def parse_transcript(path: Path | str, plugin_type: str | None = None) -> Transc
     """
     path = Path(path)
 
-    pm = get_plugin_manager()
-    register_builtin_plugins(pm)
+    pm = get_configured_plugin_manager()
 
-    # Determine format - either from explicit type or auto-detection
-    if plugin_type:
-        # Find plugin with matching name and get its format
-        format = None
-        for info in pm.hook.agentgit_get_plugin_info():
-            if info and info.get("name") == plugin_type:
-                # Try to detect format using this knowledge
-                detected = pm.hook.agentgit_detect_format(path=path)
-                if detected:
-                    format = detected
-                    break
-        if not format:
-            # Fall back to using plugin_type as the format directly
+    # Determine format - try auto-detection first, fall back to plugin_type
+    format = pm.hook.agentgit_detect_format(path=path)
+    if not format:
+        if plugin_type:
             format = plugin_type
-    else:
-        format = pm.hook.agentgit_detect_format(path=path)
-        if not format:
+        else:
             raise ValueError(f"Could not detect transcript format for: {path}")
 
     transcript = pm.hook.agentgit_parse_transcript(path=path, format=format)
@@ -98,6 +90,48 @@ def parse_transcript(path: Path | str, plugin_type: str | None = None) -> Transc
 
     transcript.operations = enriched_operations
     return transcript
+
+
+def parse_transcripts(
+    paths: list[Path | str],
+    plugin_type: str | None = None,
+) -> Transcript:
+    """Parse multiple transcript files and merge their operations.
+
+    Operations from all transcripts are merged and sorted by timestamp.
+
+    Args:
+        paths: List of paths to transcript files.
+        plugin_type: Optional plugin type to use (e.g., 'claude_code').
+            If not specified, auto-detects the format for each file.
+
+    Returns:
+        Merged Transcript object with operations sorted by timestamp.
+    """
+    if not paths:
+        return Transcript()
+
+    all_entries = []
+    all_prompts = []
+    all_operations = []
+
+    for path in paths:
+        transcript = parse_transcript(path, plugin_type=plugin_type)
+        all_entries.extend(transcript.entries)
+        all_prompts.extend(transcript.prompts)
+        all_operations.extend(transcript.operations)
+
+    # Sort by timestamp
+    all_entries.sort(key=lambda e: e.timestamp)
+    all_prompts.sort(key=lambda p: p.timestamp)
+    all_operations.sort(key=lambda op: op.timestamp)
+
+    return Transcript(
+        entries=all_entries,
+        prompts=all_prompts,
+        operations=all_operations,
+        source_format=FORMAT_MERGED,
+    )
 
 
 def build_repo(
@@ -219,8 +253,7 @@ def discover_transcripts(project_path: Path | str | None = None) -> list[Path]:
     else:
         project_path = Path(project_path)
 
-    pm = get_plugin_manager()
-    register_builtin_plugins(pm)
+    pm = get_configured_plugin_manager()
 
     # Collect transcripts from all plugins
     all_transcripts = []

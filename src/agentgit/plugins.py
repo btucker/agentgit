@@ -126,3 +126,22 @@ def register_builtin_plugins(pm: pluggy.PluginManager) -> None:
     from agentgit.formats.claude_code import ClaudeCodePlugin
 
     pm.register(ClaudeCodePlugin())
+
+
+_configured_plugin_manager: pluggy.PluginManager | None = None
+
+
+def get_configured_plugin_manager() -> pluggy.PluginManager:
+    """Get a plugin manager with builtin plugins already registered.
+
+    This function caches the plugin manager for efficiency, so repeated
+    calls return the same instance.
+
+    Returns:
+        A configured PluginManager with builtin plugins registered.
+    """
+    global _configured_plugin_manager
+    if _configured_plugin_manager is None:
+        _configured_plugin_manager = get_plugin_manager()
+        register_builtin_plugins(_configured_plugin_manager)
+    return _configured_plugin_manager

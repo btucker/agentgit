@@ -142,6 +142,7 @@ class TestExports:
     def test_functions_exported(self):
         """Main functions should be exported."""
         assert hasattr(agentgit, "parse_transcript")
+        assert hasattr(agentgit, "parse_transcripts")
         assert hasattr(agentgit, "build_repo")
         assert hasattr(agentgit, "transcript_to_repo")
         assert hasattr(agentgit, "format_commit_message")
@@ -197,3 +198,121 @@ class TestDiscoverTranscripts:
 
         result = discover_transcripts(tmp_path)
         assert result == []
+
+
+class TestParseTranscripts:
+    """Tests for parse_transcripts (plural) function."""
+
+    def test_parse_multiple_transcripts(self, tmp_path):
+        """Should parse multiple transcripts and merge operations by timestamp."""
+        from agentgit import parse_transcripts
+
+        # Create first transcript (earlier session)
+        content1 = [
+            {
+                "type": "user",
+                "timestamp": "2025-01-01T10:00:00.000Z",
+                "message": {"content": "Create file1.py"},
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2025-01-01T10:00:05.000Z",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_001",
+                            "name": "Write",
+                            "input": {"file_path": "/test/file1.py", "content": "# file 1"},
+                        },
+                    ]
+                },
+            },
+        ]
+
+        # Create second transcript (later session)
+        content2 = [
+            {
+                "type": "user",
+                "timestamp": "2025-01-01T11:00:00.000Z",
+                "message": {"content": "Create file2.py"},
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2025-01-01T11:00:05.000Z",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_002",
+                            "name": "Write",
+                            "input": {"file_path": "/test/file2.py", "content": "# file 2"},
+                        },
+                    ]
+                },
+            },
+        ]
+
+        transcript1 = tmp_path / "session1.jsonl"
+        transcript2 = tmp_path / "session2.jsonl"
+
+        with open(transcript1, "w") as f:
+            for line in content1:
+                f.write(json.dumps(line) + "\n")
+
+        with open(transcript2, "w") as f:
+            for line in content2:
+                f.write(json.dumps(line) + "\n")
+
+        # Parse both transcripts
+        merged = parse_transcripts([transcript1, transcript2])
+
+        # Should have operations from both, sorted by timestamp
+        assert len(merged.operations) == 2
+        assert merged.operations[0].file_path == "/test/file1.py"
+        assert merged.operations[1].file_path == "/test/file2.py"
+
+        # Should have prompts from both
+        assert len(merged.prompts) == 2
+
+    def test_parse_transcripts_empty_list(self):
+        """Should return empty transcript for empty list."""
+        from agentgit import parse_transcripts
+
+        merged = parse_transcripts([])
+        assert len(merged.operations) == 0
+        assert len(merged.prompts) == 0
+
+    def test_parse_transcripts_single(self, tmp_path):
+        """Should work with single transcript."""
+        from agentgit import parse_transcripts
+
+        content = [
+            {
+                "type": "user",
+                "timestamp": "2025-01-01T10:00:00.000Z",
+                "message": {"content": "Create file.py"},
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2025-01-01T10:00:05.000Z",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_001",
+                            "name": "Write",
+                            "input": {"file_path": "/test/file.py", "content": "# file"},
+                        },
+                    ]
+                },
+            },
+        ]
+
+        transcript_path = tmp_path / "session.jsonl"
+        with open(transcript_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        merged = parse_transcripts([transcript_path])
+        assert len(merged.operations) == 1
