@@ -124,8 +124,10 @@ def get_plugin_manager() -> pluggy.PluginManager:
 def register_builtin_plugins(pm: pluggy.PluginManager) -> None:
     """Register the built-in format plugins."""
     from agentgit.formats.claude_code import ClaudeCodePlugin
+    from agentgit.formats.codex import CodexPlugin
 
     pm.register(ClaudeCodePlugin())
+    pm.register(CodexPlugin())
 
 
 _configured_plugin_manager: pluggy.PluginManager | None = None
