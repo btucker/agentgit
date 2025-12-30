@@ -3,6 +3,7 @@ name = "agentgit"
 version = "0.1.0"
 description = "Convert agent transcripts to git repositories"
 readme = "README.md"
+license = "MIT"
 authors = [
     { name = "Ben Tucker", email = "ben@btucker.net" }
 ]
