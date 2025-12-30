@@ -1,4 +1,4 @@
-# agentgit
+# agentgit - *Currently Under Initial Development*
 
 Convert agent transcripts into git repositories with a structure that makes agent work easy to understand using standard git tools.
 
@@ -65,6 +65,7 @@ agentgit creates a repository structure designed for understanding agent work at
 ```
 
 **How it works:**
+
 - Each **user prompt** becomes a **merge commit** on the main branch
 - Each **assistant response** becomes a **commit** grouping all file changes from that response
 - Multiple file edits in one response stay together as a single logical commit
