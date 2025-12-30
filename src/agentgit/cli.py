@@ -523,28 +523,6 @@ def prompts(transcript: Path | None) -> None:
 
 
 @main.command()
-@click.argument("transcript", type=click.Path(exists=True, path_type=Path), required=False)
-def operations(transcript: Path | None) -> None:
-    """List file operations from a transcript.
-
-    If TRANSCRIPT is not provided, lists operations from all transcripts
-    discovered for the current project.
-    """
-    _, parsed = load_and_display_transcript_header(transcript, "operations")
-    click.echo(f"Found {len(parsed.operations)} operations:\n")
-
-    for i, op in enumerate(parsed.operations, 1):
-        prompt_ref = f"[{op.prompt.short_id}]" if op.prompt else "[no prompt]"
-
-        click.echo(f"{i}. {op.operation_type.value.upper()} {op.file_path}")
-        click.echo(f"   Timestamp: {op.timestamp}")
-        click.echo(f"   Prompt: {prompt_ref}")
-        if op.tool_id:
-            click.echo(f"   Tool ID: {op.tool_id}")
-        click.echo()
-
-
-@main.command()
 @click.option(
     "--project",
     type=click.Path(exists=True, path_type=Path),
