@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Optional
 
 
@@ -223,3 +224,40 @@ class SourceCommit:
     author: str
     author_email: str = ""
     files_changed: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DiscoveredTranscript:
+    """A transcript file discovered by plugins.
+
+    Contains metadata about the transcript without fully parsing it.
+    """
+
+    path: Path
+    format_type: str  # e.g., "claude_code_jsonl", "codex_jsonl"
+    plugin_name: str  # Human-readable name, e.g., "Claude Code"
+    mtime: float  # Modification time as timestamp
+    size_bytes: int
+    project_name: Optional[str] = None  # Project name from plugin
+    display_name: Optional[str] = None  # Display name from plugin
+
+    @property
+    def size_human(self) -> str:
+        """Human-readable file size."""
+        if self.size_bytes >= 1024 * 1024:
+            return f"{self.size_bytes / (1024 * 1024):.1f} MB"
+        elif self.size_bytes >= 1024:
+            return f"{self.size_bytes / 1024:.1f} KB"
+        return f"{self.size_bytes} B"
+
+    @property
+    def mtime_formatted(self) -> str:
+        """Human-readable modification time."""
+        from datetime import datetime
+
+        return datetime.fromtimestamp(self.mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+    @property
+    def name(self) -> str:
+        """Get display name, falling back to filename."""
+        return self.display_name or self.path.name

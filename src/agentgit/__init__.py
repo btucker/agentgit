@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from agentgit.core import (
     AssistantContext,
     AssistantTurn,
+    DiscoveredTranscript,
     FileOperation,
     OperationType,
     Prompt,
@@ -43,6 +44,7 @@ __all__ = [
     "Transcript",
     "OperationType",
     "SourceCommit",
+    "DiscoveredTranscript",
     # Plugin system
     "hookspec",
     "hookimpl",
@@ -56,6 +58,7 @@ __all__ = [
     "format_turn_commit_message",
     "format_prompt_merge_message",
     "discover_transcripts",
+    "discover_transcripts_enriched",
     "find_git_root",
 ]
 
@@ -322,3 +325,89 @@ def discover_transcripts(project_path: Path | str | None = None) -> list[Path]:
     # Sort by modification time, most recent first
     all_transcripts.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return all_transcripts
+
+
+def discover_transcripts_enriched(
+    project_path: Path | str | None = None,
+    all_projects: bool = False,
+) -> list[DiscoveredTranscript]:
+    """Discover transcript files with enriched metadata.
+
+    Returns DiscoveredTranscript objects containing file metadata and
+    detected format type, grouped by plugin.
+
+    Args:
+        project_path: Path to the project. Defaults to current git repo root.
+            Ignored if all_projects is True.
+        all_projects: If True, returns all transcripts from all projects.
+
+    Returns:
+        List of DiscoveredTranscript objects, sorted by modification time
+        (most recent first).
+
+    Raises:
+        ValueError: If no project_path provided and not in a git repository
+            (unless all_projects is True).
+    """
+    if all_projects:
+        # Discover all transcripts regardless of project
+        project_path = None
+    elif project_path is None:
+        project_path = find_git_root()
+        if project_path is None:
+            raise ValueError(
+                "Not in a git repository. Please specify a project path or transcript file."
+            )
+    else:
+        project_path = Path(project_path)
+
+    pm = get_configured_plugin_manager()
+
+    # Build a mapping of format -> plugin name
+    format_to_plugin: dict[str, str] = {}
+    for plugin_info in pm.hook.agentgit_get_plugin_info():
+        if plugin_info:
+            # Each plugin returns its info; we'll map format patterns to names
+            name = plugin_info.get("name", "unknown")
+            desc = plugin_info.get("description", name)
+            # Store with readable description
+            format_to_plugin[name] = desc
+
+    # Collect transcripts from all plugins
+    all_paths: list[Path] = []
+    for transcripts in pm.hook.agentgit_discover_transcripts(project_path=project_path):
+        all_paths.extend(transcripts)
+
+    # Enrich each transcript with format detection and project name
+    enriched: list[DiscoveredTranscript] = []
+    for path in all_paths:
+        # Detect format type
+        format_type = pm.hook.agentgit_detect_format(path=path)
+        if not format_type:
+            format_type = "unknown"
+
+        # Map format to plugin name
+        # Format strings are like "claude_code_jsonl" -> plugin name is "claude_code"
+        plugin_key = format_type.replace("_jsonl", "")
+        plugin_name = format_to_plugin.get(plugin_key, plugin_key.replace("_", " ").title())
+
+        # Get project name and display name from plugins
+        project_name = pm.hook.agentgit_get_project_name(transcript_path=path)
+        display_name = pm.hook.agentgit_get_display_name(transcript_path=path)
+
+        stat = path.stat()
+        enriched.append(
+            DiscoveredTranscript(
+                path=path,
+                format_type=format_type,
+                plugin_name=plugin_name,
+                mtime=stat.st_mtime,
+                size_bytes=stat.st_size,
+                project_name=project_name,
+                display_name=display_name,
+            )
+        )
+
+    # Sort by modification time, most recent first
+    enriched.sort(key=lambda t: t.mtime, reverse=True)
+    return enriched

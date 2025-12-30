@@ -79,6 +79,7 @@ class CodexPlugin:
                             "turn.completed",
                             "item.started",
                             "item.completed",
+                            "session_meta",  # Session metadata at start of file
                         ):
                             return FORMAT_CODEX_JSONL
 
@@ -602,11 +603,14 @@ class CodexPlugin:
 
     @hookimpl
     def agentgit_get_project_name(self, transcript_path: Path) -> str | None:
-        """Get the project name from a Codex transcript location.
+        """Get the project name from a Codex transcript by examining file paths.
 
-        Returns the rollout filename (without extension) as the identifier.
         Codex stores transcripts at:
         ~/.codex/sessions/YYYY/MM/DD/rollout-YYYY-MM-DDTHH-MM-SS-uuid.jsonl
+
+        We extract the project by:
+        1. Looking for session_cwd in environment_context
+        2. Examining file paths in apply_patch operations
         """
         transcript_abs = transcript_path.resolve()
         codex_sessions_dir = Path.home() / ".codex" / "sessions"
@@ -617,16 +621,146 @@ class CodexPlugin:
         except ValueError:
             return None
 
-        # Return the rollout filename without extension
-        return transcript_path.stem
+        # Try to extract project from session content
+        return self._extract_project_from_session(transcript_path)
+
+    def _extract_project_from_session(self, transcript_path: Path) -> str | None:
+        """Extract project name by examining the session file content."""
+        try:
+            with open(transcript_path, encoding="utf-8") as f:
+                cwd = None
+                file_paths: list[str] = []
+
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    # Skip state records
+                    if obj.get("record_type") == "state":
+                        continue
+
+                    # Look for cwd in user messages
+                    if obj.get("type") == "message" and obj.get("role") == "user":
+                        content = obj.get("content", [])
+                        _, msg_cwd = self._extract_user_text_and_cwd(content)
+                        if msg_cwd and not cwd:
+                            cwd = msg_cwd
+
+                    # Look for file paths in function calls (apply_patch)
+                    if obj.get("type") == "function_call" and obj.get("name") == "shell":
+                        try:
+                            arguments = json.loads(obj.get("arguments", "{}"))
+                            cmd = arguments.get("cmd", [])
+                            if cmd and cmd[0] == "apply_patch" and len(cmd) >= 2:
+                                # Extract file paths from patch content
+                                patch_content = cmd[1]
+                                paths = self._extract_paths_from_patch(patch_content)
+                                file_paths.extend(paths)
+                        except (json.JSONDecodeError, IndexError):
+                            pass
+
+                # Use cwd if found
+                if cwd:
+                    return Path(cwd).name
+
+                # Otherwise, try to find common directory from file paths
+                if file_paths:
+                    return self._find_project_from_paths(file_paths)
+
+        except Exception:
+            pass
+
+        return None
+
+    def _extract_paths_from_patch(self, patch_content: str) -> list[str]:
+        """Extract file paths from apply_patch content."""
+        paths = []
+        for line in patch_content.split("\n"):
+            add_match = ADD_FILE_PATTERN.match(line)
+            if add_match:
+                paths.append(add_match.group(1).strip())
+                continue
+
+            update_match = UPDATE_FILE_PATTERN.match(line)
+            if update_match:
+                paths.append(update_match.group(1).strip())
+                continue
+
+            delete_match = DELETE_FILE_PATTERN.match(line)
+            if delete_match:
+                paths.append(delete_match.group(1).strip())
+        return paths
+
+    def _find_project_from_paths(self, file_paths: list[str]) -> str | None:
+        """Find project name from a list of file paths.
+
+        Looks for absolute paths and extracts the project directory.
+        Uses heuristics to find the project root:
+        - For paths like /Users/*/project/... or /home/*/project/...,
+          returns the directory after the user directory.
+        """
+        for path_str in file_paths:
+            path = Path(path_str)
+            if not path.is_absolute():
+                continue
+
+            parts = path.parts
+            # Look for patterns like /Users/<user>/project or /home/<user>/project
+            for i, part in enumerate(parts):
+                # Find user home indicators
+                if part in ("Users", "home") and i + 2 < len(parts):
+                    # The project directory is after the username
+                    # /Users/dev/awesome-project/src/main.py
+                    #   0     1        2           3    4
+                    project_name = parts[i + 2]
+                    if project_name and not project_name.startswith("."):
+                        return project_name
+        return None
 
     @hookimpl
-    def agentgit_discover_transcripts(self, project_path: Path) -> list[Path]:
+    def agentgit_get_display_name(self, transcript_path: Path) -> str | None:
+        """Get display name for a Codex transcript.
+
+        Returns a date-based name like "2025-12-27 session".
+        """
+        transcript_abs = transcript_path.resolve()
+        codex_sessions_dir = Path.home() / ".codex" / "sessions"
+
+        # Only handle Codex transcripts
+        try:
+            transcript_abs.relative_to(codex_sessions_dir)
+        except ValueError:
+            return None
+
+        filename = transcript_path.stem  # rollout-2025-12-27T18-07-08-uuid
+
+        # Extract date from rollout filename
+        if filename.startswith("rollout-"):
+            # rollout-2025-12-27T18-07-08-... -> 2025-12-27
+            match = re.match(r"rollout-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})", filename)
+            if match:
+                date = match.group(1)
+                hour = match.group(2)
+                minute = match.group(3)
+                return f"{date} {hour}:{minute}"
+
+        return filename
+
+    @hookimpl
+    def agentgit_discover_transcripts(
+        self, project_path: Path | None = None
+    ) -> list[Path]:
         """Discover Codex transcripts.
 
         Codex stores all sessions in ~/.codex/sessions/YYYY/MM/DD/
         Unlike Claude Code, there's no per-project organization,
-        so we return all rollout files.
+        so we return all rollout files regardless of project_path.
         """
         codex_sessions_dir = Path.home() / ".codex" / "sessions"
         if not codex_sessions_dir.exists():

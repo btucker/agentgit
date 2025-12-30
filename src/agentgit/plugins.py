@@ -101,7 +101,9 @@ class AgentGitSpec:
         """
 
     @hookspec
-    def agentgit_discover_transcripts(self, project_path: Path) -> list[Path]:
+    def agentgit_discover_transcripts(
+        self, project_path: Path | None = None
+    ) -> list[Path]:
         """Discover transcript files for a project.
 
         Called when no transcript is explicitly provided to find relevant
@@ -109,6 +111,7 @@ class AgentGitSpec:
 
         Args:
             project_path: Path to the project (usually a git repo root).
+                If None, returns all transcripts from all projects.
 
         Returns:
             List of paths to transcript files found for this project.
@@ -128,6 +131,20 @@ class AgentGitSpec:
 
         Returns:
             The project name/identifier, or None if this plugin can't determine it.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_get_display_name(self, transcript_path: Path) -> str | None:
+        """Get a human-readable display name for a transcript file.
+
+        Plugins should return a concise, meaningful name for the transcript.
+        This is used in the discover command's table display.
+
+        Args:
+            transcript_path: Path to the transcript file.
+
+        Returns:
+            A display name string, or None if this plugin can't provide one.
         """
 
 

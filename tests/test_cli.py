@@ -152,7 +152,7 @@ class TestCLI:
         assert "claude_code" in result.output
 
     def test_discover_command(self, runner, tmp_path, monkeypatch):
-        """Should list discovered transcripts."""
+        """Should list discovered transcripts in table format."""
         from git import Repo
 
         # Create a git repo
@@ -171,9 +171,10 @@ class TestCLI:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.chdir(repo_path)
 
-        result = runner.invoke(main, ["discover"])
+        # Use --list flag to avoid interactive selection
+        result = runner.invoke(main, ["discover", "--list"])
         assert result.exit_code == 0
-        assert "Found 1 transcript" in result.output
+        assert "1 transcript" in result.output
         assert "session.jsonl" in result.output
 
     def test_discover_no_transcripts(self, runner, tmp_path, monkeypatch):
@@ -187,7 +188,7 @@ class TestCLI:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.chdir(repo_path)
 
-        result = runner.invoke(main, ["discover"])
+        result = runner.invoke(main, ["discover", "--list"])
         assert result.exit_code == 0
         assert "No transcripts found" in result.output
 

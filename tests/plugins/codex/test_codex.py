@@ -434,9 +434,77 @@ class TestCodexProjectName:
         result = plugin.agentgit_get_project_name(transcript)
         assert result is None
 
-    def test_get_project_name_from_codex_sessions(self, plugin, tmp_path, monkeypatch):
-        """Should extract session info from Codex session path."""
-        # Create ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl structure
+    def test_get_project_name_from_cwd(self, plugin, tmp_path, monkeypatch):
+        """Should extract project name from session_cwd in environment_context."""
+        sessions_dir = tmp_path / ".codex" / "sessions" / "2025" / "01" / "15"
+        sessions_dir.mkdir(parents=True)
+
+        # Create session with cwd
+        content = [
+            {"type": "thread.started", "thread_id": "test"},
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "<environment_context>\n<cwd>/home/user/myproject</cwd>\n</environment_context>",
+                    },
+                    {"type": "input_text", "text": "Hello"},
+                ],
+            },
+        ]
+
+        transcript = sessions_dir / "rollout-2025-01-15T10-30-00-abc123.jsonl"
+        with open(transcript, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        result = plugin.agentgit_get_project_name(transcript)
+        assert result == "myproject"
+
+    def test_get_project_name_from_file_paths(self, plugin, tmp_path, monkeypatch):
+        """Should extract project name from file paths in apply_patch."""
+        sessions_dir = tmp_path / ".codex" / "sessions" / "2025" / "01" / "15"
+        sessions_dir.mkdir(parents=True)
+
+        # Create session with file operations but no cwd
+        content = [
+            {"type": "thread.started", "thread_id": "test"},
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Create a file"}],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_001",
+                "name": "shell",
+                "arguments": json.dumps({
+                    "cmd": [
+                        "apply_patch",
+                        "*** Begin Patch\n*** Add File: /Users/dev/awesome-project/src/main.py\nprint('hello')\n*** End Patch",
+                    ]
+                }),
+            },
+        ]
+
+        transcript = sessions_dir / "rollout-2025-01-15T10-30-00-abc123.jsonl"
+        with open(transcript, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        result = plugin.agentgit_get_project_name(transcript)
+        assert result == "awesome-project"
+
+    def test_get_project_name_returns_none_for_empty_session(
+        self, plugin, tmp_path, monkeypatch
+    ):
+        """Should return None for sessions with no cwd or file paths."""
         sessions_dir = tmp_path / ".codex" / "sessions" / "2025" / "01" / "15"
         sessions_dir.mkdir(parents=True)
 
@@ -446,8 +514,7 @@ class TestCodexProjectName:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         result = plugin.agentgit_get_project_name(transcript)
-        # Should return the rollout filename (without extension) as identifier
-        assert result == "rollout-2025-01-15T10-30-00-abc123"
+        assert result is None
 
 
 class TestCodexDiscovery:

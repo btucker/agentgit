@@ -491,43 +491,158 @@ def operations(transcript: Path | None) -> None:
     type=click.Path(exists=True, path_type=Path),
     help="Project path to discover transcripts for. Defaults to current git repo.",
 )
-def discover(project: Path | None) -> None:
-    """Discover available transcripts for a project.
+@click.option(
+    "--all",
+    "all_projects",
+    is_flag=True,
+    help="Show transcripts from all projects, not just the current one.",
+)
+@click.option(
+    "--list",
+    "list_only",
+    is_flag=True,
+    help="List transcripts without interactive selection.",
+)
+@click.option(
+    "--type",
+    "filter_type",
+    type=str,
+    help="Filter by transcript type (e.g., claude_code, codex).",
+)
+def discover(
+    project: Path | None,
+    all_projects: bool,
+    list_only: bool,
+    filter_type: str | None,
+) -> None:
+    """Discover and process transcripts interactively.
 
-    Lists all transcript files found for the current project (or specified
-    project path), sorted by modification time.
+    Shows all transcript files found for the current project in a tabular view,
+    grouped by type. Select a transcript to process it into a git repository.
+
+    Use --all to show transcripts from all projects.
     """
-    from agentgit import discover_transcripts, find_git_root
+    from collections import defaultdict
 
-    if project is None:
-        project = find_git_root()
+    from InquirerPy import inquirer
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.tree import Tree
+
+    from agentgit import discover_transcripts_enriched, find_git_root
+
+    console = Console()
+
+    if all_projects:
+        # Discover from all projects
+        transcripts = discover_transcripts_enriched(all_projects=True)
+        header_path = "all projects"
+    else:
         if project is None:
-            raise click.ClickException(
-                "Not in a git repository. Use --project to specify a project path."
-            )
-
-    click.echo(f"Project: {project}")
-
-    transcripts = discover_transcripts(project)
+            project = find_git_root()
+            if project is None:
+                raise click.ClickException(
+                    "Not in a git repository. Use --project to specify a project path, or --all for all projects."
+                )
+        transcripts = discover_transcripts_enriched(project)
+        header_path = str(project)
 
     if not transcripts:
-        click.echo("No transcripts found for this project.")
+        msg = "No transcripts found." if all_projects else "No transcripts found for this project."
+        console.print(f"[yellow]{msg}[/yellow]")
         return
 
-    click.echo(f"Found {len(transcripts)} transcript(s):\n")
+    # Filter by type if specified
+    if filter_type:
+        transcripts = [
+            t for t in transcripts if filter_type.lower() in t.format_type.lower()
+        ]
+        if not transcripts:
+            console.print(
+                f"[yellow]No transcripts found matching type '{filter_type}'.[/yellow]"
+            )
+            return
 
-    for i, path in enumerate(transcripts, 1):
-        stat = path.stat()
-        from datetime import datetime
+    # Group transcripts by plugin type
+    grouped: dict[str, list] = defaultdict(list)
+    for t in transcripts:
+        grouped[t.plugin_name].append(t)
 
-        mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-        size_kb = stat.st_size / 1024
+    # Display header
+    console.print(
+        Panel(f"[bold]agentgit discover[/bold] - {header_path}", border_style="blue")
+    )
+    console.print()
 
-        click.echo(f"{i}. {path.name}")
-        click.echo(f"   Modified: {mtime}")
-        click.echo(f"   Size: {size_kb:.1f} KB")
-        click.echo(f"   Path: {path}")
-        click.echo()
+    # Display tables for each type
+    for plugin_name, items in grouped.items():
+        table = Table(title=f"{plugin_name} ({len(items)} transcript{'s' if len(items) != 1 else ''})")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Project", style="magenta")
+        table.add_column("Name", style="cyan")
+        table.add_column("Modified", style="green")
+        table.add_column("Size", style="yellow", justify="right")
+
+        for i, t in enumerate(items, 1):
+            project = t.project_name or "-"
+            table.add_row(str(i), project, t.name, t.mtime_formatted, t.size_human)
+
+        console.print(table)
+        console.print()
+
+    # If list-only mode, stop here
+    if list_only:
+        return
+
+    # Build selection choices
+    choices = []
+    for t in transcripts:
+        label = f"[{t.plugin_name}] {t.name} ({t.mtime_formatted})"
+        choices.append({"name": label, "value": t})
+
+    # Add cancel option
+    choices.append({"name": "[Cancel]", "value": None})
+
+    # Interactive selection
+    try:
+        selected = inquirer.select(
+            message="Select a transcript to process:",
+            choices=choices,
+            default=None,
+        ).execute()
+    except KeyboardInterrupt:
+        console.print("\n[dim]Cancelled.[/dim]")
+        return
+
+    if selected is None:
+        console.print("[dim]Cancelled.[/dim]")
+        return
+
+    # Process the selected transcript
+    console.print()
+    console.print(f"[bold]Processing[/bold] {selected.path.name}...")
+
+    output_dir = get_default_output_dir(selected.path)
+    try:
+        from agentgit import transcript_to_repo
+
+        repo, repo_path, transcript = transcript_to_repo(
+            selected.path,
+            output_dir=output_dir,
+        )
+
+        # Count commits and files
+        commit_count = sum(1 for _ in repo.iter_commits())
+        prompt_count = len(transcript.prompt_responses)
+        file_count = len(set(op.file_path for op in transcript.operations))
+
+        console.print(f"[green]Created git repository at[/green] {repo_path}")
+        console.print(f"  - {commit_count} commits ({prompt_count} prompts)")
+        console.print(f"  - {file_count} files modified")
+
+    except Exception as e:
+        console.print(f"[red]Error processing transcript:[/red] {e}")
+        raise click.ClickException(str(e))
 
 
 @main.command()

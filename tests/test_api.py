@@ -192,9 +192,12 @@ class TestDiscoverTranscripts:
         with pytest.raises(ValueError, match="Not in a git repository"):
             discover_transcripts()
 
-    def test_returns_empty_if_no_transcripts(self, tmp_path):
+    def test_returns_empty_if_no_transcripts(self, tmp_path, monkeypatch):
         """Should return empty list if no transcripts found."""
         from agentgit import discover_transcripts
+
+        # Mock home to prevent Codex plugin from finding real transcripts
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         result = discover_transcripts(tmp_path)
         assert result == []
