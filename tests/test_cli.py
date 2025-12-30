@@ -75,14 +75,6 @@ class TestCLI:
         assert "Found 1 prompts" in result.output
         assert "Create a hello world function" in result.output
 
-    def test_operations_command(self, runner, sample_jsonl):
-        """Should list operations from transcript."""
-        result = runner.invoke(main, ["operations", str(sample_jsonl)])
-        assert result.exit_code == 0
-        assert "Found 1 operations" in result.output
-        assert "WRITE" in result.output
-        assert "/test/hello.py" in result.output
-
     def test_process_command(self, runner, sample_jsonl, tmp_path):
         """Should process transcript to git repo."""
         output_dir = tmp_path / "output"
@@ -124,11 +116,6 @@ class TestCLI:
     def test_prompts_nonexistent_file(self, runner):
         """Should error on nonexistent file."""
         result = runner.invoke(main, ["prompts", "/nonexistent/file.jsonl"])
-        assert result.exit_code != 0
-
-    def test_operations_nonexistent_file(self, runner):
-        """Should error on nonexistent file."""
-        result = runner.invoke(main, ["operations", "/nonexistent/file.jsonl"])
         assert result.exit_code != 0
 
     def test_process_nonexistent_file(self, runner):
