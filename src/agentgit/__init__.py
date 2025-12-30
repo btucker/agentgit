@@ -157,6 +157,8 @@ def build_repo(
     author_name: str = "Agent",
     author_email: str = "agent@local",
     source_repo: Path | None = None,
+    branch: str | None = None,
+    orphan: bool = False,
 ) -> tuple[Repo, Path, dict[str, str]]:
     """Build a git repository from file operations.
 
@@ -165,17 +167,25 @@ def build_repo(
         output_dir: Directory for the git repo. If None, creates a temp dir.
         author_name: Name for git commits.
         author_email: Email for git commits.
-        source_repo: Optional source repository to interleave commits from.
+        source_repo: Optional source repository. When used with branch/orphan,
+            creates a worktree instead of a standalone repo.
+        branch: Branch name for worktree mode (e.g., "agentgit/history").
+        orphan: If True, create an orphan branch (no common ancestor with main).
 
     Returns:
         Tuple of (repo, repo_path, path_mapping).
     """
-    builder = GitRepoBuilder(output_dir=output_dir)
+    builder = GitRepoBuilder(
+        output_dir=output_dir,
+        source_repo=source_repo if branch else None,
+        branch=branch,
+        orphan=orphan,
+    )
     return builder.build(
         operations=operations,
         author_name=author_name,
         author_email=author_email,
-        source_repo=source_repo,
+        source_repo=source_repo if not branch else None,
     )
 
 
