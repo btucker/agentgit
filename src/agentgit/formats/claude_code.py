@@ -10,6 +10,7 @@ from typing import Any
 from agentgit.core import (
     AssistantContext,
     AssistantTurn,
+    DiscoveredWebSession,
     FileOperation,
     OperationType,
     Prompt,
@@ -642,3 +643,79 @@ class ClaudeCodePlugin:
         # Sort by modification time, most recent first
         transcripts.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return transcripts
+
+    # Web session hooks
+
+    @hookimpl
+    def agentgit_resolve_web_credentials(
+        self,
+        token: str | None,
+        org_uuid: str | None,
+    ) -> tuple[str, str] | None:
+        """Resolve credentials for Claude Code web sessions."""
+        from agentgit.web_sessions import (
+            WebSessionError,
+            resolve_credentials,
+        )
+
+        try:
+            return resolve_credentials(token, org_uuid)
+        except WebSessionError:
+            return None
+
+    @hookimpl
+    def agentgit_discover_web_sessions(
+        self,
+        project_path: Path | None,
+        credentials: tuple[str, str],
+    ) -> list[DiscoveredWebSession]:
+        """Discover Claude Code web sessions from the API."""
+        from agentgit.web_sessions import (
+            WebSessionError,
+            fetch_sessions,
+        )
+
+        token, org_uuid = credentials
+        try:
+            sessions = fetch_sessions(token, org_uuid)
+        except WebSessionError:
+            return []
+
+        web_sessions = []
+        for session in sessions:
+            # Filter by project if specified
+            if project_path and session.project_path:
+                session_project = Path(session.project_path).resolve()
+                if session_project != project_path.resolve():
+                    continue
+
+            web_sessions.append(
+                DiscoveredWebSession(
+                    session_id=session.id,
+                    title=session.title,
+                    created_at=session.created_at,
+                    project_path=session.project_path,
+                )
+            )
+
+        return web_sessions
+
+    @hookimpl
+    def agentgit_fetch_web_session(
+        self,
+        session_id: str,
+        credentials: tuple[str, str],
+    ) -> list[dict[str, Any]] | None:
+        """Fetch a Claude Code web session and convert to JSONL entries."""
+        from agentgit.web_sessions import (
+            WebSessionError,
+            fetch_session_data,
+            session_to_jsonl_entries,
+        )
+
+        token, org_uuid = credentials
+        try:
+            session_data = fetch_session_data(token, org_uuid, session_id)
+            return session_to_jsonl_entries(session_data)
+        except WebSessionError:
+            return None

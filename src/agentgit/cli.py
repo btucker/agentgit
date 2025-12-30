@@ -327,6 +327,20 @@ def main() -> None:
     default="agentgit",
     help="Branch name for --single-repo mode. Defaults to 'agentgit'.",
 )
+@click.option(
+    "--web",
+    "web_session_id",
+    type=str,
+    help="Process a Claude Code web session by ID. Use 'list' to show available sessions.",
+)
+@click.option(
+    "--token",
+    help="API access token for web sessions (auto-detected from keychain on macOS).",
+)
+@click.option(
+    "--org-uuid",
+    help="Organization UUID for web sessions (auto-detected from ~/.claude.json).",
+)
 def process(
     transcript: Path | None,
     output: Path | None,
@@ -337,6 +351,9 @@ def process(
     watch: bool,
     single_repo: bool,
     branch: str,
+    web_session_id: str | None,
+    token: str | None,
+    org_uuid: str | None,
 ) -> None:
     """Process a transcript into a git repository.
 
@@ -348,7 +365,28 @@ def process(
 
     With --single-repo, creates the agentgit output as an orphan branch
     in the source repository, using a git worktree at the output location.
+
+    With --web, processes a Claude Code web session. Use --web=list to show
+    available sessions, or --web=SESSION_ID to process a specific session.
+
+    Examples:
+
+        agentgit process --web=list          # List web sessions
+
+        agentgit process --web=abc123        # Process session by ID
     """
+    # Handle web session processing
+    if web_session_id is not None:
+        _run_web_process(
+            web_session_id=web_session_id,
+            output=output,
+            author=author,
+            email=email,
+            token=token,
+            org_uuid=org_uuid,
+        )
+        return
+
     transcripts = resolve_transcripts(transcript)
 
     if watch:
@@ -366,6 +404,109 @@ def process(
             transcripts, output, plugin_type, author, email, source_repo,
             single_repo=single_repo, branch=branch
         )
+
+
+def _run_web_process(
+    web_session_id: str,
+    output: Path | None,
+    author: str,
+    email: str,
+    token: str | None,
+    org_uuid: str | None,
+) -> None:
+    """Process a web session by ID or list available sessions."""
+    import json
+    import tempfile
+
+    from agentgit.plugins import get_configured_plugin_manager
+
+    pm = get_configured_plugin_manager()
+
+    # Resolve credentials through plugin
+    credentials = pm.hook.agentgit_resolve_web_credentials(
+        token=token, org_uuid=org_uuid
+    )
+
+    if not credentials:
+        raise click.ClickException(
+            "Could not resolve web session credentials. "
+            "Please provide --token and --org-uuid manually."
+        )
+
+    # Handle 'list' command
+    if web_session_id.lower() == "list":
+        click.echo("Fetching web sessions...")
+        all_sessions = []
+        for sessions in pm.hook.agentgit_discover_web_sessions(
+            project_path=None, credentials=credentials
+        ):
+            all_sessions.extend(sessions)
+
+        if not all_sessions:
+            click.echo("No web sessions found.")
+            return
+
+        click.echo(f"\nFound {len(all_sessions)} session(s):\n")
+        for i, session in enumerate(all_sessions, 1):
+            title = session.name
+            click.echo(f"  {i}. {title}")
+            click.echo(f"     ID: {session.session_id}")
+            click.echo(f"     Created: {session.mtime_formatted}")
+            if session.project_path:
+                click.echo(f"     Project: {session.project_path}")
+            click.echo()
+        return
+
+    # Fetch and process specific session
+    click.echo(f"Fetching session {web_session_id}...")
+    entries = pm.hook.agentgit_fetch_web_session(
+        session_id=web_session_id, credentials=credentials
+    )
+
+    if not entries:
+        raise click.ClickException(f"No transcript entries found in session {web_session_id}.")
+
+    # Create a temporary transcript file for processing
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".jsonl",
+        delete=False,
+        prefix=f"web-session-{web_session_id[:8]}-",
+    ) as f:
+        for entry in entries:
+            f.write(json.dumps(entry) + "\n")
+        temp_path = Path(f.name)
+
+    try:
+        # Determine output directory if not specified
+        if output is None:
+            # Try to get project path from session data (first entry with cwd)
+            project_path = None
+            for entry in entries:
+                cwd = entry.get("cwd")
+                if cwd:
+                    project_path = cwd
+                    break
+
+            if project_path:
+                output = Path.home() / ".agentgit" / "projects" / encode_path_as_name(
+                    Path(project_path)
+                )
+            else:
+                output = Path.home() / ".agentgit" / "web-sessions" / web_session_id
+
+        _run_process(
+            transcripts=[temp_path],
+            output=output,
+            plugin_type=None,
+            author=author,
+            email=email,
+            source_repo=None,
+        )
+
+    finally:
+        # Clean up temp file
+        temp_path.unlink(missing_ok=True)
 
 
 def _run_process(
@@ -546,11 +687,28 @@ def prompts(transcript: Path | None) -> None:
     type=str,
     help="Filter by transcript type (e.g., claude_code, codex).",
 )
+@click.option(
+    "--web",
+    "include_web",
+    is_flag=True,
+    help="Include web sessions from the Claude API.",
+)
+@click.option(
+    "--token",
+    help="API access token for web sessions (auto-detected from keychain on macOS).",
+)
+@click.option(
+    "--org-uuid",
+    help="Organization UUID for web sessions (auto-detected from ~/.claude.json).",
+)
 def discover(
     project: Path | None,
     all_projects: bool,
     list_only: bool,
     filter_type: str | None,
+    include_web: bool,
+    token: str | None,
+    org_uuid: str | None,
 ) -> None:
     """Discover and process transcripts interactively.
 
@@ -558,12 +716,13 @@ def discover(
     Enter a number to process a transcript into a git repository.
 
     Use --all to show transcripts from all projects.
+    Use --web to include web sessions from the Claude API.
     """
     from rich.console import Console
     from rich.panel import Panel
     from rich.table import Table
 
-    from agentgit import discover_transcripts_enriched, find_git_root
+    from agentgit import DiscoveredWebSession, discover_transcripts_enriched, find_git_root
 
     console = Console()
     home = Path.home()
@@ -575,51 +734,107 @@ def discover(
     else:
         if project is None:
             project = find_git_root()
-            if project is None:
+            if project is None and not include_web:
                 raise click.ClickException(
-                    "Not in a git repository. Use --project to specify a project path, or --all for all projects."
+                    "Not in a git repository. Use --project to specify a project path, --all for all projects, or --web for web sessions."
                 )
-        transcripts = discover_transcripts_enriched(project)
-        header_path = str(project)
+        if project:
+            transcripts = discover_transcripts_enriched(project)
+            header_path = str(project)
+        else:
+            transcripts = []
+            header_path = "web sessions"
 
-    if not transcripts:
-        msg = "No transcripts found." if all_projects else "No transcripts found for this project."
+    # Fetch web sessions if requested
+    web_sessions: list[DiscoveredWebSession] = []
+    credentials: tuple[str, str] | None = None
+
+    if include_web:
+        from agentgit.plugins import get_configured_plugin_manager
+
+        pm = get_configured_plugin_manager()
+
+        # Resolve credentials through plugin
+        credentials = pm.hook.agentgit_resolve_web_credentials(
+            token=token, org_uuid=org_uuid
+        )
+
+        if credentials:
+            console.print("[dim]Fetching web sessions...[/dim]")
+            # Discover web sessions through plugins
+            for sessions in pm.hook.agentgit_discover_web_sessions(
+                project_path=project, credentials=credentials
+            ):
+                web_sessions.extend(sessions)
+        else:
+            console.print("[yellow]Warning: Could not resolve web session credentials.[/yellow]")
+
+    # Combine local transcripts and web sessions
+    # Create a unified list with type information
+    all_items: list[tuple[str, Any]] = []  # ("local", transcript) or ("web", web_session)
+
+    for t in transcripts:
+        all_items.append(("local", t))
+    for ws in web_sessions:
+        all_items.append(("web", ws))
+
+    if not all_items:
+        if include_web:
+            msg = "No transcripts or web sessions found."
+        elif all_projects:
+            msg = "No transcripts found."
+        else:
+            msg = "No transcripts found for this project."
         console.print(f"[yellow]{msg}[/yellow]")
         return
 
     # Filter by type if specified
     if filter_type:
-        transcripts = [
-            t for t in transcripts if filter_type.lower() in t.format_type.lower()
+        all_items = [
+            (item_type, item)
+            for item_type, item in all_items
+            if filter_type.lower() in item.format_type.lower()
         ]
-        if not transcripts:
+        if not all_items:
             console.print(
                 f"[yellow]No transcripts found matching type '{filter_type}'.[/yellow]"
             )
             return
 
     # Display header
+    header_suffix = " (including web)" if include_web and web_sessions else ""
     console.print(
-        Panel(f"[bold]agentgit discover[/bold] - {header_path}", border_style="blue")
+        Panel(f"[bold]agentgit discover[/bold] - {header_path}{header_suffix}", border_style="blue")
     )
     console.print()
 
     # Build unified table
-    count_label = "transcript" if len(transcripts) == 1 else "transcripts"
-    table = Table(title=f"{len(transcripts)} {count_label}")
+    item_count = len(all_items)
+    count_label = "item" if item_count == 1 else "items"
+    table = Table(title=f"{item_count} {count_label}")
     table.add_column("#", style="dim", width=4)
     table.add_column("Agent", style="magenta")
     table.add_column("Path", style="cyan")
     table.add_column("Modified", style="green")
     table.add_column("Size", style="yellow", justify="right")
 
-    for i, t in enumerate(transcripts, 1):
-        # Convert path to ~/... format
-        try:
-            rel_path = "~/" + str(t.path.relative_to(home))
-        except ValueError:
-            rel_path = str(t.path)
-        table.add_row(str(i), t.plugin_name, rel_path, t.mtime_formatted, t.size_human)
+    for i, (item_type, item) in enumerate(all_items, 1):
+        if item_type == "local":
+            # Convert path to ~/... format
+            try:
+                rel_path = "~/" + str(item.path.relative_to(home))
+            except ValueError:
+                rel_path = str(item.path)
+            table.add_row(str(i), item.plugin_name, rel_path, item.mtime_formatted, item.size_human)
+        else:
+            # Web session
+            table.add_row(
+                str(i),
+                item.plugin_name,
+                item.path_display,
+                item.mtime_formatted,
+                item.size_human,
+            )
 
     console.print(table)
     console.print()
@@ -646,23 +861,35 @@ def discover(
 
     try:
         idx = int(choice)
-        if idx < 1 or idx > len(transcripts):
-            console.print(f"[red]Invalid number. Enter 1-{len(transcripts)}.[/red]")
+        if idx < 1 or idx > len(all_items):
+            console.print(f"[red]Invalid number. Enter 1-{len(all_items)}.[/red]")
             return
     except ValueError:
         console.print("[red]Invalid input. Enter a number.[/red]")
         return
 
-    selected = transcripts[idx - 1]
+    item_type, selected = all_items[idx - 1]
 
-    # Process the selected transcript
+    if item_type == "local":
+        # Process local transcript
+        _process_local_transcript(console, selected)
+    else:
+        # Process web session
+        if credentials is None:
+            console.print("[red]Cannot process web session: credentials not available.[/red]")
+            return
+        _process_web_session(console, selected, credentials)
+
+
+def _process_local_transcript(console: Any, selected: Any) -> None:
+    """Process a local transcript file."""
+    from agentgit import transcript_to_repo
+
     console.print()
     console.print(f"[bold]Processing[/bold] {selected.path.name}...")
 
     output_dir = get_default_output_dir(selected.path)
     try:
-        from agentgit import transcript_to_repo
-
         repo, repo_path, transcript = transcript_to_repo(
             selected.path,
             output_dir=output_dir,
@@ -682,6 +909,65 @@ def discover(
         raise click.ClickException(str(e))
 
 
+def _process_web_session(
+    console: Any,
+    selected: Any,
+    credentials: tuple[str, str],
+) -> None:
+    """Process a web session from the Claude API."""
+    import json
+    import tempfile
+
+    from agentgit.plugins import get_configured_plugin_manager
+
+    console.print()
+    console.print(f"[bold]Processing web session[/bold] {selected.name}...")
+
+    # Fetch the session data through plugin
+    console.print("[dim]Fetching session data...[/dim]")
+    pm = get_configured_plugin_manager()
+    entries = pm.hook.agentgit_fetch_web_session(
+        session_id=selected.session_id, credentials=credentials
+    )
+
+    if not entries:
+        raise click.ClickException("No transcript entries found in session.")
+
+    # Create a temporary transcript file for processing
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".jsonl",
+        delete=False,
+        prefix=f"web-session-{selected.session_id[:8]}-",
+    ) as f:
+        for entry in entries:
+            f.write(json.dumps(entry) + "\n")
+        temp_path = Path(f.name)
+
+    try:
+        # Determine output directory
+        if selected.project_path:
+            output_dir = Path.home() / ".agentgit" / "projects" / encode_path_as_name(
+                Path(selected.project_path)
+            )
+        else:
+            # Fall back to session-based naming
+            output_dir = Path.home() / ".agentgit" / "web-sessions" / selected.session_id
+
+        _run_process(
+            transcripts=[temp_path],
+            output=output_dir,
+            plugin_type=None,
+            author="Agent",
+            email="agent@local",
+            source_repo=None,
+        )
+
+    finally:
+        # Clean up temp file
+        temp_path.unlink(missing_ok=True)
+
+
 @main.command()
 def types() -> None:
     """List available transcript format plugins."""
@@ -696,184 +982,6 @@ def types() -> None:
             name = info.get("name", "unknown")
             description = info.get("description", "No description")
             click.echo(f"  {name}: {description}")
-
-
-@main.command()
-@click.argument("session_id", required=False)
-@click.option(
-    "-o",
-    "--output",
-    type=click.Path(path_type=Path),
-    help="Output directory for git repo.",
-)
-@click.option(
-    "--token",
-    help="API access token (auto-detected from keychain on macOS).",
-)
-@click.option(
-    "--org-uuid",
-    help="Organization UUID (auto-detected from ~/.claude.json).",
-)
-@click.option(
-    "--author",
-    default="Agent",
-    help="Author name for git commits.",
-)
-@click.option(
-    "--email",
-    default="agent@local",
-    help="Author email for git commits.",
-)
-def web(
-    session_id: str | None,
-    output: Path | None,
-    token: str | None,
-    org_uuid: str | None,
-    author: str,
-    email: str,
-) -> None:
-    """Process a Claude Code web session.
-
-    Fetches sessions from the Claude API and processes them into a git repository.
-    If SESSION_ID is not provided, displays an interactive session picker.
-
-    Credentials are auto-detected on macOS from the keychain and ~/.claude.json.
-    On other platforms, provide --token and --org-uuid manually.
-
-    Examples:
-
-        agentgit web                    # Interactive session picker
-
-        agentgit web abc123             # Process specific session
-
-        agentgit web --token=... --org-uuid=...  # Manual credentials
-    """
-    from agentgit.web_sessions import (
-        WebSessionError,
-        fetch_session_data,
-        fetch_sessions,
-        find_matching_local_project,
-        resolve_credentials,
-        session_to_jsonl_entries,
-    )
-
-    try:
-        resolved_token, resolved_org_uuid = resolve_credentials(token, org_uuid)
-    except WebSessionError as e:
-        raise click.ClickException(str(e)) from e
-
-    if session_id is None:
-        # Interactive session picker
-        click.echo("Fetching web sessions...")
-        try:
-            sessions = fetch_sessions(resolved_token, resolved_org_uuid)
-        except WebSessionError as e:
-            raise click.ClickException(str(e)) from e
-
-        if not sessions:
-            raise click.ClickException("No web sessions found.")
-
-        click.echo(f"\nFound {len(sessions)} session(s):\n")
-
-        # Show sessions with local project detection
-        for i, session in enumerate(sessions, 1):
-            local_project = find_matching_local_project(session)
-            local_indicator = " [LOCAL]" if local_project else ""
-            title_preview = session.title[:60] if session.title else "Untitled"
-            if len(session.title) > 60:
-                title_preview += "..."
-
-            click.echo(f"  {i}. {title_preview}{local_indicator}")
-            click.echo(f"     ID: {session.id}")
-            click.echo(f"     Created: {session.created_at}")
-            if session.project_path:
-                click.echo(f"     Project: {session.project_path}")
-            click.echo()
-
-        # Prompt for selection
-        while True:
-            try:
-                choice = click.prompt(
-                    "Select a session (number or ID)",
-                    type=str,
-                )
-                # Try as number first
-                try:
-                    idx = int(choice)
-                    if 1 <= idx <= len(sessions):
-                        selected_session = sessions[idx - 1]
-                        break
-                    click.echo(f"Please enter a number between 1 and {len(sessions)}")
-                except ValueError:
-                    # Try as session ID
-                    matching = [s for s in sessions if s.id == choice]
-                    if matching:
-                        selected_session = matching[0]
-                        break
-                    click.echo(f"No session found with ID: {choice}")
-            except click.Abort:
-                click.echo("\nCancelled.")
-                return
-
-        session_id = selected_session.id
-        click.echo(f"\nSelected: {selected_session.title}")
-    else:
-        selected_session = None
-
-    # Fetch the session data
-    click.echo(f"Fetching session {session_id}...")
-    try:
-        session_data = fetch_session_data(resolved_token, resolved_org_uuid, session_id)
-    except WebSessionError as e:
-        raise click.ClickException(str(e)) from e
-
-    # Convert to JSONL entries and process
-    entries = session_to_jsonl_entries(session_data)
-    if not entries:
-        raise click.ClickException("No transcript entries found in session.")
-
-    # Create a temporary transcript file for processing
-    import json
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".jsonl",
-        delete=False,
-        prefix=f"web-session-{session_id[:8]}-",
-    ) as f:
-        for entry in entries:
-            f.write(json.dumps(entry) + "\n")
-        temp_path = Path(f.name)
-
-    try:
-        # Determine output directory
-        if output is None:
-            # Check for local project match
-            project_path = session_data.get("project_path")
-            if project_path:
-                output = Path.home() / ".agentgit" / "projects" / encode_path_as_name(
-                    Path(project_path)
-                )
-                local_project = Path(project_path)
-                if local_project.exists():
-                    click.echo(f"Matched local project: {local_project}")
-            else:
-                # Fall back to session-based naming
-                output = Path.home() / ".agentgit" / "web-sessions" / session_id
-
-        _run_process(
-            transcripts=[temp_path],
-            output=output,
-            plugin_type=None,
-            author=author,
-            email=email,
-            source_repo=None,
-        )
-
-    finally:
-        # Clean up temp file
-        temp_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

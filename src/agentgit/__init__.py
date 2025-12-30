@@ -9,6 +9,7 @@ from agentgit.core import (
     AssistantContext,
     AssistantTurn,
     DiscoveredTranscript,
+    DiscoveredWebSession,
     FileOperation,
     OperationType,
     Prompt,
@@ -45,6 +46,7 @@ __all__ = [
     "OperationType",
     "SourceCommit",
     "DiscoveredTranscript",
+    "DiscoveredWebSession",
     # Plugin system
     "hookspec",
     "hookimpl",

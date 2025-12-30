@@ -261,3 +261,57 @@ class DiscoveredTranscript:
     def name(self) -> str:
         """Get display name, falling back to filename."""
         return self.display_name or self.path.name
+
+
+@dataclass
+class DiscoveredWebSession:
+    """A web session discovered from the Claude API.
+
+    Similar interface to DiscoveredTranscript for unified display,
+    but represents a remote session that needs to be fetched.
+    """
+
+    session_id: str
+    title: str
+    created_at: str
+    project_path: Optional[str] = None
+    format_type: str = "claude_code_web"
+    plugin_name: str = "Claude Code (Web)"
+
+    @property
+    def size_human(self) -> str:
+        """Human-readable placeholder for web sessions."""
+        return "web"
+
+    @property
+    def mtime_formatted(self) -> str:
+        """Human-readable creation time."""
+        # Parse ISO format created_at if present
+        if self.created_at:
+            try:
+                from datetime import datetime
+
+                # Handle ISO format with Z suffix
+                ts = self.created_at.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(ts)
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                return self.created_at
+        return ""
+
+    @property
+    def name(self) -> str:
+        """Get display name (session title)."""
+        if self.title:
+            # Truncate long titles
+            if len(self.title) > 40:
+                return self.title[:37] + "..."
+            return self.title
+        return f"Session {self.session_id[:8]}..."
+
+    @property
+    def path_display(self) -> str:
+        """Display representation of the session location."""
+        if self.project_path:
+            return self.project_path
+        return f"[web:{self.session_id[:12]}...]"
