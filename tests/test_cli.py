@@ -190,3 +190,116 @@ class TestCLI:
         result = runner.invoke(main, ["discover"])
         assert result.exit_code == 0
         assert "No transcripts found" in result.output
+
+
+class TestWebCommand:
+    """Tests for the web command."""
+
+    def test_web_help(self, runner):
+        """Should show help for web command."""
+        result = runner.invoke(main, ["web", "--help"])
+        assert result.exit_code == 0
+        assert "Claude Code web session" in result.output
+        assert "--token" in result.output
+        assert "--org-uuid" in result.output
+
+    def test_web_requires_credentials(self, runner, tmp_path, monkeypatch):
+        """Should error when credentials not available."""
+        # Mock non-macOS platform and no config file
+        monkeypatch.setattr("sys.platform", "linux")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        result = runner.invoke(main, ["web"])
+        assert result.exit_code != 0
+        assert "access token" in result.output.lower()
+
+    def test_web_no_sessions(self, runner, monkeypatch):
+        """Should error when no sessions found."""
+        from unittest.mock import patch
+
+        with patch(
+            "agentgit.web_sessions.resolve_credentials", return_value=("token", "org")
+        ), patch("agentgit.web_sessions.fetch_sessions", return_value=[]):
+            result = runner.invoke(main, ["web"])
+            assert result.exit_code != 0
+            assert "No web sessions found" in result.output
+
+    def test_web_with_session_id(self, runner, tmp_path, monkeypatch):
+        """Should process specific session when ID provided."""
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        mock_session_data = {
+            "id": "test-session-123",
+            "project_path": str(tmp_path / "project"),
+            "loglines": [
+                {
+                    "type": "user",
+                    "timestamp": "2025-01-01T10:00:00Z",
+                    "message": {"content": "Hello"},
+                },
+                {
+                    "type": "assistant",
+                    "timestamp": "2025-01-01T10:00:05Z",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "Creating file..."},
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_001",
+                                "name": "Write",
+                                "input": {
+                                    "file_path": "/test/hello.py",
+                                    "content": "print('hello')",
+                                },
+                            },
+                        ]
+                    },
+                },
+            ],
+        }
+
+        with patch(
+            "agentgit.web_sessions.resolve_credentials", return_value=("token", "org")
+        ), patch(
+            "agentgit.web_sessions.fetch_session_data", return_value=mock_session_data
+        ):
+            output_dir = tmp_path / "output"
+            result = runner.invoke(
+                main, ["web", "test-session-123", "-o", str(output_dir)]
+            )
+
+            assert result.exit_code == 0
+            assert "Created git repository" in result.output
+
+    def test_web_session_picker_display(self, runner, monkeypatch):
+        """Should display sessions for interactive selection."""
+        from unittest.mock import patch
+
+        from agentgit.web_sessions import WebSession
+
+        sessions = [
+            WebSession(
+                id="session-1",
+                title="First Session",
+                created_at="2025-01-01T00:00:00Z",
+                project_path="/path/to/project",
+            ),
+            WebSession(
+                id="session-2",
+                title="Second Session",
+                created_at="2025-01-02T00:00:00Z",
+            ),
+        ]
+
+        with patch(
+            "agentgit.web_sessions.resolve_credentials", return_value=("token", "org")
+        ), patch("agentgit.web_sessions.fetch_sessions", return_value=sessions):
+            # Abort the prompt to exit cleanly
+            result = runner.invoke(main, ["web"], input="\x03")  # Ctrl+C
+
+            assert "Found 2 session(s)" in result.output
+            assert "First Session" in result.output
+            assert "session-1" in result.output
+            assert "/path/to/project" in result.output
