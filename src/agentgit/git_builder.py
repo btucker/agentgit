@@ -13,7 +13,14 @@ from typing import Union
 from git import Repo
 from git.exc import GitCommandError, InvalidGitRepositoryError
 
-from agentgit.core import FileOperation, OperationType, SourceCommit
+from agentgit.core import (
+    AssistantTurn,
+    FileOperation,
+    OperationType,
+    Prompt,
+    PromptResponse,
+    SourceCommit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +170,90 @@ def format_commit_message(operation: FileOperation) -> str:
         return f"{subject}\n\n{body}\n\n{trailers_str}"
     else:
         return f"{subject}\n\n{trailers_str}"
+
+
+def format_turn_commit_message(turn: AssistantTurn) -> str:
+    """Format a commit message for an assistant turn (grouped operations).
+
+    Structure:
+    - Subject line: summary of what was done
+    - Blank line
+    - Files modified/created/deleted
+    - Blank line
+    - Context if available
+    - Blank line
+    - Trailers
+    """
+    subject = turn.summary_line
+
+    body_parts = []
+
+    # List of files changed
+    file_lists = []
+    if turn.files_created:
+        file_lists.append(f"Created: {', '.join(turn.files_created)}")
+    if turn.files_modified:
+        file_lists.append(f"Modified: {', '.join(turn.files_modified)}")
+    if turn.files_deleted:
+        file_lists.append(f"Deleted: {', '.join(turn.files_deleted)}")
+    if file_lists:
+        body_parts.append("\n".join(file_lists))
+
+    # Assistant context (the reasoning)
+    if turn.context and turn.context.summary:
+        context = turn.context.summary
+        if context:
+            body_parts.append(f"Context:\n{context}")
+
+    body = "\n\n".join(body_parts) if body_parts else ""
+
+    # Trailers
+    trailers = []
+    if turn.operations and turn.operations[0].prompt:
+        trailers.append(f"Prompt-Id: {turn.operations[0].prompt.prompt_id}")
+    trailers.append(f"Timestamp: {turn.timestamp}")
+    for op in turn.operations:
+        if op.tool_id:
+            trailers.append(f"Tool-Id: {op.tool_id}")
+
+    trailers_str = "\n".join(trailers)
+
+    if body:
+        return f"{subject}\n\n{body}\n\n{trailers_str}"
+    else:
+        return f"{subject}\n\n{trailers_str}"
+
+
+def format_prompt_merge_message(prompt: Prompt, turns: list[AssistantTurn]) -> str:
+    """Format a merge commit message for a prompt.
+
+    Structure:
+    - Subject line: first line of prompt (truncated if needed)
+    - Blank line
+    - Full prompt text
+    - Blank line
+    - Trailers
+    """
+    # Subject: first meaningful line of prompt
+    first_line = prompt.text.split("\n")[0].strip()
+    if len(first_line) > 72:
+        subject = first_line[:69] + "..."
+    else:
+        subject = first_line
+
+    body_parts = []
+
+    # Full prompt text
+    body_parts.append(f"Prompt #{prompt.short_id}:\n{prompt.text}")
+
+    body = "\n\n".join(body_parts)
+
+    # Trailers
+    trailers = [f"Prompt-Id: {prompt.prompt_id}"]
+
+    trailers_str = "\n".join(trailers)
+
+    return f"{subject}\n\n{body}\n\n{trailers_str}"
 
 
 def normalize_file_paths(operations: list[FileOperation]) -> tuple[str, dict[str, str]]:
@@ -375,6 +466,243 @@ class GitRepoBuilder:
                 self._apply_source_commit(item, source_repo)
 
         return self.repo, self.output_dir, self.path_mapping
+
+    def build_from_prompt_responses(
+        self,
+        prompt_responses: list[PromptResponse],
+        author_name: str = "Agent",
+        author_email: str = "agent@local",
+        incremental: bool = True,
+    ) -> tuple[Repo, Path, dict[str, str]]:
+        """Build a git repository using merge-based structure.
+
+        Each prompt becomes a merge commit on main, with individual assistant
+        turns as commits on a feature branch.
+
+        Args:
+            prompt_responses: List of PromptResponse objects.
+            author_name: Name for git commits.
+            author_email: Email for git commits.
+            incremental: If True, skip already-processed operations.
+
+        Returns:
+            Tuple of (repo, repo_path, path_mapping).
+        """
+        existing_repo = self._setup_repo(incremental)
+
+        with self.repo.config_writer() as config:
+            config.set_value("user", "name", author_name)
+            config.set_value("user", "email", author_email)
+
+        # Collect all operations for path normalization
+        all_operations = []
+        for pr in prompt_responses:
+            for turn in pr.turns:
+                all_operations.extend(turn.operations)
+
+        non_delete_ops = [op for op in all_operations if op.operation_type != OperationType.DELETE]
+        _, self.path_mapping = normalize_file_paths(non_delete_ops)
+
+        if not prompt_responses:
+            return self.repo, self.output_dir, self.path_mapping
+
+        # Ensure we have an initial commit
+        if not self._has_commits():
+            self._create_initial_commit()
+
+        for pr in prompt_responses:
+            self._process_prompt_response(pr, incremental)
+
+        return self.repo, self.output_dir, self.path_mapping
+
+    def _has_commits(self) -> bool:
+        """Check if the repository has any commits."""
+        try:
+            _ = self.repo.head.commit
+            return True
+        except ValueError:
+            return False
+
+    def _create_initial_commit(self) -> None:
+        """Create an initial empty commit."""
+        self.repo.index.commit("Initial commit")
+
+    def _process_prompt_response(
+        self, pr: PromptResponse, incremental: bool
+    ) -> None:
+        """Process a single prompt response, creating feature branch and merge."""
+        if not pr.turns:
+            return
+
+        # Filter turns to only those with unprocessed operations
+        turns_to_process = []
+        for turn in pr.turns:
+            has_unprocessed = False
+            for op in turn.operations:
+                if not self._is_operation_processed(op):
+                    has_unprocessed = True
+                    break
+            if has_unprocessed:
+                turns_to_process.append(turn)
+
+        if not turns_to_process:
+            return
+
+        # Remember the current main branch position
+        main_ref = self.repo.head.commit
+
+        # Create a feature branch for this prompt
+        branch_name = f"prompt-{pr.prompt.short_id}"
+        feature_branch = self.repo.create_head(branch_name, main_ref)
+        feature_branch.checkout()
+
+        # Apply each turn as a commit on the feature branch
+        for turn in turns_to_process:
+            self._apply_turn(turn)
+            # Mark all operations in this turn as processed
+            for op in turn.operations:
+                self._processed_ops.add(self._get_operation_id(op))
+
+        # Switch back to main
+        self.repo.heads.main.checkout() if "main" in self.repo.heads else self.repo.heads.master.checkout()
+
+        # Merge the feature branch with a merge commit
+        merge_message = format_prompt_merge_message(pr.prompt, pr.turns)
+        try:
+            self.repo.git.merge(branch_name, "--no-ff", "-m", merge_message)
+        except GitCommandError as e:
+            logger.warning("Merge failed for prompt %s: %s", pr.prompt.short_id, e)
+            # Try to continue despite merge issues
+            try:
+                self.repo.git.merge("--abort")
+            except GitCommandError:
+                pass
+
+        # Delete the feature branch
+        try:
+            self.repo.delete_head(branch_name, force=True)
+        except GitCommandError:
+            pass
+
+    def _apply_turn(self, turn: AssistantTurn) -> None:
+        """Apply all operations in a turn and create a single commit."""
+        if not turn.operations:
+            return
+
+        files_changed = []
+        files_deleted = []
+
+        for operation in turn.operations:
+            changed = self._apply_operation_no_commit(operation)
+            if changed:
+                rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
+                if operation.operation_type == OperationType.DELETE:
+                    files_deleted.append(rel_path)
+                else:
+                    files_changed.append(rel_path)
+
+        if files_changed or files_deleted:
+            # Add changed files (not deleted ones)
+            for rel_path in files_changed:
+                try:
+                    self.repo.index.add([rel_path])
+                except GitCommandError:
+                    pass
+
+            commit_msg = format_turn_commit_message(turn)
+            try:
+                self.repo.index.commit(commit_msg)
+            except GitCommandError as e:
+                logger.warning("Failed to commit turn: %s", e)
+
+    def _apply_operation_no_commit(self, operation: FileOperation) -> bool:
+        """Apply a single operation without creating a commit.
+
+        Returns:
+            True if file was changed, False otherwise.
+        """
+        if operation.operation_type == OperationType.DELETE:
+            return self._apply_delete_no_commit(operation)
+        elif operation.operation_type == OperationType.WRITE:
+            return self._apply_write_no_commit(operation)
+        elif operation.operation_type == OperationType.EDIT:
+            return self._apply_edit_no_commit(operation)
+        return False
+
+    def _apply_write_no_commit(self, operation: FileOperation) -> bool:
+        """Apply a write operation without committing."""
+        rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
+        full_path = self.output_dir / rel_path
+
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(operation.content or "")
+
+        self.file_states[operation.file_path] = operation.content or ""
+        return True
+
+    def _apply_edit_no_commit(self, operation: FileOperation) -> bool:
+        """Apply an edit operation without committing."""
+        rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
+        full_path = self.output_dir / rel_path
+
+        if full_path.exists():
+            content = full_path.read_text()
+        elif operation.file_path in self.file_states:
+            content = self.file_states[operation.file_path]
+        elif operation.original_content:
+            content = operation.original_content
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content)
+            self.repo.index.add([rel_path])
+            self.repo.index.commit("Initial state (pre-session)")
+        else:
+            return False
+
+        old_str = operation.old_string or ""
+        new_str = operation.new_string or ""
+
+        if old_str in content:
+            if operation.replace_all:
+                content = content.replace(old_str, new_str)
+            else:
+                content = content.replace(old_str, new_str, 1)
+
+            full_path.write_text(content)
+            self.file_states[operation.file_path] = content
+            return True
+
+        return False
+
+    def _apply_delete_no_commit(self, operation: FileOperation) -> bool:
+        """Apply a delete operation without committing."""
+        delete_path = operation.file_path
+        files_removed = False
+
+        if operation.recursive:
+            delete_prefix = delete_path.rstrip("/") + "/"
+            for orig_path, rel_path in self.path_mapping.items():
+                if orig_path.startswith(delete_prefix) or orig_path == delete_path:
+                    file_abs = self.output_dir / rel_path
+                    if file_abs.exists():
+                        file_abs.unlink()
+                        try:
+                            self.repo.index.remove([rel_path])
+                        except GitCommandError:
+                            pass
+                        files_removed = True
+        else:
+            if delete_path in self.path_mapping:
+                rel_path = self.path_mapping[delete_path]
+                file_abs = self.output_dir / rel_path
+                if file_abs.exists():
+                    file_abs.unlink()
+                    try:
+                        self.repo.index.remove([rel_path])
+                    except GitCommandError:
+                        pass
+                    files_removed = True
+
+        return files_removed
 
     def _load_file_states_from_repo(self) -> None:
         """Load current file states from existing repo."""

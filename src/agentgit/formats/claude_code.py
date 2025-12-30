@@ -9,9 +9,11 @@ from typing import Any
 
 from agentgit.core import (
     AssistantContext,
+    AssistantTurn,
     FileOperation,
     OperationType,
     Prompt,
+    PromptResponse,
     Transcript,
     TranscriptEntry,
 )
@@ -323,6 +325,95 @@ class ClaudeCodePlugin:
 
         # Return the encoded project directory name
         return relative.parts[0]
+
+    @hookimpl
+    def agentgit_build_prompt_responses(
+        self, transcript: Transcript
+    ) -> list[PromptResponse]:
+        """Build prompt-response structure grouping operations by assistant message."""
+        if transcript.source_format != FORMAT_CLAUDE_CODE_JSONL:
+            return []
+
+        # Build a mapping of tool_id -> operation for quick lookup
+        tool_id_to_op: dict[str, FileOperation] = {}
+        for op in transcript.operations:
+            if op.tool_id:
+                tool_id_to_op[op.tool_id] = op
+
+        prompt_responses: list[PromptResponse] = []
+        current_prompt: Prompt | None = None
+        current_turns: list[AssistantTurn] = []
+
+        for entry in transcript.entries:
+            # New user prompt starts a new PromptResponse
+            if entry.entry_type == "user" and not entry.is_meta:
+                # Save previous prompt response if it had any turns
+                if current_prompt is not None and current_turns:
+                    prompt_responses.append(
+                        PromptResponse(prompt=current_prompt, turns=current_turns)
+                    )
+
+                # Find the matching Prompt object
+                text = self._extract_text_from_content(entry.message.get("content", ""))
+                current_prompt = None
+                for p in transcript.prompts:
+                    if p.timestamp == entry.timestamp:
+                        current_prompt = p
+                        break
+                if current_prompt is None and text:
+                    # Create one if not found (shouldn't happen normally)
+                    current_prompt = Prompt(
+                        text=text, timestamp=entry.timestamp, raw_entry=entry.raw_entry
+                    )
+                current_turns = []
+
+            # Assistant message creates a turn with grouped operations
+            elif entry.entry_type == "assistant" and current_prompt is not None:
+                turn = self._build_assistant_turn(entry, tool_id_to_op)
+                if turn.operations:  # Only add turns that have file operations
+                    current_turns.append(turn)
+
+        # Don't forget the last prompt response
+        if current_prompt is not None and current_turns:
+            prompt_responses.append(
+                PromptResponse(prompt=current_prompt, turns=current_turns)
+            )
+
+        return prompt_responses
+
+    def _build_assistant_turn(
+        self, entry: TranscriptEntry, tool_id_to_op: dict[str, FileOperation]
+    ) -> AssistantTurn:
+        """Build an AssistantTurn from an assistant entry."""
+        operations: list[FileOperation] = []
+        context = AssistantContext()
+
+        content = entry.message.get("content", [])
+        if not isinstance(content, list):
+            return AssistantTurn(timestamp=entry.timestamp, raw_entry=entry.raw_entry)
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+
+            block_type = block.get("type")
+            if block_type == "thinking":
+                context.thinking = block.get("thinking", "")
+                context.timestamp = entry.timestamp
+            elif block_type == "text":
+                context.text = block.get("text", "")
+                context.timestamp = entry.timestamp
+            elif block_type == "tool_use":
+                tool_id = block.get("id", "")
+                if tool_id in tool_id_to_op:
+                    operations.append(tool_id_to_op[tool_id])
+
+        return AssistantTurn(
+            operations=operations,
+            context=context if (context.thinking or context.text) else None,
+            timestamp=entry.timestamp,
+            raw_entry=entry.raw_entry,
+        )
 
     @hookimpl
     def agentgit_discover_transcripts(self, project_path: Path) -> list[Path]:

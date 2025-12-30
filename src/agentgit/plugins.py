@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pluggy
 
 if TYPE_CHECKING:
-    from agentgit.core import FileOperation, Transcript
+    from agentgit.core import FileOperation, PromptResponse, Transcript
 
 hookspec = pluggy.HookspecMarker("agentgit")
 hookimpl = pluggy.HookimplMarker("agentgit")
@@ -81,6 +81,23 @@ class AgentGitSpec:
 
         Returns:
             The enriched FileOperation (may be same object, modified in place).
+        """
+
+    @hookspec
+    def agentgit_build_prompt_responses(
+        self, transcript: Transcript
+    ) -> list[PromptResponse]:
+        """Build the prompt-response structure from a transcript.
+
+        Groups operations by assistant message and organizes them under their
+        triggering prompts. This structure is used for creating the merge-based
+        git history.
+
+        Args:
+            transcript: The parsed transcript with operations.
+
+        Returns:
+            List of PromptResponse objects containing grouped AssistantTurns.
         """
 
     @hookspec

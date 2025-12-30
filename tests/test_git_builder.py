@@ -6,11 +6,20 @@ from pathlib import Path
 import pytest
 from git import Repo
 
-from agentgit.core import FileOperation, OperationType, Prompt
+from agentgit.core import (
+    AssistantContext,
+    AssistantTurn,
+    FileOperation,
+    OperationType,
+    Prompt,
+    PromptResponse,
+)
 from agentgit.git_builder import (
     CommitMetadata,
     GitRepoBuilder,
     format_commit_message,
+    format_prompt_merge_message,
+    format_turn_commit_message,
     get_last_processed_timestamp,
     get_processed_operations,
     normalize_file_paths,
@@ -675,3 +684,331 @@ class TestIncrementalBuild:
         # Should still return valid repo
         assert repo is not None
         assert len(list(repo.iter_commits())) == 1
+
+
+class TestFormatTurnCommitMessage:
+    """Tests for format_turn_commit_message function."""
+
+    def test_uses_summary_line(self):
+        """Should use assistant context text as summary."""
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/path/to/file.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T00:00:00Z",
+                )
+            ],
+            context=AssistantContext(text="Creating a new helper function"),
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        message = format_turn_commit_message(turn)
+        assert message.startswith("Creating a new helper function")
+
+    def test_falls_back_to_operation_summary(self):
+        """Should describe operation when no context."""
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/path/to/helper.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T00:00:00Z",
+                )
+            ],
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        message = format_turn_commit_message(turn)
+        assert message.startswith("Create helper.py")
+
+    def test_includes_file_lists(self):
+        """Should list created and modified files."""
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/path/to/new.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T00:00:00Z",
+                ),
+                FileOperation(
+                    file_path="/path/to/existing.py",
+                    operation_type=OperationType.EDIT,
+                    timestamp="2025-01-01T00:00:01Z",
+                ),
+            ],
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        message = format_turn_commit_message(turn)
+        assert "Created: new.py" in message
+        assert "Modified: existing.py" in message
+
+    def test_includes_trailers(self):
+        """Should include timestamp trailer."""
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/path/to/file.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T00:00:00Z",
+                    tool_id="toolu_001",
+                )
+            ],
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        message = format_turn_commit_message(turn)
+        assert "Timestamp: 2025-01-01T00:00:00Z" in message
+        assert "Tool-Id: toolu_001" in message
+
+
+class TestFormatPromptMergeMessage:
+    """Tests for format_prompt_merge_message function."""
+
+    def test_uses_prompt_first_line(self):
+        """Should use first line of prompt as subject."""
+        prompt = Prompt(
+            text="Add user authentication\nWith login and logout support",
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        message = format_prompt_merge_message(prompt, [])
+        assert message.startswith("Add user authentication")
+
+    def test_truncates_long_subject(self):
+        """Should truncate long first line."""
+        long_text = "x" * 100
+        prompt = Prompt(text=long_text, timestamp="2025-01-01T00:00:00Z")
+        message = format_prompt_merge_message(prompt, [])
+        first_line = message.split("\n")[0]
+        assert len(first_line) <= 72
+        assert first_line.endswith("...")
+
+    def test_includes_full_prompt(self):
+        """Should include full prompt text in body."""
+        prompt = Prompt(
+            text="Add user authentication\nWith login and logout support",
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        message = format_prompt_merge_message(prompt, [])
+        assert f"Prompt #{prompt.short_id}:" in message
+        assert "With login and logout support" in message
+
+    def test_includes_prompt_id_trailer(self):
+        """Should include Prompt-Id trailer."""
+        prompt = Prompt(text="Test", timestamp="2025-01-01T00:00:00Z")
+        message = format_prompt_merge_message(prompt, [])
+        assert f"Prompt-Id: {prompt.prompt_id}" in message
+
+
+class TestBuildFromPromptResponses:
+    """Tests for build_from_prompt_responses method."""
+
+    def test_creates_initial_commit(self, tmp_path):
+        """Should create initial commit if repo is empty."""
+        prompt = Prompt(text="Add hello function", timestamp="2025-01-01T00:00:00Z")
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/hello.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T00:00:00Z",
+                    content="def hello(): pass",
+                    prompt=prompt,
+                )
+            ],
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        pr = PromptResponse(prompt=prompt, turns=[turn])
+
+        builder = GitRepoBuilder(output_dir=tmp_path)
+        repo, _, _ = builder.build_from_prompt_responses([pr])
+
+        # Should have: initial commit + turn commit + merge commit
+        commits = list(repo.iter_commits())
+        assert len(commits) >= 2
+
+    def test_creates_merge_commits(self, tmp_path):
+        """Should create merge commits for each prompt."""
+        prompt = Prompt(text="Add hello function", timestamp="2025-01-01T00:00:00Z")
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/hello.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T00:00:00Z",
+                    content="def hello(): pass",
+                    prompt=prompt,
+                )
+            ],
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        pr = PromptResponse(prompt=prompt, turns=[turn])
+
+        builder = GitRepoBuilder(output_dir=tmp_path)
+        repo, _, _ = builder.build_from_prompt_responses([pr])
+
+        # Check that HEAD is a merge commit
+        head = repo.head.commit
+        assert len(head.parents) == 2 or "Prompt #" in head.message
+
+    def test_groups_multiple_operations_in_turn(self, tmp_path):
+        """Should create single commit for multiple operations in a turn."""
+        prompt = Prompt(text="Setup project", timestamp="2025-01-01T00:00:00Z")
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/file1.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T00:00:00Z",
+                    content="# file1",
+                    prompt=prompt,
+                    tool_id="toolu_001",
+                ),
+                FileOperation(
+                    file_path="/project/file2.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T00:00:01Z",
+                    content="# file2",
+                    prompt=prompt,
+                    tool_id="toolu_002",
+                ),
+            ],
+            context=AssistantContext(text="Creating project files"),
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        pr = PromptResponse(prompt=prompt, turns=[turn])
+
+        builder = GitRepoBuilder(output_dir=tmp_path)
+        repo, _, _ = builder.build_from_prompt_responses([pr])
+
+        # Both files should exist
+        assert (tmp_path / "file1.py").exists()
+        assert (tmp_path / "file2.py").exists()
+
+        # The turn commit should contain both Tool-Ids
+        for commit in repo.iter_commits():
+            if "Creating project files" in commit.message:
+                assert "Tool-Id: toolu_001" in commit.message
+                assert "Tool-Id: toolu_002" in commit.message
+                break
+
+    def test_handles_empty_prompt_responses(self, tmp_path):
+        """Should handle empty list of prompt responses."""
+        builder = GitRepoBuilder(output_dir=tmp_path)
+        repo, path, mapping = builder.build_from_prompt_responses([])
+
+        assert repo is not None
+        assert path == tmp_path
+
+    def test_first_parent_shows_prompts(self, tmp_path):
+        """git log --first-parent should show only prompt merges."""
+        prompt1 = Prompt(text="First task", timestamp="2025-01-01T10:00:00Z")
+        turn1 = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/first.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T10:00:01Z",
+                    content="# first",
+                    prompt=prompt1,
+                    tool_id="toolu_001",
+                )
+            ],
+            timestamp="2025-01-01T10:00:01Z",
+        )
+        pr1 = PromptResponse(prompt=prompt1, turns=[turn1])
+
+        prompt2 = Prompt(text="Second task", timestamp="2025-01-01T11:00:00Z")
+        turn2 = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/second.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T11:00:01Z",
+                    content="# second",
+                    prompt=prompt2,
+                    tool_id="toolu_002",
+                )
+            ],
+            timestamp="2025-01-01T11:00:01Z",
+        )
+        pr2 = PromptResponse(prompt=prompt2, turns=[turn2])
+
+        builder = GitRepoBuilder(output_dir=tmp_path)
+        repo, _, _ = builder.build_from_prompt_responses([pr1, pr2])
+
+        # Get first-parent commits (simulating git log --first-parent)
+        first_parent_commits = []
+        commit = repo.head.commit
+        while commit:
+            first_parent_commits.append(commit)
+            if commit.parents:
+                commit = commit.parents[0]
+            else:
+                break
+
+        # Should have merge commits for each prompt
+        prompt_messages = [c.message for c in first_parent_commits if "Prompt #" in c.message]
+        assert len(prompt_messages) == 2
+
+    def test_edit_operations_in_grouped_build(self, tmp_path):
+        """Should handle edit operations in grouped build."""
+        prompt = Prompt(text="Refactor code", timestamp="2025-01-01T00:00:00Z")
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/code.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T00:00:00Z",
+                    content="def hello(): pass",
+                    tool_id="toolu_001",
+                ),
+                FileOperation(
+                    file_path="/project/code.py",
+                    operation_type=OperationType.EDIT,
+                    timestamp="2025-01-01T00:00:01Z",
+                    old_string="pass",
+                    new_string="return 'hello'",
+                    tool_id="toolu_002",
+                ),
+            ],
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        pr = PromptResponse(prompt=prompt, turns=[turn])
+
+        builder = GitRepoBuilder(output_dir=tmp_path)
+        repo, _, _ = builder.build_from_prompt_responses([pr])
+
+        # File should have edited content
+        assert (tmp_path / "code.py").read_text() == "def hello(): return 'hello'"
+
+    def test_delete_operations_in_grouped_build(self, tmp_path):
+        """Should handle delete operations in grouped build."""
+        prompt = Prompt(text="Cleanup files", timestamp="2025-01-01T00:00:00Z")
+        turn1 = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/temp.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T00:00:00Z",
+                    content="# temp file",
+                    tool_id="toolu_001",
+                )
+            ],
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        turn2 = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/temp.py",
+                    operation_type=OperationType.DELETE,
+                    timestamp="2025-01-01T00:00:01Z",
+                    tool_id="toolu_002",
+                )
+            ],
+            timestamp="2025-01-01T00:00:01Z",
+        )
+        pr = PromptResponse(prompt=prompt, turns=[turn1, turn2])
+
+        builder = GitRepoBuilder(output_dir=tmp_path)
+        repo, _, _ = builder.build_from_prompt_responses([pr])
+
+        # File should be deleted
+        assert not (tmp_path / "temp.py").exists()

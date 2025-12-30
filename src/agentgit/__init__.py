@@ -7,14 +7,21 @@ from typing import TYPE_CHECKING
 
 from agentgit.core import (
     AssistantContext,
+    AssistantTurn,
     FileOperation,
     OperationType,
     Prompt,
+    PromptResponse,
     SourceCommit,
     Transcript,
     TranscriptEntry,
 )
-from agentgit.git_builder import GitRepoBuilder, format_commit_message
+from agentgit.git_builder import (
+    GitRepoBuilder,
+    format_commit_message,
+    format_prompt_merge_message,
+    format_turn_commit_message,
+)
 from agentgit.plugins import get_configured_plugin_manager, hookimpl, hookspec
 
 if TYPE_CHECKING:
@@ -30,6 +37,8 @@ __all__ = [
     "FileOperation",
     "Prompt",
     "AssistantContext",
+    "AssistantTurn",
+    "PromptResponse",
     "TranscriptEntry",
     "Transcript",
     "OperationType",
@@ -41,8 +50,11 @@ __all__ = [
     "parse_transcript",
     "parse_transcripts",
     "build_repo",
+    "build_repo_grouped",
     "transcript_to_repo",
     "format_commit_message",
+    "format_turn_commit_message",
+    "format_prompt_merge_message",
     "discover_transcripts",
     "find_git_root",
 ]
@@ -89,6 +101,11 @@ def parse_transcript(path: Path | str, plugin_type: str | None = None) -> Transc
             break
 
     transcript.operations = enriched_operations
+
+    # Build prompt_responses structure for grouped git history
+    for prompt_responses in pm.hook.agentgit_build_prompt_responses(transcript=transcript):
+        transcript.prompt_responses.extend(prompt_responses)
+
     return transcript
 
 
@@ -162,6 +179,36 @@ def build_repo(
     )
 
 
+def build_repo_grouped(
+    prompt_responses: list[PromptResponse],
+    output_dir: Path | None = None,
+    author_name: str = "Agent",
+    author_email: str = "agent@local",
+) -> tuple[Repo, Path, dict[str, str]]:
+    """Build a git repository using merge-based structure.
+
+    Each prompt becomes a merge commit on main, with individual assistant
+    turns as commits on a feature branch. This creates a two-level view:
+    - `git log --first-parent` shows just the prompts
+    - `git log` shows all individual operations
+
+    Args:
+        prompt_responses: List of PromptResponse objects from transcript.
+        output_dir: Directory for the git repo. If None, creates a temp dir.
+        author_name: Name for git commits.
+        author_email: Email for git commits.
+
+    Returns:
+        Tuple of (repo, repo_path, path_mapping).
+    """
+    builder = GitRepoBuilder(output_dir=output_dir)
+    return builder.build_from_prompt_responses(
+        prompt_responses=prompt_responses,
+        author_name=author_name,
+        author_email=author_email,
+    )
+
+
 def transcript_to_repo(
     transcript_path: Path | str,
     output_dir: Path | None = None,
@@ -169,6 +216,7 @@ def transcript_to_repo(
     author_email: str = "agent@local",
     source_repo: Path | str | None = None,
     plugin_type: str | None = None,
+    use_grouped: bool = True,
 ) -> tuple[Repo, Path, Transcript]:
     """Parse a transcript and build a git repository.
 
@@ -182,21 +230,32 @@ def transcript_to_repo(
         source_repo: Optional source repository to interleave commits from.
         plugin_type: Optional plugin type to use (e.g., 'claude_code').
             If not specified, auto-detects the format.
+        use_grouped: If True (default), use merge-based grouped structure.
+            If False, use flat structure with one commit per operation.
 
     Returns:
         Tuple of (repo, repo_path, transcript).
     """
     transcript = parse_transcript(transcript_path, plugin_type=plugin_type)
 
-    source_repo_path = Path(source_repo) if source_repo else None
-
-    repo, repo_path, _ = build_repo(
-        operations=transcript.operations,
-        output_dir=output_dir,
-        author_name=author_name,
-        author_email=author_email,
-        source_repo=source_repo_path,
-    )
+    # Use grouped build if we have prompt_responses and it's enabled
+    if use_grouped and transcript.prompt_responses:
+        repo, repo_path, _ = build_repo_grouped(
+            prompt_responses=transcript.prompt_responses,
+            output_dir=output_dir,
+            author_name=author_name,
+            author_email=author_email,
+        )
+    else:
+        # Fall back to flat structure
+        source_repo_path = Path(source_repo) if source_repo else None
+        repo, repo_path, _ = build_repo(
+            operations=transcript.operations,
+            output_dir=output_dir,
+            author_name=author_name,
+            author_email=author_email,
+            source_repo=source_repo_path,
+        )
     return repo, repo_path, transcript
 
 

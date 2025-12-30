@@ -143,6 +143,60 @@ def get_agentgit_repo_path() -> Path | None:
     return get_default_output_dir(transcripts[0])
 
 
+def translate_paths_for_agentgit_repo(args: list[str], repo_path: Path) -> list[str]:
+    """Translate local file paths to their equivalents in the agentgit repo.
+
+    The agentgit repo uses normalized paths (common prefix stripped).
+    This function finds matching files by filename.
+    """
+    translated = []
+    for arg in args:
+        # Skip options and things that don't look like paths
+        if arg.startswith("-") or "/" not in arg:
+            translated.append(arg)
+            continue
+
+        # Check if this looks like a local file path
+        local_path = Path(arg)
+        if not local_path.exists():
+            translated.append(arg)
+            continue
+
+        # Try to find this file in the agentgit repo by filename
+        filename = local_path.name
+        matches = list(repo_path.rglob(filename))
+
+        if len(matches) == 1:
+            # Found exactly one match - use the relative path
+            translated.append(str(matches[0].relative_to(repo_path)))
+        elif len(matches) > 1:
+            # Multiple matches - try to find best match by path suffix
+            local_parts = local_path.parts
+            best_match = None
+            best_score = 0
+            for match in matches:
+                match_parts = match.relative_to(repo_path).parts
+                # Count matching path components from the end
+                score = 0
+                for lp, mp in zip(reversed(local_parts), reversed(match_parts)):
+                    if lp == mp:
+                        score += 1
+                    else:
+                        break
+                if score > best_score:
+                    best_score = score
+                    best_match = match
+            if best_match:
+                translated.append(str(best_match.relative_to(repo_path)))
+            else:
+                translated.append(arg)
+        else:
+            # No matches found - keep original
+            translated.append(arg)
+
+    return translated
+
+
 def run_git_passthrough(args: list[str]) -> None:
     """Run a git command on the agentgit repo."""
     import subprocess
@@ -153,9 +207,12 @@ def run_git_passthrough(args: list[str]) -> None:
             "No agentgit repository found. Run 'agentgit' first to create one."
         )
 
+    # Translate local file paths to agentgit repo paths
+    translated_args = translate_paths_for_agentgit_repo(args, repo_path)
+
     # Run git with the provided args in the agentgit repo
     result = subprocess.run(
-        ["git", "-C", str(repo_path)] + args,
+        ["git", "-C", str(repo_path)] + translated_args,
         capture_output=False,
     )
     raise SystemExit(result.returncode)

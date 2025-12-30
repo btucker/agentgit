@@ -115,12 +115,81 @@ class TranscriptEntry:
 
 
 @dataclass
+class AssistantTurn:
+    """A single assistant response containing grouped file operations.
+
+    All operations in a turn are from the same assistant message and
+    should be committed together as one logical change.
+    """
+
+    operations: list[FileOperation] = field(default_factory=list)
+    context: Optional[AssistantContext] = None
+    timestamp: str = ""
+    raw_entry: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def files_modified(self) -> list[str]:
+        """List of files modified in this turn."""
+        return [op.filename for op in self.operations if op.operation_type == OperationType.EDIT]
+
+    @property
+    def files_created(self) -> list[str]:
+        """List of files created in this turn."""
+        return [op.filename for op in self.operations if op.operation_type == OperationType.WRITE]
+
+    @property
+    def files_deleted(self) -> list[str]:
+        """List of files deleted in this turn."""
+        return [op.filename for op in self.operations if op.operation_type == OperationType.DELETE]
+
+    @property
+    def summary_line(self) -> str:
+        """Generate a summary line for commit message."""
+        if self.context and self.context.text:
+            # Use first line of assistant text as summary
+            first_line = self.context.text.split("\n")[0].strip()
+            if len(first_line) > 72:
+                return first_line[:69] + "..."
+            return first_line
+        # Fall back to describing the operations
+        if len(self.operations) == 1:
+            op = self.operations[0]
+            verb = {"write": "Create", "edit": "Edit", "delete": "Delete"}.get(
+                op.operation_type.value, "Modify"
+            )
+            return f"{verb} {op.filename}"
+        return f"Update {len(self.operations)} files"
+
+
+@dataclass
+class PromptResponse:
+    """A user prompt and all assistant turns that responded to it.
+
+    This represents one "unit of work" that becomes a merge commit.
+    """
+
+    prompt: Prompt
+    turns: list[AssistantTurn] = field(default_factory=list)
+
+    @property
+    def all_operations(self) -> list[FileOperation]:
+        """All operations across all turns for this prompt."""
+        ops = []
+        for turn in self.turns:
+            ops.extend(turn.operations)
+        return ops
+
+
+@dataclass
 class Transcript:
     """A complete parsed transcript with all entries and extracted operations."""
 
     entries: list[TranscriptEntry] = field(default_factory=list)
     prompts: list[Prompt] = field(default_factory=list)
     operations: list[FileOperation] = field(default_factory=list)
+
+    # Grouped structure for git history
+    prompt_responses: list[PromptResponse] = field(default_factory=list)
 
     source_path: Optional[str] = None
     source_format: str = ""
@@ -134,6 +203,14 @@ class Transcript:
             if prompt.prompt_id == prompt_id or prompt.short_id == prompt_id:
                 return prompt
         return None
+
+    @property
+    def all_turns(self) -> list[AssistantTurn]:
+        """All assistant turns across all prompts."""
+        turns = []
+        for pr in self.prompt_responses:
+            turns.extend(pr.turns)
+        return turns
 
 
 @dataclass

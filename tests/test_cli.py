@@ -190,3 +190,78 @@ class TestCLI:
         result = runner.invoke(main, ["discover"])
         assert result.exit_code == 0
         assert "No transcripts found" in result.output
+
+
+class TestPathTranslation:
+    """Tests for path translation in git passthrough."""
+
+    def test_translate_paths_single_match(self, tmp_path):
+        """Should translate path when single match found."""
+        from agentgit.cli import translate_paths_for_agentgit_repo
+
+        # Create a file in the "agentgit repo"
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        (repo_path / "cli.py").write_text("# code")
+
+        # Create a file in the "local project"
+        local_dir = tmp_path / "project" / "src" / "agentgit"
+        local_dir.mkdir(parents=True)
+        local_file = local_dir / "cli.py"
+        local_file.write_text("# code")
+
+        args = ["log", str(local_file)]
+        result = translate_paths_for_agentgit_repo(args, repo_path)
+
+        assert result == ["log", "cli.py"]
+
+    def test_translate_paths_no_match(self, tmp_path):
+        """Should keep original path when no match found."""
+        from agentgit.cli import translate_paths_for_agentgit_repo
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+
+        # Local file that doesn't exist in repo
+        local_file = tmp_path / "nonexistent.py"
+        local_file.write_text("# code")
+
+        args = ["log", str(local_file)]
+        result = translate_paths_for_agentgit_repo(args, repo_path)
+
+        assert result == ["log", str(local_file)]
+
+    def test_translate_paths_preserves_options(self, tmp_path):
+        """Should preserve options unchanged."""
+        from agentgit.cli import translate_paths_for_agentgit_repo
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+
+        args = ["log", "--oneline", "-10"]
+        result = translate_paths_for_agentgit_repo(args, repo_path)
+
+        assert result == ["log", "--oneline", "-10"]
+
+    def test_translate_paths_multiple_matches_uses_best(self, tmp_path):
+        """Should use best match when multiple files have same name."""
+        from agentgit.cli import translate_paths_for_agentgit_repo
+
+        # Create repo with two files named cli.py
+        repo_path = tmp_path / "repo"
+        (repo_path / "agentgit").mkdir(parents=True)
+        (repo_path / "other").mkdir(parents=True)
+        (repo_path / "agentgit" / "cli.py").write_text("# code")
+        (repo_path / "other" / "cli.py").write_text("# code")
+
+        # Create local file with matching path structure
+        local_dir = tmp_path / "project" / "src" / "agentgit"
+        local_dir.mkdir(parents=True)
+        local_file = local_dir / "cli.py"
+        local_file.write_text("# code")
+
+        args = ["log", str(local_file)]
+        result = translate_paths_for_agentgit_repo(args, repo_path)
+
+        # Should match agentgit/cli.py because path suffix matches better
+        assert result == ["log", "agentgit/cli.py"]
