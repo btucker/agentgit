@@ -517,21 +517,19 @@ def discover(
 ) -> None:
     """Discover and process transcripts interactively.
 
-    Shows all transcript files found for the current project in a tabular view,
-    grouped by type. Select a transcript to process it into a git repository.
+    Shows all transcript files found for the current project in a tabular view.
+    Enter a number to process a transcript into a git repository.
 
     Use --all to show transcripts from all projects.
     """
-    from collections import defaultdict
-
-    from InquirerPy import inquirer
     from rich.console import Console
     from rich.panel import Panel
-    from rich.tree import Tree
+    from rich.table import Table
 
     from agentgit import discover_transcripts_enriched, find_git_root
 
     console = Console()
+    home = Path.home()
 
     if all_projects:
         # Discover from all projects
@@ -563,60 +561,62 @@ def discover(
             )
             return
 
-    # Group transcripts by plugin type
-    grouped: dict[str, list] = defaultdict(list)
-    for t in transcripts:
-        grouped[t.plugin_name].append(t)
-
     # Display header
     console.print(
         Panel(f"[bold]agentgit discover[/bold] - {header_path}", border_style="blue")
     )
     console.print()
 
-    # Display tables for each type
-    for plugin_name, items in grouped.items():
-        table = Table(title=f"{plugin_name} ({len(items)} transcript{'s' if len(items) != 1 else ''})")
-        table.add_column("#", style="dim", width=4)
-        table.add_column("Project", style="magenta")
-        table.add_column("Name", style="cyan")
-        table.add_column("Modified", style="green")
-        table.add_column("Size", style="yellow", justify="right")
+    # Build unified table
+    count_label = "transcript" if len(transcripts) == 1 else "transcripts"
+    table = Table(title=f"{len(transcripts)} {count_label}")
+    table.add_column("#", style="dim", width=4)
+    table.add_column("Agent", style="magenta")
+    table.add_column("Path", style="cyan")
+    table.add_column("Modified", style="green")
+    table.add_column("Size", style="yellow", justify="right")
 
-        for i, t in enumerate(items, 1):
-            project = t.project_name or "-"
-            table.add_row(str(i), project, t.name, t.mtime_formatted, t.size_human)
+    for i, t in enumerate(transcripts, 1):
+        # Convert path to ~/... format
+        try:
+            rel_path = "~/" + str(t.path.relative_to(home))
+        except ValueError:
+            rel_path = str(t.path)
+        table.add_row(str(i), t.plugin_name, rel_path, t.mtime_formatted, t.size_human)
 
-        console.print(table)
-        console.print()
+    console.print(table)
+    console.print()
 
     # If list-only mode, stop here
     if list_only:
         return
 
-    # Build selection choices
-    choices = []
-    for t in transcripts:
-        label = f"[{t.plugin_name}] {t.name} ({t.mtime_formatted})"
-        choices.append({"name": label, "value": t})
-
-    # Add cancel option
-    choices.append({"name": "[Cancel]", "value": None})
-
-    # Interactive selection
+    # Interactive selection via number input
     try:
-        selected = inquirer.select(
-            message="Select a transcript to process:",
-            choices=choices,
-            default=None,
-        ).execute()
-    except KeyboardInterrupt:
-        console.print("\n[dim]Cancelled.[/dim]")
-        return
-
-    if selected is None:
+        choice = click.prompt(
+            "Enter number to process (or press Enter to cancel)",
+            type=str,
+            default="",
+            show_default=False,
+        )
+    except click.Abort:
         console.print("[dim]Cancelled.[/dim]")
         return
+
+    if not choice.strip():
+        console.print("[dim]Cancelled.[/dim]")
+        return
+
+    try:
+        idx = int(choice)
+        if idx < 1 or idx > len(transcripts):
+            console.print(f"[red]Invalid number. Enter 1-{len(transcripts)}.[/red]")
+            return
+    except ValueError:
+        console.print("[red]Invalid input. Enter a number.[/red]")
+        return
+
+    selected = transcripts[idx - 1]
 
     # Process the selected transcript
     console.print()

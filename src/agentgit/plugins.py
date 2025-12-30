@@ -102,7 +102,7 @@ class AgentGitSpec:
 
     @hookspec
     def agentgit_discover_transcripts(
-        self, project_path: Path | None = None
+        self, project_path: Path | None
     ) -> list[Path]:
         """Discover transcript files for a project.
 

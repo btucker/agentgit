@@ -235,7 +235,7 @@ class DiscoveredTranscript:
 
     path: Path
     format_type: str  # e.g., "claude_code_jsonl", "codex_jsonl"
-    plugin_name: str  # Human-readable name, e.g., "Claude Code"
+    plugin_name: str  # Short name for display, e.g., "Claude Code", "Codex"
     mtime: float  # Modification time as timestamp
     size_bytes: int
     project_name: Optional[str] = None  # Project name from plugin

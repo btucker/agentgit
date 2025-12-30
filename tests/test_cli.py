@@ -175,7 +175,8 @@ class TestCLI:
         result = runner.invoke(main, ["discover", "--list"])
         assert result.exit_code == 0
         assert "1 transcript" in result.output
-        assert "session.jsonl" in result.output
+        # Path column shows ~/.claude/projects/... format
+        assert ".claude/projects" in result.output
 
     def test_discover_no_transcripts(self, runner, tmp_path, monkeypatch):
         """Should show message when no transcripts found."""

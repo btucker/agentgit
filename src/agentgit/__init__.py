@@ -363,16 +363,6 @@ def discover_transcripts_enriched(
 
     pm = get_configured_plugin_manager()
 
-    # Build a mapping of format -> plugin name
-    format_to_plugin: dict[str, str] = {}
-    for plugin_info in pm.hook.agentgit_get_plugin_info():
-        if plugin_info:
-            # Each plugin returns its info; we'll map format patterns to names
-            name = plugin_info.get("name", "unknown")
-            desc = plugin_info.get("description", name)
-            # Store with readable description
-            format_to_plugin[name] = desc
-
     # Collect transcripts from all plugins
     all_paths: list[Path] = []
     for transcripts in pm.hook.agentgit_discover_transcripts(project_path=project_path):
@@ -386,10 +376,9 @@ def discover_transcripts_enriched(
         if not format_type:
             format_type = "unknown"
 
-        # Map format to plugin name
-        # Format strings are like "claude_code_jsonl" -> plugin name is "claude_code"
+        # Create plugin name from format: "claude_code_jsonl" -> "Claude Code"
         plugin_key = format_type.replace("_jsonl", "")
-        plugin_name = format_to_plugin.get(plugin_key, plugin_key.replace("_", " ").title())
+        plugin_name = plugin_key.replace("_", " ").title()
 
         # Get project name and display name from plugins
         project_name = pm.hook.agentgit_get_project_name(transcript_path=path)

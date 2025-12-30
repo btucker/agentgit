@@ -405,33 +405,49 @@ class ClaudeCodePlugin:
 
     @hookimpl
     def agentgit_get_project_name(self, transcript_path: Path) -> str | None:
-        """Get the project name from a Claude Code transcript location.
+        """Get the project name from a Claude Code transcript.
 
-        Decodes the project directory from
-        ~/.claude/projects/-Users-name-project/session.jsonl
-        to extract the project name (last directory in path).
+        Reads the transcript to find the first cwd, then finds the git root
+        (tracing upward if needed) and returns its directory name.
         """
+        from agentgit import find_git_root
+
         transcript_abs = transcript_path.resolve()
         claude_projects_dir = Path.home() / ".claude" / "projects"
 
         # Check if this transcript is in ~/.claude/projects/
         try:
-            relative = transcript_abs.relative_to(claude_projects_dir)
+            transcript_abs.relative_to(claude_projects_dir)
         except ValueError:
             return None
 
-        # Get the encoded project directory name (e.g., "-Users-name-project")
-        encoded = relative.parts[0]
+        # Extract cwd from the transcript
+        cwd = self._extract_cwd_from_transcript(transcript_path)
+        if not cwd:
+            return None
 
-        # Decode: split by "-" and get the last non-empty part as project name
-        # -Users-name-my-project -> my-project (last segment)
-        if encoded.startswith("-"):
-            parts = encoded.split("-")
-            # Find last non-empty part (handles trailing dashes)
-            for part in reversed(parts):
-                if part:
-                    return part
-        return encoded
+        # Find git root (may be cwd itself or a parent directory)
+        project_root = find_git_root(cwd)
+        return project_root.name if project_root else Path(cwd).name
+
+    def _extract_cwd_from_transcript(self, transcript_path: Path) -> str | None:
+        """Extract the first cwd from a Claude Code transcript."""
+        try:
+            with open(transcript_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        cwd = obj.get("cwd")
+                        if cwd:
+                            return cwd
+                    except json.JSONDecodeError:
+                        continue
+        except Exception:
+            pass
+        return None
 
     @hookimpl
     def agentgit_get_display_name(self, transcript_path: Path) -> str | None:
@@ -578,7 +594,7 @@ class ClaudeCodePlugin:
 
     @hookimpl
     def agentgit_discover_transcripts(
-        self, project_path: Path | None = None
+        self, project_path: Path | None
     ) -> list[Path]:
         """Discover Claude Code transcripts for a project.
 

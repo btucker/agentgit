@@ -247,56 +247,37 @@ class TestClaudeCodePlugin:
 
 
 class TestClaudeCodeProjectName:
-    """Tests for Claude Code project name decoding."""
+    """Tests for Claude Code project name extraction from cwd."""
 
-    def test_get_project_name_from_claude_transcript(self, plugin):
-        """Should return encoded directory name from Claude Code transcript location."""
-        # Use actual home directory for this test
-        home_path = Path.home()
-        claude_projects_dir = home_path / ".claude" / "projects"
+    def test_get_project_name_from_cwd(self, plugin, tmp_path, monkeypatch):
+        """Should extract project name from cwd field in transcript."""
+        # Create .claude/projects directory
+        claude_project_dir = tmp_path / ".claude" / "projects" / "-tmp-myproject"
+        claude_project_dir.mkdir(parents=True)
 
-        # Skip if ~/.claude/projects doesn't exist (CI environment)
-        if not claude_projects_dir.exists():
-            pytest.skip("~/.claude/projects doesn't exist")
+        # Create transcript with cwd field
+        transcript = claude_project_dir / "session.jsonl"
+        transcript.write_text(
+            json.dumps({"type": "user", "cwd": "/tmp/myproject"}) + "\n"
+        )
 
-        # Find an existing project directory to test with
-        project_dirs = list(claude_projects_dir.iterdir())
-        if not project_dirs:
-            pytest.skip("No project directories in ~/.claude/projects")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        # Use the first project directory
-        encoded_project = project_dirs[0]
-        if not encoded_project.is_dir():
-            pytest.skip("No valid project directory found")
-
-        # Create a test transcript file
-        test_transcript = encoded_project / "test_agentgit_temp.jsonl"
-        test_transcript.write_text('{"type": "user"}\n')
-
-        try:
-            result = plugin.agentgit_get_project_name(test_transcript)
-            # Should return the decoded project name (last segment of path)
-            # e.g., -Users-name-myproject -> myproject
-            assert result is not None
-            # The result should be a simple name, not the full encoded path
-            assert "-" not in result or len(result.split("-")) == 1
-        finally:
-            # Clean up test file
-            test_transcript.unlink()
+        result = plugin.agentgit_get_project_name(transcript)
+        # Should return directory name from cwd
+        assert result == "myproject"
 
     def test_get_project_name_returns_none_for_non_claude_transcript(self, plugin, tmp_path):
         """Should return None for transcripts not in ~/.claude/projects/."""
         transcript = tmp_path / "session.jsonl"
-        transcript.write_text('{"type": "user"}\n')
+        transcript.write_text('{"type": "user", "cwd": "/tmp/test"}\n')
 
         result = plugin.agentgit_get_project_name(transcript)
         assert result is None
 
-    def test_get_project_name_returns_decoded_project(self, plugin, tmp_path, monkeypatch):
-        """Should return the decoded project name for Claude Code transcripts."""
-        # Create .claude/projects with encoded path
-        encoded_path = "-tmp-myproject"
-        claude_project_dir = tmp_path / ".claude" / "projects" / encoded_path
+    def test_get_project_name_returns_none_without_cwd(self, plugin, tmp_path, monkeypatch):
+        """Should return None if transcript has no cwd field."""
+        claude_project_dir = tmp_path / ".claude" / "projects" / "-tmp-myproject"
         claude_project_dir.mkdir(parents=True)
 
         transcript = claude_project_dir / "session.jsonl"
@@ -305,8 +286,7 @@ class TestClaudeCodeProjectName:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         result = plugin.agentgit_get_project_name(transcript)
-        # Should decode -tmp-myproject to just "myproject"
-        assert result == "myproject"
+        assert result is None
 
 
 class TestClaudeCodeDiscovery:

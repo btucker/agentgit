@@ -434,25 +434,21 @@ class TestCodexProjectName:
         result = plugin.agentgit_get_project_name(transcript)
         assert result is None
 
-    def test_get_project_name_from_cwd(self, plugin, tmp_path, monkeypatch):
-        """Should extract project name from session_cwd in environment_context."""
+    def test_get_project_name_from_session_meta(self, plugin, tmp_path, monkeypatch):
+        """Should extract project name from session_meta cwd."""
         sessions_dir = tmp_path / ".codex" / "sessions" / "2025" / "01" / "15"
         sessions_dir.mkdir(parents=True)
 
-        # Create session with cwd
+        # Create session with session_meta containing cwd
         content = [
-            {"type": "thread.started", "thread_id": "test"},
             {
-                "type": "message",
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": "<environment_context>\n<cwd>/home/user/myproject</cwd>\n</environment_context>",
-                    },
-                    {"type": "input_text", "text": "Hello"},
-                ],
+                "type": "session_meta",
+                "payload": {
+                    "id": "test-session",
+                    "cwd": "/home/user/myproject",
+                },
             },
+            {"type": "thread.started", "thread_id": "test"},
         ]
 
         transcript = sessions_dir / "rollout-2025-01-15T10-30-00-abc123.jsonl"
@@ -465,46 +461,10 @@ class TestCodexProjectName:
         result = plugin.agentgit_get_project_name(transcript)
         assert result == "myproject"
 
-    def test_get_project_name_from_file_paths(self, plugin, tmp_path, monkeypatch):
-        """Should extract project name from file paths in apply_patch."""
-        sessions_dir = tmp_path / ".codex" / "sessions" / "2025" / "01" / "15"
-        sessions_dir.mkdir(parents=True)
-
-        # Create session with file operations but no cwd
-        content = [
-            {"type": "thread.started", "thread_id": "test"},
-            {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Create a file"}],
-            },
-            {
-                "type": "function_call",
-                "call_id": "call_001",
-                "name": "shell",
-                "arguments": json.dumps({
-                    "cmd": [
-                        "apply_patch",
-                        "*** Begin Patch\n*** Add File: /Users/dev/awesome-project/src/main.py\nprint('hello')\n*** End Patch",
-                    ]
-                }),
-            },
-        ]
-
-        transcript = sessions_dir / "rollout-2025-01-15T10-30-00-abc123.jsonl"
-        with open(transcript, "w") as f:
-            for line in content:
-                f.write(json.dumps(line) + "\n")
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        result = plugin.agentgit_get_project_name(transcript)
-        assert result == "awesome-project"
-
-    def test_get_project_name_returns_none_for_empty_session(
+    def test_get_project_name_returns_none_without_session_meta(
         self, plugin, tmp_path, monkeypatch
     ):
-        """Should return None for sessions with no cwd or file paths."""
+        """Should return None for sessions without session_meta cwd."""
         sessions_dir = tmp_path / ".codex" / "sessions" / "2025" / "01" / "15"
         sessions_dir.mkdir(parents=True)
 
@@ -537,7 +497,7 @@ class TestCodexDiscovery:
         assert result == []
 
     def test_discover_finds_transcripts(self, plugin, tmp_path, monkeypatch):
-        """Should find transcript files in sessions directory."""
+        """Should find all transcript files when project_path is None."""
         sessions_dir = tmp_path / ".codex" / "sessions" / "2025" / "01" / "15"
         sessions_dir.mkdir(parents=True)
 
@@ -551,7 +511,8 @@ class TestCodexDiscovery:
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        result = plugin.agentgit_discover_transcripts(tmp_path / "any-project")
+        # With project_path=None, should find all transcripts
+        result = plugin.agentgit_discover_transcripts(project_path=None)
         assert len(result) == 2
         assert all(p.suffix == ".jsonl" for p in result)
         assert all("rollout-" in p.name for p in result)
@@ -573,10 +534,48 @@ class TestCodexDiscovery:
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        result = plugin.agentgit_discover_transcripts(tmp_path / "any-project")
+        # With project_path=None, should find all transcripts
+        result = plugin.agentgit_discover_transcripts(project_path=None)
         assert len(result) == 2
         assert result[0].name == "rollout-new.jsonl"  # Most recent first
         assert result[1].name == "rollout-old.jsonl"
+
+    def test_discover_filters_by_project(self, plugin, tmp_path, monkeypatch):
+        """Should filter transcripts by project path based on cwd in session_meta."""
+        import json
+
+        sessions_dir = tmp_path / ".codex" / "sessions" / "2025" / "01" / "15"
+        sessions_dir.mkdir(parents=True)
+
+        # Create a project with .git directory
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        (project_dir / ".git").mkdir()
+
+        # Create rollout file with matching cwd
+        matching_transcript = sessions_dir / "rollout-matching.jsonl"
+        matching_transcript.write_text(
+            json.dumps({"type": "session_meta", "payload": {"cwd": str(project_dir)}})
+            + "\n"
+        )
+
+        # Create rollout file with different cwd
+        other_transcript = sessions_dir / "rollout-other.jsonl"
+        other_transcript.write_text(
+            json.dumps({"type": "session_meta", "payload": {"cwd": "/other/project"}})
+            + "\n"
+        )
+
+        # Create rollout file with no cwd (should not match)
+        no_cwd_transcript = sessions_dir / "rollout-nocwd.jsonl"
+        no_cwd_transcript.write_text('{"type": "thread.started"}\n')
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # When filtering by project, should only find the matching transcript
+        result = plugin.agentgit_discover_transcripts(project_path=project_dir)
+        assert len(result) == 1
+        assert result[0].name == "rollout-matching.jsonl"
 
 
 class TestCodexEnvironmentContext:
