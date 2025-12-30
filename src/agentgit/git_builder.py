@@ -343,17 +343,33 @@ def merge_timeline(
 class GitRepoBuilder:
     """Builds a git repository from file operations."""
 
-    def __init__(self, output_dir: Path | None = None):
+    def __init__(
+        self,
+        output_dir: Path | None = None,
+        source_repo: Path | None = None,
+        branch: str | None = None,
+        orphan: bool = False,
+    ):
         """Initialize the builder.
 
         Args:
             output_dir: Directory for the git repo. If None, creates a temp dir.
+            source_repo: Path to source repository for worktree mode.
+                When provided with branch, creates a worktree instead of standalone repo.
+            branch: Branch name for worktree mode (e.g., "agentgit/history").
+                Required when source_repo is provided.
+            orphan: If True, create an orphan branch (no common ancestor with main).
+                Only used when source_repo and branch are provided.
         """
         self.output_dir = output_dir
+        self.source_repo_path = source_repo
+        self.branch = branch
+        self.orphan = orphan
         self.repo: Repo | None = None
         self.path_mapping: dict[str, str] = {}
         self.file_states: dict[str, str] = {}
         self._processed_ops: set[str] = set()
+        self._is_worktree = False
 
     def _is_operation_processed(self, operation: FileOperation) -> bool:
         """Check if an operation has already been processed."""
@@ -378,6 +394,10 @@ class GitRepoBuilder:
         Returns:
             True if existing repo was found, False if new repo was created.
         """
+        # Use worktree mode if source_repo and branch are specified
+        if self.source_repo_path and self.branch:
+            return self._setup_worktree(incremental)
+
         if self.output_dir is None:
             self.output_dir = Path(tempfile.mkdtemp(prefix="agentgit_"))
         else:
@@ -392,6 +412,81 @@ class GitRepoBuilder:
         except InvalidGitRepositoryError:
             self.repo = Repo.init(self.output_dir)
             return False
+
+    def _setup_worktree(self, incremental: bool) -> bool:
+        """Set up a git worktree for the agentgit output.
+
+        Creates an orphan branch in the source repo and adds a worktree
+        at output_dir pointing to that branch.
+
+        Args:
+            incremental: If True and worktree exists, load processed operations.
+
+        Returns:
+            True if existing worktree was found, False if new worktree was created.
+        """
+        if self.output_dir is None:
+            raise ValueError("output_dir is required for worktree mode")
+
+        source_repo = Repo(self.source_repo_path)
+        self._is_worktree = True
+
+        # Check if output_dir already exists as a worktree
+        if self.output_dir.exists() and (self.output_dir / ".git").exists():
+            # Worktree already exists
+            self.repo = Repo(self.output_dir)
+            if incremental:
+                self._processed_ops = get_processed_operations(self.repo)
+                self._load_file_states_from_repo()
+            return True
+
+        # Check if branch already exists
+        branch_exists = self.branch in [b.name for b in source_repo.branches]
+
+        if branch_exists:
+            # Branch exists, just add worktree
+            self.output_dir.parent.mkdir(parents=True, exist_ok=True)
+            source_repo.git.worktree("add", str(self.output_dir), self.branch)
+            self.repo = Repo(self.output_dir)
+            if incremental:
+                self._processed_ops = get_processed_operations(self.repo)
+                self._load_file_states_from_repo()
+            return True
+
+        # Create new branch (orphan or regular)
+        self.output_dir.parent.mkdir(parents=True, exist_ok=True)
+
+        if self.orphan:
+            # Create orphan branch using worktree
+            # git worktree add --detach creates a detached HEAD worktree
+            # We then create the orphan branch from there
+            source_repo.git.worktree("add", "--detach", str(self.output_dir))
+            self.repo = Repo(self.output_dir)
+
+            # Now create the orphan branch
+            # git checkout --orphan creates a branch with no parent
+            self.repo.git.checkout("--orphan", self.branch)
+
+            # Clean up any files that might have been checked out
+            # (orphan branch starts with staged files from detached HEAD)
+            try:
+                self.repo.git.rm("-rf", "--cached", ".")
+                # Also remove actual files
+                for item in self.output_dir.iterdir():
+                    if item.name != ".git":
+                        if item.is_file():
+                            item.unlink()
+                        elif item.is_dir():
+                            import shutil
+                            shutil.rmtree(item)
+            except GitCommandError:
+                pass  # May fail if no files to remove
+        else:
+            # Create regular branch from current HEAD
+            source_repo.git.worktree("add", "-b", self.branch, str(self.output_dir))
+            self.repo = Repo(self.output_dir)
+
+        return False
 
     def _get_merged_timeline(
         self,
