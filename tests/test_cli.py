@@ -75,14 +75,6 @@ class TestCLI:
         assert "Found 1 prompts" in result.output
         assert "Create a hello world function" in result.output
 
-    def test_operations_command(self, runner, sample_jsonl):
-        """Should list operations from transcript."""
-        result = runner.invoke(main, ["operations", str(sample_jsonl)])
-        assert result.exit_code == 0
-        assert "Found 1 operations" in result.output
-        assert "WRITE" in result.output
-        assert "/test/hello.py" in result.output
-
     def test_process_command(self, runner, sample_jsonl, tmp_path):
         """Should process transcript to git repo."""
         output_dir = tmp_path / "output"
@@ -124,11 +116,6 @@ class TestCLI:
     def test_prompts_nonexistent_file(self, runner):
         """Should error on nonexistent file."""
         result = runner.invoke(main, ["prompts", "/nonexistent/file.jsonl"])
-        assert result.exit_code != 0
-
-    def test_operations_nonexistent_file(self, runner):
-        """Should error on nonexistent file."""
-        result = runner.invoke(main, ["operations", "/nonexistent/file.jsonl"])
         assert result.exit_code != 0
 
     def test_process_nonexistent_file(self, runner):
@@ -380,3 +367,102 @@ class TestWebCommand:
             assert "First Session" in result.output
             assert "session-1" in result.output
             assert "/path/to/project" in result.output
+
+
+class TestSingleRepoOption:
+    """Tests for --single-repo CLI option."""
+
+    def test_single_repo_option_shown_in_help(self, runner):
+        """Should show --single-repo option in help."""
+        result = runner.invoke(main, ["process", "--help"])
+        assert result.exit_code == 0
+        assert "--single-repo" in result.output
+        assert "--branch" in result.output
+        assert "agentgit" in result.output
+
+    def test_single_repo_requires_git_repo(self, runner, sample_jsonl, tmp_path, monkeypatch):
+        """Should error when --single-repo used outside git repo."""
+        # Use tmp_path as cwd (not a git repo)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(
+            main, ["process", str(sample_jsonl), "--single-repo"]
+        )
+        assert result.exit_code != 0
+        assert "not in a git repository" in result.output
+
+    def test_single_repo_creates_worktree(self, runner, sample_jsonl, tmp_path, monkeypatch):
+        """Should create worktree when --single-repo is used."""
+        from git import Repo
+
+        # Create a source git repo
+        source_repo_path = tmp_path / "source_project"
+        source_repo_path.mkdir()
+        source_repo = Repo.init(source_repo_path)
+        with source_repo.config_writer() as config:
+            config.set_value("user", "name", "Test")
+            config.set_value("user", "email", "test@test.com")
+
+        # Add initial commit
+        (source_repo_path / "README.md").write_text("# Project")
+        source_repo.index.add(["README.md"])
+        source_repo.index.commit("Initial commit")
+
+        # Mock home for output dir
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.chdir(source_repo_path)
+
+        output_dir = tmp_path / ".agentgit" / "projects" / "test"
+        result = runner.invoke(
+            main,
+            ["process", str(sample_jsonl), "--single-repo", "-o", str(output_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "Single-repo mode" in result.output
+        assert "agentgit" in result.output
+
+        # Verify worktree was created
+        assert output_dir.exists()
+        git_file = output_dir / ".git"
+        assert git_file.exists()
+        assert git_file.is_file()  # Worktrees have .git file, not directory
+
+        # Verify branch exists in source repo
+        assert "agentgit" in [b.name for b in source_repo.branches]
+
+    def test_single_repo_custom_branch(self, runner, sample_jsonl, tmp_path, monkeypatch):
+        """Should use custom branch name when specified."""
+        from git import Repo
+
+        source_repo_path = tmp_path / "source_project"
+        source_repo_path.mkdir()
+        source_repo = Repo.init(source_repo_path)
+        with source_repo.config_writer() as config:
+            config.set_value("user", "name", "Test")
+            config.set_value("user", "email", "test@test.com")
+
+        (source_repo_path / "README.md").write_text("# Project")
+        source_repo.index.add(["README.md"])
+        source_repo.index.commit("Initial commit")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.chdir(source_repo_path)
+
+        output_dir = tmp_path / ".agentgit" / "projects" / "test"
+        result = runner.invoke(
+            main,
+            [
+                "process",
+                str(sample_jsonl),
+                "--single-repo",
+                "--branch",
+                "custom/branch",
+                "-o",
+                str(output_dir),
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "custom/branch" in result.output
+        assert "custom/branch" in [b.name for b in source_repo.branches]

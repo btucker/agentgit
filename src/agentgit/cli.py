@@ -317,6 +317,16 @@ def main() -> None:
     is_flag=True,
     help="Watch transcript for changes and auto-commit.",
 )
+@click.option(
+    "--single-repo",
+    is_flag=True,
+    help="Create agentgit output as an orphan branch in the source repo with a worktree.",
+)
+@click.option(
+    "--branch",
+    default="agentgit",
+    help="Branch name for --single-repo mode. Defaults to 'agentgit'.",
+)
 def process(
     transcript: Path | None,
     output: Path | None,
@@ -325,6 +335,8 @@ def process(
     email: str,
     source_repo: Path | None,
     watch: bool,
+    single_repo: bool,
+    branch: str,
 ) -> None:
     """Process a transcript into a git repository.
 
@@ -333,6 +345,9 @@ def process(
 
     With --watch, monitors the transcript file and automatically commits
     new operations as they are added (only works with a single transcript).
+
+    With --single-repo, creates the agentgit output as an orphan branch
+    in the source repository, using a git worktree at the output location.
     """
     transcripts = resolve_transcripts(transcript)
 
@@ -342,9 +357,15 @@ def process(
                 "Watch mode only supports a single transcript. "
                 "Please specify a transcript file explicitly."
             )
-        _run_watch_mode(transcripts[0], output, author, email, source_repo)
+        _run_watch_mode(
+            transcripts[0], output, author, email, source_repo,
+            single_repo=single_repo, branch=branch
+        )
     else:
-        _run_process(transcripts, output, plugin_type, author, email, source_repo)
+        _run_process(
+            transcripts, output, plugin_type, author, email, source_repo,
+            single_repo=single_repo, branch=branch
+        )
 
 
 def _run_process(
@@ -354,13 +375,29 @@ def _run_process(
     author: str,
     email: str,
     source_repo: Path | None,
+    single_repo: bool = False,
+    branch: str = "agentgit",
 ) -> None:
     """Run processing of one or more transcripts."""
-    from agentgit import build_repo, parse_transcripts
+    from agentgit import build_repo, find_git_root, parse_transcripts
 
     # Use default output directory if not specified
     if output is None:
         output = get_default_output_dir(transcripts[0])
+
+    # Handle --single-repo mode
+    worktree_source_repo = None
+    worktree_branch = None
+    if single_repo:
+        # Find the source repo
+        worktree_source_repo = find_git_root()
+        if worktree_source_repo is None:
+            raise click.ClickException(
+                "Cannot use --single-repo: not in a git repository. "
+                "Run from within a git repository or specify --source-repo."
+            )
+        worktree_branch = branch
+        click.echo(f"Single-repo mode: creating orphan branch '{branch}' in {worktree_source_repo}")
 
     if len(transcripts) == 1:
         click.echo(f"Processing transcript: {transcripts[0]}")
@@ -376,10 +413,15 @@ def _run_process(
         output_dir=output,
         author_name=author,
         author_email=email,
-        source_repo=source_repo,
+        source_repo=worktree_source_repo if single_repo else source_repo,
+        branch=worktree_branch,
+        orphan=single_repo,
     )
 
     click.echo(f"Created git repository at: {repo_path}")
+    if single_repo:
+        click.echo(f"  Branch: {branch} (orphan)")
+        click.echo(f"  Linked to: {worktree_source_repo}")
     click.echo(f"  Prompts: {len(parsed.prompts)}")
     click.echo(f"  Operations: {len(parsed.operations)}")
     click.echo(f"  Commits: {len(list(repo.iter_commits()))}")
@@ -391,13 +433,28 @@ def _run_watch_mode(
     author: str,
     email: str,
     source_repo: Path | None,
+    single_repo: bool = False,
+    branch: str = "agentgit",
 ) -> None:
     """Run in watch mode."""
+    from agentgit import find_git_root
     from agentgit.watcher import TranscriptWatcher
 
     # Use default output directory if not specified
     if output is None:
         output = get_default_output_dir(transcript)
+
+    # Handle --single-repo mode
+    worktree_source_repo = None
+    worktree_branch = None
+    if single_repo:
+        worktree_source_repo = find_git_root()
+        if worktree_source_repo is None:
+            raise click.ClickException(
+                "Cannot use --single-repo: not in a git repository."
+            )
+        worktree_branch = branch
+        click.echo(f"Single-repo mode: using orphan branch '{branch}' in {worktree_source_repo}")
 
     click.echo(f"Watching transcript: {transcript}")
     click.echo(f"Output directory: {output}")
@@ -411,7 +468,9 @@ def _run_watch_mode(
         output_dir=output,
         author_name=author,
         author_email=email,
-        source_repo=source_repo,
+        source_repo=worktree_source_repo if single_repo else source_repo,
+        branch=worktree_branch,
+        orphan=single_repo,
         on_update=on_update,
     )
 
@@ -460,28 +519,6 @@ def prompts(transcript: Path | None) -> None:
         click.echo(f"{i}. [{prompt.short_id}] {text_preview}")
         click.echo(f"   Timestamp: {prompt.timestamp}")
         click.echo(f"   Full ID: {prompt.prompt_id}")
-        click.echo()
-
-
-@main.command()
-@click.argument("transcript", type=click.Path(exists=True, path_type=Path), required=False)
-def operations(transcript: Path | None) -> None:
-    """List file operations from a transcript.
-
-    If TRANSCRIPT is not provided, lists operations from all transcripts
-    discovered for the current project.
-    """
-    _, parsed = load_and_display_transcript_header(transcript, "operations")
-    click.echo(f"Found {len(parsed.operations)} operations:\n")
-
-    for i, op in enumerate(parsed.operations, 1):
-        prompt_ref = f"[{op.prompt.short_id}]" if op.prompt else "[no prompt]"
-
-        click.echo(f"{i}. {op.operation_type.value.upper()} {op.file_path}")
-        click.echo(f"   Timestamp: {op.timestamp}")
-        click.echo(f"   Prompt: {prompt_ref}")
-        if op.tool_id:
-            click.echo(f"   Tool ID: {op.tool_id}")
         click.echo()
 
 

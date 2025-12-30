@@ -15,7 +15,6 @@ dependencies = [
     "watchdog>=3.0.0",
     "httpx>=0.25.0",
     "rich>=13.0.0",
-    "InquirerPy>=0.3.4",
 ]
 
 [project.scripts]
