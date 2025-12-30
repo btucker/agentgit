@@ -1,0 +1,128 @@
+"""Pluggy hookspecs for agentgit transcript parsing."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import pluggy
+
+if TYPE_CHECKING:
+    from agentgit.core import FileOperation, Transcript
+
+hookspec = pluggy.HookspecMarker("agentgit")
+hookimpl = pluggy.HookimplMarker("agentgit")
+
+
+class AgentGitSpec:
+    """Hook specifications for agentgit plugins."""
+
+    @hookspec
+    def agentgit_get_plugin_info(self) -> dict[str, str] | None:
+        """Return plugin identification info.
+
+        Returns:
+            Dict with 'name' (short identifier like 'claude_code') and
+            'description' (human-readable description), or None.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_detect_format(self, path: Path) -> str | None:
+        """Detect the format of a transcript file.
+
+        Args:
+            path: Path to the transcript file.
+
+        Returns:
+            Format identifier string (e.g., "claude_code_jsonl") if detected,
+            None if this plugin cannot handle the file.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_parse_transcript(self, path: Path, format: str) -> Transcript | None:
+        """Parse a transcript file into structured data.
+
+        Args:
+            path: Path to the transcript file.
+            format: Format identifier from agentgit_detect_format.
+
+        Returns:
+            Parsed Transcript object, or None if this plugin doesn't handle
+            the specified format.
+        """
+
+    @hookspec
+    def agentgit_extract_operations(self, transcript: Transcript) -> list[FileOperation]:
+        """Extract file operations from a transcript.
+
+        Called after parsing to extract Write/Edit/Delete operations.
+        Multiple plugins can contribute operations.
+
+        Args:
+            transcript: The parsed transcript.
+
+        Returns:
+            List of FileOperation objects found in the transcript.
+        """
+
+    @hookspec
+    def agentgit_enrich_operation(
+        self,
+        operation: FileOperation,
+        transcript: Transcript,
+    ) -> FileOperation:
+        """Enrich a file operation with additional metadata.
+
+        Called for each operation to add prompt context, assistant reasoning, etc.
+
+        Args:
+            operation: The file operation to enrich.
+            transcript: The full transcript for context lookup.
+
+        Returns:
+            The enriched FileOperation (may be same object, modified in place).
+        """
+
+    @hookspec
+    def agentgit_discover_transcripts(self, project_path: Path) -> list[Path]:
+        """Discover transcript files for a project.
+
+        Called when no transcript is explicitly provided to find relevant
+        transcripts based on the project path.
+
+        Args:
+            project_path: Path to the project (usually a git repo root).
+
+        Returns:
+            List of paths to transcript files found for this project.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_get_project_name(self, transcript_path: Path) -> str | None:
+        """Get the project name/identifier that a transcript corresponds to.
+
+        Plugins can decode the project name from transcript location.
+        For example, Claude Code stores transcripts in:
+        ~/.claude/projects/-Users-name-project/session.jsonl
+        which corresponds to project name "-Users-name-project".
+
+        Args:
+            transcript_path: Path to the transcript file.
+
+        Returns:
+            The project name/identifier, or None if this plugin can't determine it.
+        """
+
+
+def get_plugin_manager() -> pluggy.PluginManager:
+    """Create and configure the plugin manager."""
+    pm = pluggy.PluginManager("agentgit")
+    pm.add_hookspecs(AgentGitSpec)
+    return pm
+
+
+def register_builtin_plugins(pm: pluggy.PluginManager) -> None:
+    """Register the built-in format plugins."""
+    from agentgit.formats.claude_code import ClaudeCodePlugin
+
+    pm.register(ClaudeCodePlugin())

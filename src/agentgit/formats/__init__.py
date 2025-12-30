@@ -1,0 +1,1 @@
+"""Format plugins for agentgit."""
