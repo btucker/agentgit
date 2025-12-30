@@ -1048,7 +1048,7 @@ class TestSingleRepoWorktree:
         builder = GitRepoBuilder(
             output_dir=worktree_path,
             source_repo=source_repo_path,
-            branch="agentgit/history",
+            branch="agentgit",
             orphan=True,
         )
         repo, repo_path, mapping = builder.build(ops)
@@ -1058,11 +1058,11 @@ class TestSingleRepoWorktree:
         assert (worktree_path / "hello.py").exists()
 
         # Source repo should have the orphan branch
-        assert "agentgit/history" in [b.name for b in source_repo.branches]
+        assert "agentgit" in [b.name for b in source_repo.branches]
 
         # The orphan branch should have no common ancestors with main
         main_commit = source_repo.heads.main.commit if "main" in source_repo.heads else source_repo.heads.master.commit
-        orphan_branch = source_repo.heads["agentgit/history"]
+        orphan_branch = source_repo.heads["agentgit"]
 
         # Check that they share no common ancestor
         try:
@@ -1103,7 +1103,7 @@ class TestSingleRepoWorktree:
         builder = GitRepoBuilder(
             output_dir=worktree_path,
             source_repo=source_repo_path,
-            branch="agentgit/history",
+            branch="agentgit",
             orphan=True,
         )
         builder.build(ops)
@@ -1147,7 +1147,7 @@ class TestSingleRepoWorktree:
         builder1 = GitRepoBuilder(
             output_dir=worktree_path,
             source_repo=source_repo_path,
-            branch="agentgit/history",
+            branch="agentgit",
             orphan=True,
         )
         repo1, _, _ = builder1.build(ops1)
@@ -1174,7 +1174,7 @@ class TestSingleRepoWorktree:
         builder2 = GitRepoBuilder(
             output_dir=worktree_path,
             source_repo=source_repo_path,
-            branch="agentgit/history",
+            branch="agentgit",
             orphan=True,
         )
         repo2, _, _ = builder2.build(ops2)
@@ -1213,7 +1213,7 @@ class TestSingleRepoWorktree:
         builder1 = GitRepoBuilder(
             output_dir=worktree_path,
             source_repo=source_repo_path,
-            branch="agentgit/history",
+            branch="agentgit",
             orphan=True,
         )
         builder1.build(ops)
@@ -1222,7 +1222,7 @@ class TestSingleRepoWorktree:
         builder2 = GitRepoBuilder(
             output_dir=worktree_path,
             source_repo=source_repo_path,
-            branch="agentgit/history",
+            branch="agentgit",
             orphan=True,
         )
         repo, path, _ = builder2.build(ops)
@@ -1244,7 +1244,7 @@ class TestSingleRepoWorktree:
         source_repo.index.commit("Initial")
 
         # Create the orphan branch manually in source repo
-        source_repo.git.checkout("--orphan", "agentgit/history")
+        source_repo.git.checkout("--orphan", "agentgit")
         (source_repo_path / "existing.py").write_text("# existing")
         source_repo.index.add(["existing.py"])
         source_repo.index.commit("Pre-existing commit on orphan branch")
@@ -1267,7 +1267,7 @@ class TestSingleRepoWorktree:
         builder = GitRepoBuilder(
             output_dir=worktree_path,
             source_repo=source_repo_path,
-            branch="agentgit/history",
+            branch="agentgit",
             orphan=True,
         )
         repo, _, _ = builder.build(ops)

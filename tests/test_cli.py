@@ -389,7 +389,7 @@ class TestSingleRepoOption:
         assert result.exit_code == 0
         assert "--single-repo" in result.output
         assert "--branch" in result.output
-        assert "agentgit/history" in result.output
+        assert "agentgit" in result.output
 
     def test_single_repo_requires_git_repo(self, runner, sample_jsonl, tmp_path, monkeypatch):
         """Should error when --single-repo used outside git repo."""
@@ -431,7 +431,7 @@ class TestSingleRepoOption:
 
         assert result.exit_code == 0
         assert "Single-repo mode" in result.output
-        assert "agentgit/history" in result.output
+        assert "agentgit" in result.output
 
         # Verify worktree was created
         assert output_dir.exists()
@@ -440,7 +440,7 @@ class TestSingleRepoOption:
         assert git_file.is_file()  # Worktrees have .git file, not directory
 
         # Verify branch exists in source repo
-        assert "agentgit/history" in [b.name for b in source_repo.branches]
+        assert "agentgit" in [b.name for b in source_repo.branches]
 
     def test_single_repo_custom_branch(self, runner, sample_jsonl, tmp_path, monkeypatch):
         """Should use custom branch name when specified."""

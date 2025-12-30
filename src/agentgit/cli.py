@@ -324,8 +324,8 @@ def main() -> None:
 )
 @click.option(
     "--branch",
-    default="agentgit/history",
-    help="Branch name for --single-repo mode. Defaults to 'agentgit/history'.",
+    default="agentgit",
+    help="Branch name for --single-repo mode. Defaults to 'agentgit'.",
 )
 def process(
     transcript: Path | None,
@@ -376,7 +376,7 @@ def _run_process(
     email: str,
     source_repo: Path | None,
     single_repo: bool = False,
-    branch: str = "agentgit/history",
+    branch: str = "agentgit",
 ) -> None:
     """Run processing of one or more transcripts."""
     from agentgit import build_repo, find_git_root, parse_transcripts
@@ -434,7 +434,7 @@ def _run_watch_mode(
     email: str,
     source_repo: Path | None,
     single_repo: bool = False,
-    branch: str = "agentgit/history",
+    branch: str = "agentgit",
 ) -> None:
     """Run in watch mode."""
     from agentgit import find_git_root
