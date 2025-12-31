@@ -15,7 +15,7 @@ from agentgit import parse_transcript
 from agentgit.git_builder import GitRepoBuilder
 
 if TYPE_CHECKING:
-    from agentgit.ai_commit import AICommitConfig
+    from agentgit.enhance import EnhanceConfig
 
 
 class TranscriptWatcher:
@@ -31,7 +31,7 @@ class TranscriptWatcher:
         branch: str | None = None,
         orphan: bool = False,
         on_update: Callable[[int], None] | None = None,
-        ai_config: "AICommitConfig | None" = None,
+        enhance_config: "EnhanceConfig | None" = None,
     ):
         """Initialize the watcher.
 
@@ -45,7 +45,7 @@ class TranscriptWatcher:
             branch: Branch name for worktree mode (e.g., "agentgit/history").
             orphan: If True, create an orphan branch.
             on_update: Optional callback called with number of new commits after each update.
-            ai_config: Optional AI configuration for generating commit messages.
+            enhance_config: Optional configuration for generating commit messages.
         """
         self.transcript_path = transcript_path
         self.output_dir = output_dir
@@ -55,7 +55,7 @@ class TranscriptWatcher:
         self.branch = branch
         self.orphan = orphan
         self.on_update = on_update
-        self.ai_config = ai_config
+        self.enhance_config = enhance_config
         self._observer: Observer | None = None
         self._last_mtime: float = 0
         self._lock = threading.Lock()
@@ -71,7 +71,7 @@ class TranscriptWatcher:
                 source_repo=self.source_repo if self.branch else None,
                 branch=self.branch,
                 orphan=self.orphan,
-                ai_config=self.ai_config,
+                enhance_config=self.enhance_config,
             )
 
             # Get commit count before

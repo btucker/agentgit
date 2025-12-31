@@ -23,7 +23,7 @@ from agentgit.core import (
 )
 
 if TYPE_CHECKING:
-    from agentgit.ai_commit import AICommitConfig
+    from agentgit.enhance import EnhanceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ def get_last_processed_timestamp(repo: Repo) -> str | None:
 
 def format_commit_message(
     operation: FileOperation,
-    ai_config: Optional["AICommitConfig"] = None,
+    enhance_config: Optional["EnhanceConfig"] = None,
 ) -> str:
     """Format a rich commit message for a file operation.
 
@@ -140,14 +140,14 @@ def format_commit_message(
 
     Args:
         operation: The file operation to format.
-        ai_config: Optional AI config for generating smarter commit messages.
+        enhance_config: Optional AI config for generating smarter commit messages.
     """
     # Try AI-generated subject if configured
     subject = None
-    if ai_config and ai_config.enabled:
-        from agentgit.ai_commit import generate_operation_commit_message
+    if enhance_config and enhance_config.enabled:
+        from agentgit.enhance import generate_operation_commit_message
 
-        subject = generate_operation_commit_message(operation, ai_config)
+        subject = generate_operation_commit_message(operation, enhance_config)
 
     # Fall back to default format
     if not subject:
@@ -192,7 +192,7 @@ def format_commit_message(
 
 def format_turn_commit_message(
     turn: AssistantTurn,
-    ai_config: Optional["AICommitConfig"] = None,
+    enhance_config: Optional["EnhanceConfig"] = None,
 ) -> str:
     """Format a commit message for an assistant turn (grouped operations).
 
@@ -207,18 +207,18 @@ def format_turn_commit_message(
 
     Args:
         turn: The assistant turn to format.
-        ai_config: Optional AI config for generating smarter commit messages.
+        enhance_config: Optional AI config for generating smarter commit messages.
     """
     # Try AI-generated subject if configured
     subject = None
-    if ai_config and ai_config.enabled:
-        from agentgit.ai_commit import generate_turn_commit_message
+    if enhance_config and enhance_config.enabled:
+        from agentgit.enhance import generate_turn_commit_message
 
         # Get the prompt from the first operation if available
         prompt = None
         if turn.operations and turn.operations[0].prompt:
             prompt = turn.operations[0].prompt
-        subject = generate_turn_commit_message(turn, prompt, ai_config)
+        subject = generate_turn_commit_message(turn, prompt, enhance_config)
 
     # Fall back to default format
     if not subject:
@@ -265,7 +265,7 @@ def format_turn_commit_message(
 def format_prompt_merge_message(
     prompt: Prompt,
     turns: list[AssistantTurn],
-    ai_config: Optional["AICommitConfig"] = None,
+    enhance_config: Optional["EnhanceConfig"] = None,
 ) -> str:
     """Format a merge commit message for a prompt.
 
@@ -279,14 +279,14 @@ def format_prompt_merge_message(
     Args:
         prompt: The user prompt.
         turns: All assistant turns that responded to the prompt.
-        ai_config: Optional AI config for generating smarter commit messages.
+        enhance_config: Optional AI config for generating smarter commit messages.
     """
     # Try AI-generated subject if configured
     subject = None
-    if ai_config and ai_config.enabled:
-        from agentgit.ai_commit import generate_merge_commit_message
+    if enhance_config and enhance_config.enabled:
+        from agentgit.enhance import generate_merge_commit_message
 
-        subject = generate_merge_commit_message(prompt, turns, ai_config)
+        subject = generate_merge_commit_message(prompt, turns, enhance_config)
 
     # Fall back to default format
     if not subject:
@@ -404,7 +404,7 @@ class GitRepoBuilder:
         source_repo: Path | None = None,
         branch: str | None = None,
         orphan: bool = False,
-        ai_config: Optional["AICommitConfig"] = None,
+        enhance_config: Optional["EnhanceConfig"] = None,
     ):
         """Initialize the builder.
 
@@ -416,13 +416,13 @@ class GitRepoBuilder:
                 Required when source_repo is provided.
             orphan: If True, create an orphan branch (no common ancestor with main).
                 Only used when source_repo and branch are provided.
-            ai_config: Optional AI configuration for generating commit messages.
+            enhance_config: Optional AI configuration for generating commit messages.
         """
         self.output_dir = output_dir
         self.source_repo_path = source_repo
         self.branch = branch
         self.orphan = orphan
-        self.ai_config = ai_config
+        self.enhance_config = enhance_config
         self.repo: Repo | None = None
         self.path_mapping: dict[str, str] = {}
         self.file_states: dict[str, str] = {}

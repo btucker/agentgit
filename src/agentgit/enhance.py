@@ -1,4 +1,4 @@
-"""AI enhancement configuration and utilities for agentgit."""
+"""Enhancement configuration and utilities for agentgit."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ DEFAULT_MODEL = "haiku"
 
 
 @dataclass
-class AICommitConfig:
-    """Configuration for AI-enhanced commit message generation."""
+class EnhanceConfig:
+    """Configuration for enhanced commit message generation."""
 
     enhancer: str = DEFAULT_ENHANCER
     model: str = DEFAULT_MODEL
@@ -25,7 +25,7 @@ class AICommitConfig:
 
 
 def get_available_enhancers() -> list[dict[str, str]]:
-    """Get list of available AI enhancer plugins.
+    """Get list of available enhancer plugins.
 
     Returns:
         List of dicts with 'name' and 'description' keys.
@@ -40,19 +40,19 @@ def get_available_enhancers() -> list[dict[str, str]]:
 
 def generate_operation_commit_message(
     operation: "FileOperation",
-    config: AICommitConfig | None = None,
+    config: EnhanceConfig | None = None,
 ) -> str | None:
-    """Generate an AI-enhanced commit message for a single file operation.
+    """Generate an enhanced commit message for a single file operation.
 
     Args:
         operation: The file operation to generate a message for.
-        config: Optional configuration for AI generation.
+        config: Optional configuration for enhancement.
 
     Returns:
         Generated commit message subject line, or None if generation fails.
     """
     if config is None:
-        config = AICommitConfig()
+        config = EnhanceConfig()
 
     if not config.enabled:
         return None
@@ -68,20 +68,20 @@ def generate_operation_commit_message(
 def generate_turn_commit_message(
     turn: "AssistantTurn",
     prompt: "Prompt | None" = None,
-    config: AICommitConfig | None = None,
+    config: EnhanceConfig | None = None,
 ) -> str | None:
-    """Generate an AI-enhanced commit message for an assistant turn.
+    """Generate an enhanced commit message for an assistant turn.
 
     Args:
         turn: The assistant turn containing grouped operations.
         prompt: Optional user prompt that triggered this turn.
-        config: Optional configuration for AI generation.
+        config: Optional configuration for enhancement.
 
     Returns:
         Generated commit message subject line, or None if generation fails.
     """
     if config is None:
-        config = AICommitConfig()
+        config = EnhanceConfig()
 
     if not config.enabled:
         return None
@@ -98,20 +98,20 @@ def generate_turn_commit_message(
 def generate_merge_commit_message(
     prompt: "Prompt",
     turns: list["AssistantTurn"],
-    config: AICommitConfig | None = None,
+    config: EnhanceConfig | None = None,
 ) -> str | None:
-    """Generate an AI-enhanced merge commit message for a user prompt.
+    """Generate an enhanced merge commit message for a user prompt.
 
     Args:
         prompt: The user prompt.
         turns: All assistant turns that responded to the prompt.
-        config: Optional configuration for AI generation.
+        config: Optional configuration for enhancement.
 
     Returns:
         Generated commit message subject line, or None if generation fails.
     """
     if config is None:
-        config = AICommitConfig()
+        config = EnhanceConfig()
 
     if not config.enabled:
         return None

@@ -28,7 +28,7 @@ from agentgit.plugins import get_configured_plugin_manager, hookimpl, hookspec
 if TYPE_CHECKING:
     from git import Repo
 
-    from agentgit.ai_commit import AICommitConfig
+    from agentgit.enhance import EnhanceConfig
 
 __version__ = "0.1.0"
 
@@ -164,7 +164,7 @@ def build_repo(
     source_repo: Path | None = None,
     branch: str | None = None,
     orphan: bool = False,
-    ai_config: "AICommitConfig | None" = None,
+    enhance_config: "EnhanceConfig | None" = None,
 ) -> tuple[Repo, Path, dict[str, str]]:
     """Build a git repository from file operations.
 
@@ -177,7 +177,7 @@ def build_repo(
             creates a worktree instead of a standalone repo.
         branch: Branch name for worktree mode (e.g., "agentgit/history").
         orphan: If True, create an orphan branch (no common ancestor with main).
-        ai_config: Optional AI configuration for generating commit messages.
+        enhance_config: Optional configuration for generating commit messages.
 
     Returns:
         Tuple of (repo, repo_path, path_mapping).
@@ -187,7 +187,7 @@ def build_repo(
         source_repo=source_repo if branch else None,
         branch=branch,
         orphan=orphan,
-        ai_config=ai_config,
+        enhance_config=enhance_config,
     )
     return builder.build(
         operations=operations,

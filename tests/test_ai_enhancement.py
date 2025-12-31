@@ -1,25 +1,25 @@
-"""Tests for AI enhancement functionality."""
+"""Tests for enhancement functionality."""
 
 import pytest
 
-from agentgit.ai_commit import AICommitConfig, get_available_enhancers
+from agentgit.enhance import EnhanceConfig, get_available_enhancers
 from agentgit.core import AssistantTurn, FileOperation, OperationType, Prompt
 from agentgit.enhancers.claude_cli import ClaudeCLIEnhancerPlugin
 
 
-class TestAICommitConfig:
-    """Tests for AICommitConfig."""
+class TestEnhanceConfig:
+    """Tests for EnhanceConfig."""
 
     def test_default_config(self):
         """Should have sensible defaults."""
-        config = AICommitConfig()
+        config = EnhanceConfig()
         assert config.enhancer == "claude_cli"
         assert config.model == "haiku"
         assert config.enabled is True
 
     def test_custom_config(self):
         """Should accept custom values."""
-        config = AICommitConfig(enhancer="codex", model="gpt-4", enabled=False)
+        config = EnhanceConfig(enhancer="codex", model="gpt-4", enabled=False)
         assert config.enhancer == "codex"
         assert config.model == "gpt-4"
         assert config.enabled is False
@@ -47,7 +47,7 @@ class TestGetAvailableEnhancers:
 class TestClaudeCLIEnhancerPlugin:
     """Tests for ClaudeCLIEnhancerPlugin."""
 
-    def test_get_ai_enhancer_info(self):
+    def test_get_enhancer_info(self):
         """Should return plugin info."""
         plugin = ClaudeCLIEnhancerPlugin()
         info = plugin.agentgit_get_ai_enhancer_info()
@@ -172,7 +172,7 @@ class TestContextBuilders:
         assert truncated.endswith("...")
 
     def test_clean_message(self):
-        """Should clean up AI-generated message."""
+        """Should clean up generated message."""
         from agentgit.enhancers.claude_cli import _clean_message
 
         # Remove quotes
