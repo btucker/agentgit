@@ -228,11 +228,15 @@ def resolve_agentgit_repo(ctx: click.Context) -> Path:
     return repo
 
 
-def run_git_passthrough(args: list[str]) -> None:
+def run_git_passthrough(args: list[str], project: Path | None = None) -> None:
     """Run a git command on the agentgit repo."""
     import subprocess
 
-    repo_path = get_agentgit_repo_path()
+    if project is not None:
+        repo_path = Path.home() / ".agentgit" / "projects" / encode_path_as_name(project)
+    else:
+        repo_path = get_agentgit_repo_path()
+
     if not repo_path or not repo_path.exists():
         raise click.ClickException(
             "No agentgit repository found. Run 'agentgit' first to create one."
@@ -282,7 +286,22 @@ class DefaultGroup(click.Group):
             return super().parse_args(ctx, args)
 
         # Otherwise, treat as git passthrough
-        run_git_passthrough(args)
+        # Extract --project from args if present
+        project = None
+        filtered_args = []
+        i = 0
+        while i < len(args):
+            if args[i] == "--project" and i + 1 < len(args):
+                project = Path(args[i + 1])
+                i += 2
+            elif args[i].startswith("--project="):
+                project = Path(args[i].split("=", 1)[1])
+                i += 1
+            else:
+                filtered_args.append(args[i])
+                i += 1
+
+        run_git_passthrough(filtered_args, project=project)
         return []  # Never reached due to SystemExit
 
 
@@ -363,7 +382,9 @@ def main(ctx: click.Context, project: Path | None) -> None:
     default="agentgit",
     help="Branch name for --single-repo mode. Defaults to 'agentgit'.",
 )
+@click.pass_context
 def process(
+    ctx: click.Context,
     transcript: Path | None,
     output: Path | None,
     plugin_type: str | None,
@@ -387,6 +408,12 @@ def process(
     """
     transcripts = resolve_transcripts(transcript)
 
+    # Resolve project from global --project option
+    from agentgit import find_git_root
+    project = ctx.obj.get("project") if ctx.obj else None
+    if project is None:
+        project = find_git_root()
+
     if watch:
         if len(transcripts) > 1:
             raise click.ClickException(
@@ -395,12 +422,12 @@ def process(
             )
         _run_watch_mode(
             transcripts[0], output, author, email, source_repo,
-            single_repo=single_repo, branch=branch
+            single_repo=single_repo, branch=branch, project=project
         )
     else:
         _run_process(
             transcripts, output, plugin_type, author, email, source_repo,
-            single_repo=single_repo, branch=branch
+            single_repo=single_repo, branch=branch, project=project
         )
 
 
@@ -413,9 +440,10 @@ def _run_process(
     source_repo: Path | None,
     single_repo: bool = False,
     branch: str = "agentgit",
+    project: Path | None = None,
 ) -> None:
     """Run processing of one or more transcripts."""
-    from agentgit import build_repo, find_git_root, parse_transcripts
+    from agentgit import build_repo, parse_transcripts
 
     # Use default output directory if not specified
     if output is None:
@@ -425,13 +453,12 @@ def _run_process(
     worktree_source_repo = None
     worktree_branch = None
     if single_repo:
-        # Find the source repo
-        worktree_source_repo = find_git_root()
-        if worktree_source_repo is None:
+        if project is None:
             raise click.ClickException(
                 "Cannot use --single-repo: not in a git repository. "
-                "Run from within a git repository or specify --source-repo."
+                "Run from within a git repository or use --project."
             )
+        worktree_source_repo = project
         worktree_branch = branch
         click.echo(f"Single-repo mode: creating orphan branch '{branch}' in {worktree_source_repo}")
 
@@ -471,9 +498,9 @@ def _run_watch_mode(
     source_repo: Path | None,
     single_repo: bool = False,
     branch: str = "agentgit",
+    project: Path | None = None,
 ) -> None:
     """Run in watch mode."""
-    from agentgit import find_git_root
     from agentgit.watcher import TranscriptWatcher
 
     # Use default output directory if not specified
@@ -484,11 +511,12 @@ def _run_watch_mode(
     worktree_source_repo = None
     worktree_branch = None
     if single_repo:
-        worktree_source_repo = find_git_root()
-        if worktree_source_repo is None:
+        if project is None:
             raise click.ClickException(
-                "Cannot use --single-repo: not in a git repository."
+                "Cannot use --single-repo: not in a git repository. "
+                "Run from within a git repository or use --project."
             )
+        worktree_source_repo = project
         worktree_branch = branch
         click.echo(f"Single-repo mode: using orphan branch '{branch}' in {worktree_source_repo}")
 
@@ -538,11 +566,6 @@ def _run_watch_mode(
 
 @main.command()
 @click.option(
-    "--project",
-    type=click.Path(exists=True, path_type=Path),
-    help="Project path to discover transcripts for. Defaults to current git repo.",
-)
-@click.option(
     "--all",
     "all_projects",
     is_flag=True,
@@ -560,8 +583,9 @@ def _run_watch_mode(
     type=str,
     help="Filter by transcript type (e.g., claude_code, codex).",
 )
+@click.pass_context
 def discover(
-    project: Path | None,
+    ctx: click.Context,
     all_projects: bool,
     list_only: bool,
     filter_type: str | None,
@@ -577,7 +601,7 @@ def discover(
     from rich.panel import Panel
     from rich.table import Table
 
-    from agentgit import discover_transcripts_enriched, find_git_root
+    from agentgit import discover_transcripts_enriched
 
     console = Console()
     home = Path.home()
@@ -587,12 +611,7 @@ def discover(
         transcripts = discover_transcripts_enriched(all_projects=True)
         header_path = "all projects"
     else:
-        if project is None:
-            project = find_git_root()
-            if project is None:
-                raise click.ClickException(
-                    "Not in a git repository. Use --project to specify a project path, or --all for all projects."
-                )
+        project = resolve_project(ctx)
         transcripts = discover_transcripts_enriched(project)
         header_path = str(project)
 
