@@ -156,7 +156,22 @@ output/
 
 ### Phase 4: CLI Integration
 
-**Extend existing `agentgit process` command with `--gui` flag:**
+**Two ways to access the GUI:**
+
+#### 1. Standalone `agentgit gui` command (view existing repo)
+
+```bash
+# View an already-built agentgit repo
+agentgit gui ./output-repo
+
+# With custom port
+agentgit gui ./output-repo --port 3000
+
+# Don't auto-open browser
+agentgit gui ./output-repo --no-open
+```
+
+#### 2. `--gui` flag on `process` command (build + view)
 
 ```bash
 # Existing: watch transcript, rebuild git repo (CLI output only)
@@ -175,8 +190,8 @@ agentgit process session.jsonl --watch --gui --port 3000
 agentgit process session.jsonl --gui --no-open
 ```
 
-**New options for `process` command:**
-- `--gui` - Start web server and serve the viewer
+**CLI options:**
+- `--gui` - Start web server and serve the viewer (on `process` command)
 - `--port` - Server port (default: 8080)
 - `--no-open` - Don't auto-open browser
 
