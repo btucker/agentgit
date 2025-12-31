@@ -10,8 +10,8 @@ from agentgit.plugins import get_configured_plugin_manager
 if TYPE_CHECKING:
     from agentgit.core import AssistantTurn, FileOperation, Prompt
 
-# Default enhancer to use
-DEFAULT_ENHANCER = "claude_cli"
+# Default enhancer to use (rules = no AI, claude_cli = AI-powered)
+DEFAULT_ENHANCER = "rules"
 DEFAULT_MODEL = "haiku"
 
 

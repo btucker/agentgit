@@ -303,12 +303,12 @@ def main() -> None:
 @click.option(
     "--enhance",
     is_flag=True,
-    help="Use AI to generate better commit messages.",
+    help="Enhance commit messages using the specified enhancer.",
 )
 @click.option(
     "--enhancer",
-    default="claude_cli",
-    help="Enhancer plugin to use (e.g., 'claude_cli'). Defaults to 'claude_cli'.",
+    default="rules",
+    help="Enhancer plugin ('rules' for heuristics, 'claude_cli' for AI). Defaults to 'rules'.",
 )
 @click.option(
     "--enhance-model",
@@ -340,8 +340,8 @@ def process(
     With --single-repo, creates the agentgit output as an orphan branch
     in the source repository, using a git worktree at the output location.
 
-    With --enhance, uses AI to generate better commit messages that
-    capture the intent and purpose of changes.
+    With --enhance, generates better commit messages. Use --enhancer to choose
+    between 'rules' (heuristics, no AI) or 'claude_cli' (AI-powered).
     """
     transcripts = resolve_transcripts(transcript)
 
@@ -374,7 +374,7 @@ def _run_process(
     single_repo: bool = False,
     branch: str = "agentgit",
     enhance: bool = False,
-    enhancer: str = "claude_cli",
+    enhancer: str = "rules",
     enhance_model: str = "haiku",
 ) -> None:
     """Run processing of one or more transcripts."""
@@ -443,7 +443,7 @@ def _run_watch_mode(
     single_repo: bool = False,
     branch: str = "agentgit",
     enhance: bool = False,
-    enhancer: str = "claude_cli",
+    enhancer: str = "rules",
     enhance_model: str = "haiku",
 ) -> None:
     """Run in watch mode."""

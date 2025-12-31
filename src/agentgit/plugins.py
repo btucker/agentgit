@@ -235,7 +235,9 @@ def register_builtin_plugins(pm: pluggy.PluginManager) -> None:
 def register_enhancer_plugins(pm: pluggy.PluginManager) -> None:
     """Register the built-in AI enhancer plugins."""
     from agentgit.enhancers.claude_cli import ClaudeCLIEnhancerPlugin
+    from agentgit.enhancers.rules import RulesEnhancerPlugin
 
+    pm.register(RulesEnhancerPlugin())
     pm.register(ClaudeCLIEnhancerPlugin())
 
 
