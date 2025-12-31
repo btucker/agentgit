@@ -26,9 +26,12 @@ dev = [
     "pytest-cov>=4.0",
 ]
 
-[project.entry-points."agentgit"]
-claude_code = "agentgit.formats.claude_code:ClaudeCodePlugin"
-codex = "agentgit.formats.codex:CodexPlugin"
+# Entry points for external plugins only
+# Built-in plugins (claude_code, codex) are registered directly in plugins.py
+# External plugins should define their entry points like:
+#   [project.entry-points."agentgit"]
+#   my_agent = "my_package:MyAgentPlugin"
+# See AGENT_PLUGINS.md for details on creating plugins
 
 [build-system]
 requires = ["uv_build>=0.9.1,<0.10.0"]

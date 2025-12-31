@@ -633,20 +633,114 @@ def discover(
         raise click.ClickException(str(e))
 
 
-@main.command()
-def agents() -> None:
-    """List supported agent transcript formats."""
-    from agentgit.plugins import get_configured_plugin_manager
+@main.group(invoke_without_command=True)
+@click.pass_context
+def agents(ctx: click.Context) -> None:
+    """Manage agent plugins.
 
-    pm = get_configured_plugin_manager()
+    Without a subcommand, lists all available plugins.
 
-    click.echo("Supported agents:\n")
+    Examples:
 
-    for info in pm.hook.agentgit_get_plugin_info():
-        if info:
-            name = info.get("name", "unknown")
-            description = info.get("description", "No description")
+        agentgit agents              # List all plugins
+
+        agentgit agents add path/to/plugin.py:MyPlugin
+
+        agentgit agents remove my_plugin
+    """
+    if ctx.invoked_subcommand is None:
+        # Default behavior: list plugins
+        ctx.invoke(agents_list)
+
+
+@agents.command("list")
+@click.option("--verbose", "-v", is_flag=True, help="Show additional details.")
+def agents_list(verbose: bool = False) -> None:
+    """List available agent plugins."""
+    from agentgit.plugins import list_configured_plugins
+
+    plugins = list_configured_plugins()
+
+    if not plugins:
+        click.echo("No agent plugins found.")
+        return
+
+    click.echo("Available agent plugins:\n")
+
+    for plugin in plugins:
+        name = plugin.get("name", "unknown")
+        description = plugin.get("description", "No description")
+        source = plugin.get("source", "unknown")
+
+        if verbose:
             click.echo(f"  {name}: {description}")
+            click.echo(f"    source: {source}")
+            click.echo()
+        else:
+            source_tag = f" [{source}]" if source != "builtin" else ""
+            click.echo(f"  {name}: {description}{source_tag}")
+
+
+@agents.command("add")
+@click.argument("plugin_spec")
+def agents_add(plugin_spec: str) -> None:
+    """Add an external agent plugin.
+
+    PLUGIN_SPEC can be either:
+
+    \b
+      - A pip package: package.module:PluginClass
+      - A file path: /path/to/plugin.py:PluginClass
+
+    Examples:
+
+    \b
+      agentgit agents add my_package.plugins:AiderPlugin
+      agentgit agents add ~/plugins/aider_plugin.py:AiderPlugin
+    """
+    from agentgit.plugins import add_plugin_to_config
+
+    try:
+        added = add_plugin_to_config(plugin_spec)
+        if added:
+            click.echo(f"Added plugin: {plugin_spec}")
+            click.echo("Plugin will be loaded on next agentgit command.")
+        else:
+            click.echo(f"Plugin already registered: {plugin_spec}")
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+    except ImportError as e:
+        raise click.ClickException(f"Failed to load plugin: {e}") from e
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    except AttributeError as e:
+        raise click.ClickException(f"Plugin class not found: {e}") from e
+
+
+@agents.command("remove")
+@click.argument("name_or_spec")
+def agents_remove(name_or_spec: str) -> None:
+    """Remove an external agent plugin.
+
+    NAME_OR_SPEC can be either the plugin name or the full spec used when adding.
+
+    Examples:
+
+    \b
+      agentgit agents remove aider
+      agentgit agents remove my_package.plugins:AiderPlugin
+    """
+    from agentgit.plugins import remove_plugin_from_config
+
+    removed = remove_plugin_from_config(name_or_spec)
+    if removed:
+        click.echo(f"Removed plugin: {name_or_spec}")
+    else:
+        raise click.ClickException(
+            f"Plugin not found in config: {name_or_spec}\n"
+            "Note: Only plugins added via 'agentgit agents add' can be removed.\n"
+            "Built-in and pip-installed plugins cannot be removed this way."
+        )
 
 
 @main.command()
