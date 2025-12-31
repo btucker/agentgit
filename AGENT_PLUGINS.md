@@ -387,37 +387,46 @@ agentgit agents
 #   my_agent: MyAgent JSONL transcripts
 ```
 
-## Registering External Plugins
+## Installing External Plugins
 
-### Via pip (Recommended)
+### Via agentgit CLI (Recommended)
 
-Install any agentgit plugin package:
+Use `agentgit agents add` to install plugins:
 
 ```bash
-pip install agentgit-my-agent
+agentgit agents add agentgit-aider
+agentgit agents add agentgit-cursor
+```
+
+This will:
+1. Install the package using uv (or pip as fallback)
+2. Register it in `~/.agentgit/plugins.json`
+3. Automatically discover the plugin via entry points
+
+List installed plugins:
+
+```bash
+agentgit agents
+agentgit agents list -v  # verbose mode
+```
+
+Remove a plugin:
+
+```bash
+agentgit agents remove agentgit-aider
+```
+
+### Via pip directly
+
+You can also install plugin packages directly:
+
+```bash
+pip install agentgit-aider
+# or
+uv pip install agentgit-aider
 ```
 
 Plugins that register the `agentgit` entry point are automatically discovered.
-
-### Via Configuration
-
-For plugins not distributed as packages, add them to `~/.config/agentgit/plugins.json`:
-
-```json
-{
-  "plugins": [
-    "path/to/my_plugin.py:MyPlugin"
-  ]
-}
-```
-
-Or use the CLI:
-
-```bash
-agentgit agents add path/to/my_plugin.py:MyPlugin
-agentgit agents list
-agentgit agents remove my_plugin
-```
 
 ## Hook Reference
 

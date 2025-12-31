@@ -33,7 +33,7 @@ Agent plugins enable support for different AI coding assistant transcript format
 
 - **Built-in plugins**: claude_code, codex (registered in `plugins.py`)
 - **Pip-installed plugins**: Auto-discovered via entry points
-- **Config-file plugins**: Loaded from `~/.config/agentgit/plugins.json`
+- **Config-file plugins**: Registered via `agentgit agents add` (stored in `~/.agentgit/plugins.json`)
 
 Key hooks in `src/agentgit/plugins.py`:
 

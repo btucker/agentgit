@@ -642,11 +642,10 @@ def agents(ctx: click.Context) -> None:
 
     Examples:
 
-        agentgit agents              # List all plugins
-
-        agentgit agents add path/to/plugin.py:MyPlugin
-
-        agentgit agents remove my_plugin
+    \b
+      agentgit agents                      # List all plugins
+      agentgit agents add agentgit-aider   # Install a plugin
+      agentgit agents remove agentgit-aider
     """
     if ctx.invoked_subcommand is None:
         # Default behavior: list plugins
@@ -682,65 +681,50 @@ def agents_list(verbose: bool = False) -> None:
 
 
 @agents.command("add")
-@click.argument("plugin_spec")
-def agents_add(plugin_spec: str) -> None:
-    """Add an external agent plugin.
+@click.argument("package")
+def agents_add(package: str) -> None:
+    """Install an agent plugin package.
 
-    PLUGIN_SPEC can be either:
-
-    \b
-      - A pip package: package.module:PluginClass
-      - A file path: /path/to/plugin.py:PluginClass
+    Installs the package using pip/uv and registers it with agentgit.
+    The package must define an agentgit entry point.
 
     Examples:
 
     \b
-      agentgit agents add my_package.plugins:AiderPlugin
-      agentgit agents add ~/plugins/aider_plugin.py:AiderPlugin
+      agentgit agents add agentgit-aider
+      agentgit agents add agentgit-cursor
     """
-    from agentgit.plugins import add_plugin_to_config
+    from agentgit.plugins import add_plugin
 
-    try:
-        added = add_plugin_to_config(plugin_spec)
-        if added:
-            click.echo(f"Added plugin: {plugin_spec}")
-            click.echo("Plugin will be loaded on next agentgit command.")
-        else:
-            click.echo(f"Plugin already registered: {plugin_spec}")
-    except FileNotFoundError as e:
-        raise click.ClickException(str(e)) from e
-    except ImportError as e:
-        raise click.ClickException(f"Failed to load plugin: {e}") from e
-    except ValueError as e:
-        raise click.ClickException(str(e)) from e
-    except AttributeError as e:
-        raise click.ClickException(f"Plugin class not found: {e}") from e
+    click.echo(f"Installing {package}...")
+    success, message = add_plugin(package)
+
+    if success:
+        click.echo(message)
+    else:
+        raise click.ClickException(message)
 
 
 @agents.command("remove")
-@click.argument("name_or_spec")
-def agents_remove(name_or_spec: str) -> None:
-    """Remove an external agent plugin.
+@click.argument("package")
+def agents_remove(package: str) -> None:
+    """Uninstall an agent plugin package.
 
-    NAME_OR_SPEC can be either the plugin name or the full spec used when adding.
+    Uninstalls the package and removes it from agentgit's registry.
 
     Examples:
 
     \b
-      agentgit agents remove aider
-      agentgit agents remove my_package.plugins:AiderPlugin
+      agentgit agents remove agentgit-aider
     """
-    from agentgit.plugins import remove_plugin_from_config
+    from agentgit.plugins import remove_plugin
 
-    removed = remove_plugin_from_config(name_or_spec)
-    if removed:
-        click.echo(f"Removed plugin: {name_or_spec}")
+    success, message = remove_plugin(package)
+
+    if success:
+        click.echo(message)
     else:
-        raise click.ClickException(
-            f"Plugin not found in config: {name_or_spec}\n"
-            "Note: Only plugins added via 'agentgit agents add' can be removed.\n"
-            "Built-in and pip-installed plugins cannot be removed this way."
-        )
+        raise click.ClickException(message)
 
 
 @main.command()
