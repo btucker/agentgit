@@ -102,10 +102,11 @@ output/
 ### Phase 3: Frontend Components
 
 **Technology stack:**
-- Vanilla JS or Preact (lightweight React alternative)
-- [@git-diff-view/core](https://github.com/MrWangJustToDo/git-diff-view) for diff rendering
-- [Prism.js](https://prismjs.com/) or [Shiki](https://shiki.style/) for syntax highlighting
+- **Svelte 5** - Latest version with runes for reactivity
+- [@git-diff-view/svelte](https://github.com/MrWangJustToDo/git-diff-view) for diff rendering
+- [Shiki](https://shiki.style/) for syntax highlighting (via CDN)
 - CSS Grid for three-pane layout
+- CDN imports (esm.sh, unpkg, or jsdelivr)
 
 **UI Components:**
 
@@ -198,45 +199,59 @@ def get_color_for_prompt(prompt_num: int) -> str:
 
 ### Transcript Windowing
 
-For large sessions, implement virtualized rendering:
+For large sessions, implement virtualized rendering with Svelte:
 
-```javascript
-class TranscriptRenderer {
-    constructor(container, prompts) {
-        this.prompts = prompts;
-        this.visibleRange = { start: 0, end: 20 };
-        this.setupIntersectionObserver();
-    }
+```svelte
+<script>
+  import { onMount } from 'svelte';
 
-    scrollToPrompt(promptNum) {
-        // "Teleport" - clear and re-render around target
-        this.visibleRange = {
-            start: Math.max(0, promptNum - 5),
-            end: promptNum + 15
-        };
-        this.render();
+  let { prompts, activePromptNum } = $props();
+  let visibleRange = $state({ start: 0, end: 20 });
+  let container;
+
+  function scrollToPrompt(promptNum) {
+    // "Teleport" - update visible range around target
+    visibleRange = {
+      start: Math.max(0, promptNum - 5),
+      end: Math.min(prompts.length, promptNum + 15)
+    };
+  }
+
+  // Watch for external navigation requests
+  $effect(() => {
+    if (activePromptNum !== undefined) {
+      scrollToPrompt(activePromptNum);
     }
-}
+  });
+</script>
+
+<div class="transcript" bind:this={container}>
+  {#each prompts.slice(visibleRange.start, visibleRange.end) as prompt (prompt.prompt_id)}
+    <PromptCard {prompt} />
+  {/each}
+</div>
 ```
 
 ### Diff View Integration
 
-Use @git-diff-view for showing changes:
+Use @git-diff-view/svelte for showing changes:
 
-```javascript
-import { DiffView } from '@git-diff-view/core';
+```svelte
+<script>
+  import { DiffView } from '@git-diff-view/svelte';
+  import '@git-diff-view/svelte/styles/diff-view.css';
 
-function showDiffForOperation(operation) {
-    const diffView = new DiffView({
-        oldValue: operation.old_content,
-        newValue: operation.new_content,
-        fileName: operation.file_path,
-        highlighter: shikiHighlighter,
-    });
+  let { operation } = $props();
+</script>
 
-    diffViewContainer.innerHTML = '';
-    diffViewContainer.appendChild(diffView.element);
-}
+<DiffView
+  data={{
+    oldFile: { content: operation.old_content, fileName: operation.file_path },
+    newFile: { content: operation.new_content, fileName: operation.file_path },
+  }}
+  diffViewMode="split"
+  diffViewHighlight={true}
+/>
 ```
 
 ---
@@ -251,15 +266,24 @@ src/agentgit/
 │   ├── blame.py          # Blame computation utilities
 │   ├── generator.py      # HTML/static file generation
 │   └── server.py         # Optional local dev server
-├── templates/
-│   ├── viewer/
-│   │   ├── index.html    # Main template
-│   │   ├── app.js        # Frontend application
-│   │   └── styles.css    # Styling
-│   └── partials/
-│       ├── file_tree.html
-│       ├── code_pane.html
-│       └── transcript.html
+
+viewer-app/                # Svelte frontend (separate package)
+├── package.json
+├── vite.config.js         # Build config (outputs to src/agentgit/viewer/dist/)
+├── src/
+│   ├── App.svelte         # Main three-pane layout
+│   ├── main.js            # Entry point
+│   ├── lib/
+│   │   ├── FileTree.svelte
+│   │   ├── CodePane.svelte
+│   │   ├── DiffPane.svelte
+│   │   ├── Transcript.svelte
+│   │   ├── BlameGutter.svelte
+│   │   └── stores.js      # Svelte stores for state
+│   └── styles/
+│       └── app.css
+└── public/
+    └── index.html         # Template with data injection point
 ```
 
 ---
@@ -284,13 +308,22 @@ serve = [
 
 ## Implementation Order
 
+### Backend (Python)
 1. **`viewer/data.py`** - ViewerData extraction (can test independently)
 2. **`viewer/blame.py`** - Blame range computation
-3. **Templates** - HTML/CSS/JS files
-4. **`viewer/generator.py`** - Static site generation
-5. **CLI command** - `agentgit view` integration
-6. **`viewer/server.py`** - Optional live server mode
-7. **Polish** - Responsive design, keyboard navigation, URL fragments
+3. **`viewer/generator.py`** - Static site generation (injects data into built Svelte app)
+4. **CLI command** - `agentgit view` integration
+5. **`viewer/server.py`** - Optional live server mode with hot reload
+
+### Frontend (Svelte)
+1. **Scaffold** - `viewer-app/` with Vite + Svelte 5
+2. **App.svelte** - Three-pane layout with CSS Grid
+3. **FileTree.svelte** - File browser with status indicators
+4. **CodePane.svelte** - Syntax highlighting + blame gutter
+5. **Transcript.svelte** - Virtualized prompt/response list
+6. **DiffPane.svelte** - git-diff-view integration
+7. **Stores** - Shared state (selected file, active prompt, view mode)
+8. **Polish** - Keyboard navigation, URL fragments, responsive design
 
 ---
 
@@ -303,14 +336,12 @@ serve = [
 
 ---
 
-## Open Questions
+## Technology Decisions
 
-1. **Bundling strategy** - Should we use esbuild/vite to bundle JS, or keep it simple with vanilla JS + CDN imports?
-
-2. **Offline support** - Bundle all dependencies inline, or require CDN access?
-
-3. **Large repo handling** - At what size do we chunk data? (PR #23 uses 500KB threshold)
-
-4. **Diff library choice** - @git-diff-view/core vs react-diff-view vs custom?
-
-5. **Framework choice** - Vanilla JS, Preact, or full React for frontend?
+| Question | Decision |
+|----------|----------|
+| Bundling | Keep it simple - no bundler, use CDN imports |
+| Diff library | [@git-diff-view](https://github.com/MrWangJustToDo/git-diff-view) |
+| Framework | Svelte 5 (latest) |
+| Offline support | CDN dependencies allowed |
+| Large repo threshold | 500KB (following PR #23's approach)
