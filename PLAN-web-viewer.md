@@ -11,20 +11,39 @@ Build a custom web-based viewer that displays agentgit repositories with a three
 3. **Git blame-style annotations** - Link code lines to the prompts that created them
 4. **Interactive navigation** - Click between code and transcript seamlessly
 
-## Architecture Decision: Static vs Dynamic
+## Architecture Decision: Integrated Watch + GUI
 
-### Option A: Static HTML Generation (Recommended)
-- Generate self-contained HTML/JS/CSS files
-- No server required for viewing
-- Can be hosted on GitHub Pages, S3, or served locally
-- Matches agentgit's "build artifact" philosophy
+Instead of a separate `agentgit view` command, integrate the GUI into the existing `--watch` mode:
 
-### Option B: Live Server
-- Flask/FastAPI backend
-- Real-time updates possible
-- More complex deployment
+```
+┌─────────────────┐    file change    ┌─────────────────┐
+│  Transcript     │ ───────────────▶  │  Git Builder    │
+│  (session.jsonl)│                   │  (incremental)  │
+└─────────────────┘                   └────────┬────────┘
+                                               │
+                                               ▼
+                                      ┌─────────────────┐
+                                      │  ViewerData     │
+                                      │  (regenerate)   │
+                                      └────────┬────────┘
+                                               │ WebSocket push
+                                               ▼
+                                      ┌─────────────────┐
+                                      │  Browser        │
+                                      │  (live update)  │
+                                      └─────────────────┘
+```
 
-**Recommendation:** Start with static generation (Option A), similar to how agentgit builds git repos as artifacts.
+**Key behaviors:**
+1. Watchdog detects transcript change → rebuilds git repo (existing)
+2. After rebuild → regenerate ViewerData JSON
+3. Push update via WebSocket → browser updates relevant panes
+4. No full page reload - Svelte reactively updates with new data
+
+**Modes:**
+- `--watch` only: CLI output, no server (existing behavior)
+- `--watch --gui`: Start server + open browser, live updates
+- `--gui` without `--watch`: One-shot build + serve (for viewing completed sessions)
 
 ---
 
@@ -137,28 +156,43 @@ output/
 
 ### Phase 4: CLI Integration
 
-**New command: `agentgit view`**
+**Extend existing `agentgit process` command with `--gui` flag:**
 
 ```bash
-# Generate and open viewer
-agentgit view ./output-repo
+# Existing: watch transcript, rebuild git repo (CLI output only)
+agentgit process session.jsonl --watch
 
-# Generate to specific location
-agentgit view ./output-repo -o ./viewer-output
+# New: watch + live GUI with WebSocket updates
+agentgit process session.jsonl --watch --gui
 
-# Serve locally with hot reload
-agentgit view ./output-repo --serve --port 8080
+# New: one-shot build + serve GUI (for completed sessions)
+agentgit process session.jsonl --gui
 
-# Generate for a transcript directly (builds temp repo first)
-agentgit view session.jsonl
+# With custom port
+agentgit process session.jsonl --watch --gui --port 3000
+
+# Suppress auto-open browser
+agentgit process session.jsonl --gui --no-open
 ```
 
-**Options:**
-- `--output, -o` - Output directory for static files
-- `--serve` - Start local HTTP server
+**New options for `process` command:**
+- `--gui` - Start web server and serve the viewer
 - `--port` - Server port (default: 8080)
-- `--open` - Open browser automatically
-- `--embed-data` - Inline all data in HTML (single file output)
+- `--no-open` - Don't auto-open browser
+
+**Server endpoints:**
+```
+GET  /                    # Svelte app (static)
+GET  /api/data            # ViewerData JSON
+WS   /ws                  # WebSocket for live updates
+GET  /api/file/:path      # Individual file content (for large repos)
+```
+
+**WebSocket protocol:**
+```json
+{ "type": "update", "version": 1234567890 }  // Server → Client: data changed
+{ "type": "ping" }                            // Client → Server: keepalive
+```
 
 ---
 
@@ -264,12 +298,16 @@ src/agentgit/
 │   ├── __init__.py
 │   ├── data.py           # ViewerData extraction from git repo
 │   ├── blame.py          # Blame computation utilities
-│   ├── generator.py      # HTML/static file generation
-│   └── server.py         # Optional local dev server
+│   ├── server.py         # Starlette server (static files + API + WebSocket)
+│   └── dist/             # Built Svelte app (generated, gitignored)
+│       ├── index.html
+│       ├── assets/
+│       │   ├── app-[hash].js
+│       │   └── app-[hash].css
 
-viewer-app/                # Svelte frontend (separate package)
+viewer-app/                # Svelte frontend source (separate package)
 ├── package.json
-├── vite.config.js         # Build config (outputs to src/agentgit/viewer/dist/)
+├── vite.config.js         # Build outputs to src/agentgit/viewer/dist/
 ├── src/
 │   ├── App.svelte         # Main three-pane layout
 │   ├── main.js            # Entry point
@@ -279,12 +317,20 @@ viewer-app/                # Svelte frontend (separate package)
 │   │   ├── DiffPane.svelte
 │   │   ├── Transcript.svelte
 │   │   ├── BlameGutter.svelte
-│   │   └── stores.js      # Svelte stores for state
+│   │   ├── stores.js      # Svelte stores for state
+│   │   └── websocket.js   # WebSocket client for live updates
 │   └── styles/
 │       └── app.css
 └── public/
-    └── index.html         # Template with data injection point
+    └── index.html
 ```
+
+**Build workflow:**
+```bash
+cd viewer-app && npm run build  # Outputs to ../src/agentgit/viewer/dist/
+```
+
+The built frontend is bundled with the Python package, so `pip install agentgit[gui]` includes everything needed.
 
 ---
 
@@ -292,16 +338,26 @@ viewer-app/                # Svelte frontend (separate package)
 
 ```toml
 [project.optional-dependencies]
-viewer = [
-    "jinja2>=3.0.0",       # HTML templating
-    "pygments>=2.0.0",     # Syntax highlighting (server-side option)
-]
-
-[project.optional-dependencies]
-serve = [
+gui = [
+    "starlette>=0.25.0",   # ASGI web framework
     "uvicorn>=0.20.0",     # ASGI server
-    "starlette>=0.25.0",   # Lightweight web framework
+    "websockets>=10.0",    # WebSocket support for live updates
 ]
+```
+
+**Frontend dependencies (viewer-app/package.json):**
+```json
+{
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "svelte": "^5.0.0",
+    "vite": "^5.0.0"
+  },
+  "dependencies": {
+    "@git-diff-view/svelte": "^0.0.x",
+    "shiki": "^1.0.0"
+  }
+}
 ```
 
 ---
@@ -309,21 +365,26 @@ serve = [
 ## Implementation Order
 
 ### Backend (Python)
-1. **`viewer/data.py`** - ViewerData extraction (can test independently)
+1. **`viewer/data.py`** - ViewerData extraction from git repo
 2. **`viewer/blame.py`** - Blame range computation
-3. **`viewer/generator.py`** - Static site generation (injects data into built Svelte app)
-4. **CLI command** - `agentgit view` integration
-5. **`viewer/server.py`** - Optional live server mode with hot reload
+3. **`viewer/server.py`** - Starlette server with WebSocket support
+4. **CLI integration** - Add `--gui`, `--port`, `--no-open` to `process` command
+5. **Watcher integration** - Hook ViewerData regeneration into existing watch loop
 
 ### Frontend (Svelte)
 1. **Scaffold** - `viewer-app/` with Vite + Svelte 5
 2. **App.svelte** - Three-pane layout with CSS Grid
-3. **FileTree.svelte** - File browser with status indicators
-4. **CodePane.svelte** - Syntax highlighting + blame gutter
-5. **Transcript.svelte** - Virtualized prompt/response list
-6. **DiffPane.svelte** - git-diff-view integration
-7. **Stores** - Shared state (selected file, active prompt, view mode)
+3. **stores.js** - Shared state + WebSocket connection for live updates
+4. **FileTree.svelte** - File browser with status indicators
+5. **CodePane.svelte** - Syntax highlighting + blame gutter
+6. **Transcript.svelte** - Virtualized prompt/response list
+7. **DiffPane.svelte** - git-diff-view integration
 8. **Polish** - Keyboard navigation, URL fragments, responsive design
+
+### Integration
+1. Build Svelte app → bundle into `src/agentgit/viewer/dist/`
+2. Server serves static files from bundled dist
+3. WebSocket notifies browser when watcher rebuilds repo
 
 ---
 
