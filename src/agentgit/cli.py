@@ -300,6 +300,22 @@ def main() -> None:
     default="agentgit",
     help="Branch name for --single-repo mode. Defaults to 'agentgit'.",
 )
+@click.option(
+    "--gui",
+    is_flag=True,
+    help="Start web viewer for the git repository.",
+)
+@click.option(
+    "--port",
+    type=int,
+    default=8080,
+    help="Port for the web viewer (default: 8080).",
+)
+@click.option(
+    "--no-open",
+    is_flag=True,
+    help="Don't automatically open browser when starting GUI.",
+)
 def process(
     transcript: Path | None,
     output: Path | None,
@@ -310,6 +326,9 @@ def process(
     watch: bool,
     single_repo: bool,
     branch: str,
+    gui: bool,
+    port: int,
+    no_open: bool,
 ) -> None:
     """Process a transcript into a git repository.
 
@@ -332,13 +351,19 @@ def process(
             )
         _run_watch_mode(
             transcripts[0], output, author, email, source_repo,
-            single_repo=single_repo, branch=branch
+            single_repo=single_repo, branch=branch,
+            gui=gui, port=port, open_browser=not no_open,
         )
     else:
         _run_process(
             transcripts, output, plugin_type, author, email, source_repo,
-            single_repo=single_repo, branch=branch
+            single_repo=single_repo, branch=branch,
         )
+        # Start GUI after processing if requested
+        if gui:
+            if output is None:
+                output = get_default_output_dir(transcripts[0])
+            _run_gui(output, port=port, open_browser=not no_open)
 
 
 def _run_process(
@@ -408,6 +433,9 @@ def _run_watch_mode(
     source_repo: Path | None,
     single_repo: bool = False,
     branch: str = "agentgit",
+    gui: bool = False,
+    port: int = 8080,
+    open_browser: bool = True,
 ) -> None:
     """Run in watch mode."""
     from agentgit import find_git_root
@@ -431,10 +459,44 @@ def _run_watch_mode(
 
     click.echo(f"Watching transcript: {transcript}")
     click.echo(f"Output directory: {output}")
+    if gui:
+        click.echo(f"GUI server: http://localhost:{port}")
     click.echo("Press Ctrl+C to stop.\n")
+
+    # Set up viewer data for GUI
+    viewer_data = None
+    notify_func = None
+
+    if gui:
+        from agentgit.viewer import ViewerData, build_viewer_data, notify_clients
+
+        def get_viewer_data() -> ViewerData:
+            nonlocal viewer_data
+            if viewer_data is None or not output.exists():
+                viewer_data = ViewerData()
+            else:
+                try:
+                    viewer_data = build_viewer_data(output)
+                except Exception:
+                    pass
+            return viewer_data
+
+        notify_func = notify_clients
 
     def on_update(new_commits: int) -> None:
         click.echo(f"  Added {new_commits} commit(s)")
+        # Notify GUI clients of update
+        if gui and notify_func:
+            import asyncio
+
+            nonlocal viewer_data
+            try:
+                viewer_data = build_viewer_data(output)
+                asyncio.get_event_loop().run_until_complete(
+                    notify_func(viewer_data.version)
+                )
+            except Exception:
+                pass
 
     watcher = TranscriptWatcher(
         transcript_path=transcript,
@@ -462,15 +524,76 @@ def _run_watch_mode(
 
     click.echo("Watching for changes...")
 
-    try:
-        while True:
-            import time
+    if gui:
+        # Run server with watcher
+        import asyncio
+        import threading
 
-            time.sleep(1)
-    except KeyboardInterrupt:
-        click.echo("\nStopping watcher...")
-    finally:
-        watcher.stop()
+        from agentgit.viewer import build_viewer_data, run_server_async
+
+        # Build initial viewer data
+        try:
+            viewer_data = build_viewer_data(output)
+        except Exception:
+            viewer_data = ViewerData()
+
+        # Run watcher in background thread
+        def watcher_loop():
+            try:
+                while True:
+                    import time
+                    time.sleep(1)
+            except Exception:
+                pass
+
+        watcher_thread = threading.Thread(target=watcher_loop, daemon=True)
+        watcher_thread.start()
+
+        # Run server in main thread
+        try:
+            asyncio.run(
+                run_server_async(
+                    output,
+                    get_viewer_data,
+                    port=port,
+                    open_browser=open_browser,
+                )
+            )
+        except KeyboardInterrupt:
+            click.echo("\nStopping...")
+        finally:
+            watcher.stop()
+    else:
+        try:
+            while True:
+                import time
+                time.sleep(1)
+        except KeyboardInterrupt:
+            click.echo("\nStopping watcher...")
+        finally:
+            watcher.stop()
+
+
+def _run_gui(
+    repo_path: Path,
+    port: int = 8080,
+    open_browser: bool = True,
+) -> None:
+    """Run the GUI viewer for an existing repo."""
+    from agentgit.viewer import ViewerData, build_viewer_data, run_server
+
+    click.echo(f"Starting GUI for: {repo_path}")
+    click.echo(f"Server: http://localhost:{port}")
+
+    viewer_data = None
+
+    def get_viewer_data() -> ViewerData:
+        nonlocal viewer_data
+        if viewer_data is None:
+            viewer_data = build_viewer_data(repo_path)
+        return viewer_data
+
+    run_server(repo_path, get_viewer_data, port=port, open_browser=open_browser)
 
 
 @main.command()
@@ -647,6 +770,58 @@ def agents() -> None:
             name = info.get("name", "unknown")
             description = info.get("description", "No description")
             click.echo(f"  {name}: {description}")
+
+
+@main.command()
+@click.argument("repo_path", type=click.Path(exists=True, path_type=Path), required=False)
+@click.option(
+    "--port",
+    type=int,
+    default=8080,
+    help="Port for the web viewer (default: 8080).",
+)
+@click.option(
+    "--no-open",
+    is_flag=True,
+    help="Don't automatically open browser.",
+)
+def gui(
+    repo_path: Path | None,
+    port: int,
+    no_open: bool,
+) -> None:
+    """Start web viewer for an agentgit repository.
+
+    If REPO_PATH is not provided, uses the default agentgit repo for the
+    current project.
+
+    Examples:
+
+        agentgit gui                    # View current project's agentgit repo
+
+        agentgit gui ./my-repo          # View specific repo
+
+        agentgit gui --port 3000        # Use custom port
+    """
+    if repo_path is None:
+        # Try to find the default repo for current project
+        repo_path = get_agentgit_repo_path()
+        if repo_path is None or not repo_path.exists():
+            raise click.ClickException(
+                "No agentgit repository found. Run 'agentgit' first to create one, "
+                "or specify a repo path explicitly."
+            )
+
+    # Verify it's a git repo
+    from git import Repo
+    from git.exc import InvalidGitRepositoryError
+
+    try:
+        Repo(repo_path)
+    except InvalidGitRepositoryError:
+        raise click.ClickException(f"Not a git repository: {repo_path}")
+
+    _run_gui(repo_path, port=port, open_browser=not no_open)
 
 
 @main.command()
