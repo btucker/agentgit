@@ -300,6 +300,21 @@ def main() -> None:
     default="agentgit",
     help="Branch name for --single-repo mode. Defaults to 'agentgit'.",
 )
+@click.option(
+    "--ai-enhance",
+    is_flag=True,
+    help="Use AI to generate better commit messages.",
+)
+@click.option(
+    "--ai-enhancer",
+    default="claude_cli",
+    help="AI enhancer to use (e.g., 'claude_cli'). Defaults to 'claude_cli'.",
+)
+@click.option(
+    "--ai-model",
+    default="haiku",
+    help="Model to use for AI enhancement. Defaults to 'haiku'.",
+)
 def process(
     transcript: Path | None,
     output: Path | None,
@@ -310,6 +325,9 @@ def process(
     watch: bool,
     single_repo: bool,
     branch: str,
+    ai_enhance: bool,
+    ai_enhancer: str,
+    ai_model: str,
 ) -> None:
     """Process a transcript into a git repository.
 
@@ -321,6 +339,9 @@ def process(
 
     With --single-repo, creates the agentgit output as an orphan branch
     in the source repository, using a git worktree at the output location.
+
+    With --ai-enhance, uses AI to generate better commit messages that
+    capture the intent and purpose of changes.
     """
     transcripts = resolve_transcripts(transcript)
 
@@ -332,12 +353,14 @@ def process(
             )
         _run_watch_mode(
             transcripts[0], output, author, email, source_repo,
-            single_repo=single_repo, branch=branch
+            single_repo=single_repo, branch=branch,
+            ai_enhance=ai_enhance, ai_enhancer=ai_enhancer, ai_model=ai_model
         )
     else:
         _run_process(
             transcripts, output, plugin_type, author, email, source_repo,
-            single_repo=single_repo, branch=branch
+            single_repo=single_repo, branch=branch,
+            ai_enhance=ai_enhance, ai_enhancer=ai_enhancer, ai_model=ai_model
         )
 
 
@@ -350,9 +373,13 @@ def _run_process(
     source_repo: Path | None,
     single_repo: bool = False,
     branch: str = "agentgit",
+    ai_enhance: bool = False,
+    ai_enhancer: str = "claude_cli",
+    ai_model: str = "haiku",
 ) -> None:
     """Run processing of one or more transcripts."""
     from agentgit import build_repo, find_git_root, parse_transcripts
+    from agentgit.ai_commit import AICommitConfig
 
     # Use default output directory if not specified
     if output is None:
@@ -381,6 +408,12 @@ def _run_process(
 
     parsed = parse_transcripts(transcripts, plugin_type=plugin_type)
 
+    # Configure AI enhancement if enabled
+    ai_config = None
+    if ai_enhance:
+        ai_config = AICommitConfig(enhancer=ai_enhancer, model=ai_model, enabled=True)
+        click.echo(f"AI enhancement enabled (enhancer: {ai_enhancer}, model: {ai_model})")
+
     repo, repo_path, _ = build_repo(
         operations=parsed.operations,
         output_dir=output,
@@ -389,6 +422,7 @@ def _run_process(
         source_repo=worktree_source_repo if single_repo else source_repo,
         branch=worktree_branch,
         orphan=single_repo,
+        ai_config=ai_config,
     )
 
     click.echo(f"Created git repository at: {repo_path}")
@@ -408,9 +442,13 @@ def _run_watch_mode(
     source_repo: Path | None,
     single_repo: bool = False,
     branch: str = "agentgit",
+    ai_enhance: bool = False,
+    ai_enhancer: str = "claude_cli",
+    ai_model: str = "haiku",
 ) -> None:
     """Run in watch mode."""
     from agentgit import find_git_root
+    from agentgit.ai_commit import AICommitConfig
     from agentgit.watcher import TranscriptWatcher
 
     # Use default output directory if not specified
@@ -429,6 +467,12 @@ def _run_watch_mode(
         worktree_branch = branch
         click.echo(f"Single-repo mode: using orphan branch '{branch}' in {worktree_source_repo}")
 
+    # Configure AI enhancement if enabled
+    ai_config = None
+    if ai_enhance:
+        ai_config = AICommitConfig(enhancer=ai_enhancer, model=ai_model, enabled=True)
+        click.echo(f"AI enhancement enabled (enhancer: {ai_enhancer}, model: {ai_model})")
+
     click.echo(f"Watching transcript: {transcript}")
     click.echo(f"Output directory: {output}")
     click.echo("Press Ctrl+C to stop.\n")
@@ -445,6 +489,7 @@ def _run_watch_mode(
         branch=worktree_branch,
         orphan=single_repo,
         on_update=on_update,
+        ai_config=ai_config,
     )
 
     # Initial build status

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pluggy
 
 if TYPE_CHECKING:
-    from agentgit.core import FileOperation, PromptResponse, Transcript
+    from agentgit.core import AssistantTurn, FileOperation, Prompt, PromptResponse, Transcript
 
 hookspec = pluggy.HookspecMarker("agentgit")
 hookimpl = pluggy.HookimplMarker("agentgit")
@@ -147,6 +147,74 @@ class AgentGitSpec:
             A display name string, or None if this plugin can't provide one.
         """
 
+    # AI Enhancement hooks
+    @hookspec
+    def agentgit_get_ai_enhancer_info(self) -> dict[str, str] | None:
+        """Return AI enhancer plugin identification info.
+
+        Returns:
+            Dict with 'name' (short identifier like 'claude_cli') and
+            'description' (human-readable description), or None.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_enhance_operation_message(
+        self,
+        operation: FileOperation,
+        enhancer: str,
+        model: str | None,
+    ) -> str | None:
+        """Generate an AI-enhanced commit message for a file operation.
+
+        Args:
+            operation: The file operation to generate a message for.
+            enhancer: The enhancer type to use (e.g., 'claude_cli').
+            model: Optional model override (e.g., 'haiku', 'sonnet').
+
+        Returns:
+            Generated commit message subject line, or None if generation fails.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_enhance_turn_message(
+        self,
+        turn: AssistantTurn,
+        prompt: Prompt | None,
+        enhancer: str,
+        model: str | None,
+    ) -> str | None:
+        """Generate an AI-enhanced commit message for an assistant turn.
+
+        Args:
+            turn: The assistant turn containing grouped operations.
+            prompt: Optional user prompt that triggered this turn.
+            enhancer: The enhancer type to use (e.g., 'claude_cli').
+            model: Optional model override.
+
+        Returns:
+            Generated commit message subject line, or None if generation fails.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_enhance_merge_message(
+        self,
+        prompt: Prompt,
+        turns: list[AssistantTurn],
+        enhancer: str,
+        model: str | None,
+    ) -> str | None:
+        """Generate an AI-enhanced merge commit message for a user prompt.
+
+        Args:
+            prompt: The user prompt.
+            turns: All assistant turns that responded to the prompt.
+            enhancer: The enhancer type to use (e.g., 'claude_cli').
+            model: Optional model override.
+
+        Returns:
+            Generated commit message subject line, or None if generation fails.
+        """
+
 
 def get_plugin_manager() -> pluggy.PluginManager:
     """Create and configure the plugin manager."""
@@ -162,6 +230,13 @@ def register_builtin_plugins(pm: pluggy.PluginManager) -> None:
 
     pm.register(ClaudeCodePlugin())
     pm.register(CodexPlugin())
+
+
+def register_enhancer_plugins(pm: pluggy.PluginManager) -> None:
+    """Register the built-in AI enhancer plugins."""
+    from agentgit.enhancers.claude_cli import ClaudeCLIEnhancerPlugin
+
+    pm.register(ClaudeCLIEnhancerPlugin())
 
 
 _configured_plugin_manager: pluggy.PluginManager | None = None
@@ -180,4 +255,5 @@ def get_configured_plugin_manager() -> pluggy.PluginManager:
     if _configured_plugin_manager is None:
         _configured_plugin_manager = get_plugin_manager()
         register_builtin_plugins(_configured_plugin_manager)
+        register_enhancer_plugins(_configured_plugin_manager)
     return _configured_plugin_manager

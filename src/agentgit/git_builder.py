@@ -8,7 +8,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, Optional, Union
 
 from git import Repo
 from git.exc import GitCommandError, InvalidGitRepositoryError
@@ -21,6 +21,9 @@ from agentgit.core import (
     PromptResponse,
     SourceCommit,
 )
+
+if TYPE_CHECKING:
+    from agentgit.ai_commit import AICommitConfig
 
 logger = logging.getLogger(__name__)
 
@@ -120,25 +123,40 @@ def get_last_processed_timestamp(repo: Repo) -> str | None:
     return None
 
 
-def format_commit_message(operation: FileOperation) -> str:
+def format_commit_message(
+    operation: FileOperation,
+    ai_config: Optional["AICommitConfig"] = None,
+) -> str:
     """Format a rich commit message for a file operation.
 
     Structure:
-    - Subject line: operation type and file
+    - Subject line: operation type and file (or AI-generated summary)
     - Blank line
     - User prompt (the "why") - full text, no truncation
     - Blank line
     - Assistant context if available
     - Blank line
     - Git trailers for machine parsing
-    """
-    op_verb = {
-        OperationType.WRITE: "Create",
-        OperationType.EDIT: "Edit",
-        OperationType.DELETE: "Delete",
-    }.get(operation.operation_type, "Modify")
 
-    subject = f"{op_verb} {operation.filename}"
+    Args:
+        operation: The file operation to format.
+        ai_config: Optional AI config for generating smarter commit messages.
+    """
+    # Try AI-generated subject if configured
+    subject = None
+    if ai_config and ai_config.enabled:
+        from agentgit.ai_commit import generate_operation_commit_message
+
+        subject = generate_operation_commit_message(operation, ai_config)
+
+    # Fall back to default format
+    if not subject:
+        op_verb = {
+            OperationType.WRITE: "Create",
+            OperationType.EDIT: "Edit",
+            OperationType.DELETE: "Delete",
+        }.get(operation.operation_type, "Modify")
+        subject = f"{op_verb} {operation.filename}"
 
     body_parts = []
 
@@ -172,19 +190,39 @@ def format_commit_message(operation: FileOperation) -> str:
         return f"{subject}\n\n{trailers_str}"
 
 
-def format_turn_commit_message(turn: AssistantTurn) -> str:
+def format_turn_commit_message(
+    turn: AssistantTurn,
+    ai_config: Optional["AICommitConfig"] = None,
+) -> str:
     """Format a commit message for an assistant turn (grouped operations).
 
     Structure:
-    - Subject line: summary of what was done
+    - Subject line: summary of what was done (or AI-generated)
     - Blank line
     - Files modified/created/deleted
     - Blank line
     - Context if available
     - Blank line
     - Trailers
+
+    Args:
+        turn: The assistant turn to format.
+        ai_config: Optional AI config for generating smarter commit messages.
     """
-    subject = turn.summary_line
+    # Try AI-generated subject if configured
+    subject = None
+    if ai_config and ai_config.enabled:
+        from agentgit.ai_commit import generate_turn_commit_message
+
+        # Get the prompt from the first operation if available
+        prompt = None
+        if turn.operations and turn.operations[0].prompt:
+            prompt = turn.operations[0].prompt
+        subject = generate_turn_commit_message(turn, prompt, ai_config)
+
+    # Fall back to default format
+    if not subject:
+        subject = turn.summary_line
 
     body_parts = []
 
@@ -224,22 +262,39 @@ def format_turn_commit_message(turn: AssistantTurn) -> str:
         return f"{subject}\n\n{trailers_str}"
 
 
-def format_prompt_merge_message(prompt: Prompt, turns: list[AssistantTurn]) -> str:
+def format_prompt_merge_message(
+    prompt: Prompt,
+    turns: list[AssistantTurn],
+    ai_config: Optional["AICommitConfig"] = None,
+) -> str:
     """Format a merge commit message for a prompt.
 
     Structure:
-    - Subject line: first line of prompt (truncated if needed)
+    - Subject line: first line of prompt (truncated if needed) or AI-generated
     - Blank line
     - Full prompt text
     - Blank line
     - Trailers
+
+    Args:
+        prompt: The user prompt.
+        turns: All assistant turns that responded to the prompt.
+        ai_config: Optional AI config for generating smarter commit messages.
     """
-    # Subject: first meaningful line of prompt
-    first_line = prompt.text.split("\n")[0].strip()
-    if len(first_line) > 72:
-        subject = first_line[:69] + "..."
-    else:
-        subject = first_line
+    # Try AI-generated subject if configured
+    subject = None
+    if ai_config and ai_config.enabled:
+        from agentgit.ai_commit import generate_merge_commit_message
+
+        subject = generate_merge_commit_message(prompt, turns, ai_config)
+
+    # Fall back to default format
+    if not subject:
+        first_line = prompt.text.split("\n")[0].strip()
+        if len(first_line) > 72:
+            subject = first_line[:69] + "..."
+        else:
+            subject = first_line
 
     body_parts = []
 
@@ -349,6 +404,7 @@ class GitRepoBuilder:
         source_repo: Path | None = None,
         branch: str | None = None,
         orphan: bool = False,
+        ai_config: Optional["AICommitConfig"] = None,
     ):
         """Initialize the builder.
 
@@ -360,11 +416,13 @@ class GitRepoBuilder:
                 Required when source_repo is provided.
             orphan: If True, create an orphan branch (no common ancestor with main).
                 Only used when source_repo and branch are provided.
+            ai_config: Optional AI configuration for generating commit messages.
         """
         self.output_dir = output_dir
         self.source_repo_path = source_repo
         self.branch = branch
         self.orphan = orphan
+        self.ai_config = ai_config
         self.repo: Repo | None = None
         self.path_mapping: dict[str, str] = {}
         self.file_states: dict[str, str] = {}
