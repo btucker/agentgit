@@ -201,26 +201,6 @@ class TestClaudeCodePlugin:
         assert enriched.prompt is not None
         assert enriched.prompt.text == "Create a hello world function"
 
-    def test_extract_deleted_paths_simple(self, plugin):
-        """Should extract paths from simple rm commands."""
-        paths = plugin._extract_deleted_paths("rm file.txt")
-        assert paths == ["file.txt"]
-
-    def test_extract_deleted_paths_with_flags(self, plugin):
-        """Should extract paths from rm with flags."""
-        paths = plugin._extract_deleted_paths("rm -rf /path/to/dir")
-        assert paths == ["/path/to/dir"]
-
-    def test_extract_deleted_paths_multiple(self, plugin):
-        """Should extract multiple paths."""
-        paths = plugin._extract_deleted_paths("rm file1.txt file2.txt")
-        assert paths == ["file1.txt", "file2.txt"]
-
-    def test_extract_deleted_paths_quoted(self, plugin):
-        """Should handle quoted paths."""
-        paths = plugin._extract_deleted_paths('rm "path with spaces/file.txt"')
-        assert paths == ["path with spaces/file.txt"]
-
     def test_extract_text_from_string_content(self, plugin):
         """Should extract text from string content."""
         text = plugin._extract_text_from_content("Hello world")

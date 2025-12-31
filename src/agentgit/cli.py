@@ -97,31 +97,6 @@ def resolve_transcripts(transcript: Path | None) -> list[Path]:
     return transcripts
 
 
-def load_and_display_transcript_header(transcript: Path | None, item_name: str) -> tuple:
-    """Load transcripts and display a header with count.
-
-    Common helper for prompts and operations commands.
-
-    Args:
-        transcript: Optional transcript path.
-        item_name: Name of items being listed (e.g., "prompts", "operations").
-
-    Returns:
-        Tuple of (transcripts list, parsed Transcript).
-    """
-    from agentgit import parse_transcripts
-
-    transcripts = resolve_transcripts(transcript)
-    parsed = parse_transcripts(transcripts)
-
-    if len(transcripts) == 1:
-        click.echo(f"Transcript: {transcripts[0].name}")
-    else:
-        click.echo(f"Transcripts: {len(transcripts)} files")
-
-    return transcripts, parsed
-
-
 def get_agentgit_repo_path() -> Path | None:
     """Get the agentgit output repo path for the current project.
 
@@ -277,8 +252,6 @@ def main() -> None:
         agentgit log --oneline -10         # View recent commits in agentgit repo
 
         agentgit diff HEAD~5..HEAD         # View changes in agentgit repo
-
-        agentgit prompts                   # List prompts from transcripts
     """
     pass
 

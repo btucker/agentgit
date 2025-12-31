@@ -16,12 +16,10 @@ from agentgit.core import (
     TranscriptEntry,
 )
 from agentgit.plugins import hookimpl
+from agentgit.utils import extract_deleted_paths
 
 # Format identifier for Codex JSONL transcripts
 FORMAT_CODEX_JSONL = "codex_jsonl"
-
-# Pattern to match rm commands
-RM_COMMAND_PATTERN = re.compile(r"^\s*rm\s+(?:-[rfivI]+\s+)*(.+)$")
 
 # Pattern to extract cwd from environment_context
 CWD_PATTERN = re.compile(r"<cwd>([^<]+)</cwd>")
@@ -108,9 +106,6 @@ class CodexPlugin:
         session_id: str | None = None
         session_cwd: str | None = None
 
-        # Track function calls for enrichment
-        function_calls: dict[str, dict] = {}
-
         with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -178,8 +173,6 @@ class CodexPlugin:
 
                 # Handle function calls
                 if event_type == "function_call":
-                    call_id = obj.get("call_id", "")
-                    function_calls[call_id] = obj
                     entry = TranscriptEntry(
                         entry_type="function_call",
                         timestamp=obj.get("timestamp", ""),
@@ -433,7 +426,7 @@ class CodexPlugin:
         timestamp = entry.timestamp
 
         # Check for rm commands
-        deleted_paths = self._extract_deleted_paths(command)
+        deleted_paths = extract_deleted_paths(command)
         is_recursive = "-r" in command
 
         for path in deleted_paths:
@@ -449,40 +442,6 @@ class CodexPlugin:
             )
 
         return operations
-
-    def _extract_deleted_paths(self, command: str) -> list[str]:
-        """Extract file paths deleted by an rm command."""
-        paths = []
-        match = RM_COMMAND_PATTERN.match(command)
-        if not match:
-            return paths
-
-        args_str = match.group(1).strip()
-        current_path = ""
-        in_quotes: str | None = None
-
-        for char in args_str:
-            if in_quotes:
-                if char == in_quotes:
-                    if current_path:
-                        paths.append(current_path)
-                        current_path = ""
-                    in_quotes = None
-                else:
-                    current_path += char
-            elif char in ('"', "'"):
-                in_quotes = char
-            elif char == " ":
-                if current_path:
-                    paths.append(current_path)
-                    current_path = ""
-            else:
-                current_path += char
-
-        if current_path:
-            paths.append(current_path)
-
-        return paths
 
     @hookimpl
     def agentgit_enrich_operation(
