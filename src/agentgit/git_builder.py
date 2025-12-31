@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
 
-from git import Repo
+from git import Actor, Repo
 from git.exc import GitCommandError, InvalidGitRepositoryError
 
 from agentgit.core import (
@@ -23,6 +23,10 @@ from agentgit.core import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Default author for agent commits
+DEFAULT_AGENT_AUTHOR = ("Agent", "agent@local")
 
 
 @dataclass
@@ -567,6 +571,7 @@ class GitRepoBuilder:
         prompt_responses: list[PromptResponse],
         author_name: str = "Agent",
         author_email: str = "agent@local",
+        user_author: tuple[str, str] | None = None,
         incremental: bool = True,
     ) -> tuple[Repo, Path, dict[str, str]]:
         """Build a git repository using merge-based structure.
@@ -576,8 +581,10 @@ class GitRepoBuilder:
 
         Args:
             prompt_responses: List of PromptResponse objects.
-            author_name: Name for git commits.
-            author_email: Email for git commits.
+            author_name: Name for agent git commits.
+            author_email: Email for agent git commits.
+            user_author: Optional (name, email) for user prompt commits.
+                If not provided, uses author_name/author_email for all.
             incremental: If True, skip already-processed operations.
 
         Returns:
@@ -585,6 +592,11 @@ class GitRepoBuilder:
         """
         existing_repo = self._setup_repo(incremental)
 
+        # Store author info for later use
+        self._agent_author = Actor(author_name, author_email)
+        self._user_author = Actor(user_author[0], user_author[1]) if user_author else self._agent_author
+
+        # Set default config (used for git operations that don't accept author param)
         with self.repo.config_writer() as config:
             config.set_value("user", "name", author_name)
             config.set_value("user", "email", author_email)
@@ -661,10 +673,23 @@ class GitRepoBuilder:
         # Switch back to main
         self.repo.heads.main.checkout() if "main" in self.repo.heads else self.repo.heads.master.checkout()
 
-        # Merge the feature branch with a merge commit
+        # Merge the feature branch with a merge commit using user author
         merge_message = format_prompt_merge_message(pr.prompt, pr.turns)
         try:
-            self.repo.git.merge(branch_name, "--no-ff", "-m", merge_message)
+            # Use user author for merge commits (prompts are from the user)
+            user_author = getattr(self, "_user_author", None)
+            if user_author:
+                # Set environment variables for git author
+                env = {
+                    "GIT_AUTHOR_NAME": user_author.name,
+                    "GIT_AUTHOR_EMAIL": user_author.email,
+                    "GIT_COMMITTER_NAME": user_author.name,
+                    "GIT_COMMITTER_EMAIL": user_author.email,
+                }
+                with self.repo.git.custom_environment(**env):
+                    self.repo.git.merge(branch_name, "--no-ff", "-m", merge_message)
+            else:
+                self.repo.git.merge(branch_name, "--no-ff", "-m", merge_message)
         except GitCommandError as e:
             logger.warning("Merge failed for prompt %s: %s", pr.prompt.short_id, e)
             # Try to continue despite merge issues
@@ -706,7 +731,9 @@ class GitRepoBuilder:
 
             commit_msg = format_turn_commit_message(turn)
             try:
-                self.repo.index.commit(commit_msg)
+                # Use agent author for operation commits
+                author = getattr(self, "_agent_author", None)
+                self.repo.index.commit(commit_msg, author=author)
             except GitCommandError as e:
                 logger.warning("Failed to commit turn: %s", e)
 

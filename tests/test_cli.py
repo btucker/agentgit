@@ -88,24 +88,6 @@ class TestCLI:
         # Should be in ~/.agentgit/projects/
         assert ".agentgit" in result.output
 
-    def test_process_with_author(self, runner, sample_jsonl, tmp_path):
-        """Should use custom author."""
-        output_dir = tmp_path / "output"
-        result = runner.invoke(
-            main,
-            [
-                "process",
-                str(sample_jsonl),
-                "-o",
-                str(output_dir),
-                "--author",
-                "Custom Author",
-                "--email",
-                "custom@example.com",
-            ],
-        )
-        assert result.exit_code == 0
-
     def test_process_nonexistent_file(self, runner):
         """Should error on nonexistent file."""
         result = runner.invoke(main, ["process", "/nonexistent/file.jsonl"])

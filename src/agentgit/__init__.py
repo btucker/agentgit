@@ -197,6 +197,7 @@ def build_repo_grouped(
     output_dir: Path | None = None,
     author_name: str = "Agent",
     author_email: str = "agent@local",
+    user_author: tuple[str, str] | None = None,
 ) -> tuple[Repo, Path, dict[str, str]]:
     """Build a git repository using merge-based structure.
 
@@ -208,8 +209,10 @@ def build_repo_grouped(
     Args:
         prompt_responses: List of PromptResponse objects from transcript.
         output_dir: Directory for the git repo. If None, creates a temp dir.
-        author_name: Name for git commits.
-        author_email: Email for git commits.
+        author_name: Name for agent git commits.
+        author_email: Email for agent git commits.
+        user_author: Optional (name, email) tuple for user prompt commits.
+            If not provided, uses author_name/author_email for all commits.
 
     Returns:
         Tuple of (repo, repo_path, path_mapping).
@@ -219,6 +222,7 @@ def build_repo_grouped(
         prompt_responses=prompt_responses,
         author_name=author_name,
         author_email=author_email,
+        user_author=user_author,
     )
 
 

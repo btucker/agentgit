@@ -423,22 +423,6 @@ def main() -> None:
     pass
 
 
-def _get_author_default(ctx: click.Context, param: click.Parameter, value: str | None) -> str:
-    """Callback to get author default from git config."""
-    if value is not None:
-        return value
-    name, _ = get_default_author()
-    return name
-
-
-def _get_email_default(ctx: click.Context, param: click.Parameter, value: str | None) -> str:
-    """Callback to get email default from git config."""
-    if value is not None:
-        return value
-    _, email = get_default_author()
-    return email
-
-
 @main.command()
 @click.argument("transcript", type=str, required=False)
 @click.option(
@@ -452,20 +436,6 @@ def _get_email_default(ctx: click.Context, param: click.Parameter, value: str | 
     "--type",
     "plugin_type",
     help="Plugin type to use (e.g., 'claude_code'). Auto-detects if not specified.",
-)
-@click.option(
-    "--author",
-    default=None,
-    callback=_get_author_default,
-    is_eager=True,
-    help="Author name for git commits. Defaults to git config user.name.",
-)
-@click.option(
-    "--email",
-    default=None,
-    callback=_get_email_default,
-    is_eager=True,
-    help="Author email for git commits. Defaults to git config user.email.",
 )
 @click.option(
     "--source-repo",
@@ -491,8 +461,6 @@ def process(
     transcript: str | None,
     output: Path | None,
     plugin_type: str | None,
-    author: str,
-    email: str,
     source_repo: Path | None,
     watch: bool,
     single_repo: bool,
@@ -511,9 +479,16 @@ def process(
 
     With --single-repo, creates the agentgit output as an orphan branch
     in the source repository, using a git worktree at the output location.
+
+    Commit authorship:
+    - Agent operations are attributed to 'Agent <agent@local>'
+    - User prompts are attributed using your git config (user.name/user.email)
     """
     # Resolve transcript argument (handles URLs and local paths)
     resolution = resolve_transcript_arg(transcript)
+
+    # Get user author from git config for prompt commits
+    user_author = get_default_author()
 
     try:
         # Show URL fetch info
@@ -545,12 +520,14 @@ def process(
                     "Please use a local transcript file."
                 )
             _run_watch_mode(
-                resolution.transcripts[0], output, author, email, source_repo,
+                resolution.transcripts[0], output, source_repo,
+                user_author=user_author,
                 single_repo=single_repo, branch=branch
             )
         else:
             _run_process(
-                resolution.transcripts, output, plugin_type, author, email, source_repo,
+                resolution.transcripts, output, plugin_type, source_repo,
+                user_author=user_author,
                 single_repo=single_repo, branch=branch
             )
     finally:
@@ -563,14 +540,14 @@ def _run_process(
     transcripts: list[Path],
     output: Path | None,
     plugin_type: str | None,
-    author: str,
-    email: str,
     source_repo: Path | None,
+    user_author: tuple[str, str],
     single_repo: bool = False,
     branch: str = "agentgit",
 ) -> None:
     """Run processing of one or more transcripts."""
-    from agentgit import build_repo, find_git_root, parse_transcripts
+    from agentgit import build_repo, build_repo_grouped, find_git_root, parse_transcripts
+    from agentgit.git_builder import DEFAULT_AGENT_AUTHOR
 
     # Use default output directory if not specified
     if output is None:
@@ -599,15 +576,26 @@ def _run_process(
 
     parsed = parse_transcripts(transcripts, plugin_type=plugin_type)
 
-    repo, repo_path, _ = build_repo(
-        operations=parsed.operations,
-        output_dir=output,
-        author_name=author,
-        author_email=email,
-        source_repo=worktree_source_repo if single_repo else source_repo,
-        branch=worktree_branch,
-        orphan=single_repo,
-    )
+    # Use grouped build if we have prompt_responses (merge-based history)
+    if parsed.prompt_responses:
+        repo, repo_path, _ = build_repo_grouped(
+            prompt_responses=parsed.prompt_responses,
+            output_dir=output,
+            author_name=DEFAULT_AGENT_AUTHOR[0],
+            author_email=DEFAULT_AGENT_AUTHOR[1],
+            user_author=user_author,
+        )
+    else:
+        # Fall back to flat structure
+        repo, repo_path, _ = build_repo(
+            operations=parsed.operations,
+            output_dir=output,
+            author_name=DEFAULT_AGENT_AUTHOR[0],
+            author_email=DEFAULT_AGENT_AUTHOR[1],
+            source_repo=worktree_source_repo if single_repo else source_repo,
+            branch=worktree_branch,
+            orphan=single_repo,
+        )
 
     click.echo(f"Created git repository at: {repo_path}")
     if single_repo:
@@ -621,14 +609,14 @@ def _run_process(
 def _run_watch_mode(
     transcript: Path,
     output: Path | None,
-    author: str,
-    email: str,
     source_repo: Path | None,
+    user_author: tuple[str, str],
     single_repo: bool = False,
     branch: str = "agentgit",
 ) -> None:
     """Run in watch mode."""
     from agentgit import find_git_root
+    from agentgit.git_builder import DEFAULT_AGENT_AUTHOR
     from agentgit.watcher import TranscriptWatcher
 
     # Use default output directory if not specified
@@ -654,11 +642,12 @@ def _run_watch_mode(
     def on_update(new_commits: int) -> None:
         click.echo(f"  Added {new_commits} commit(s)")
 
+    # Watch mode uses the agent author for now (no grouped commits)
     watcher = TranscriptWatcher(
         transcript_path=transcript,
         output_dir=output,
-        author_name=author,
-        author_email=email,
+        author_name=DEFAULT_AGENT_AUTHOR[0],
+        author_email=DEFAULT_AGENT_AUTHOR[1],
         source_repo=worktree_source_repo if single_repo else source_repo,
         branch=worktree_branch,
         orphan=single_repo,
@@ -883,27 +872,11 @@ def agents() -> None:
     "--org-uuid",
     help="Organization UUID (auto-detected from ~/.claude.json).",
 )
-@click.option(
-    "--author",
-    default=None,
-    callback=_get_author_default,
-    is_eager=True,
-    help="Author name for git commits. Defaults to git config user.name.",
-)
-@click.option(
-    "--email",
-    default=None,
-    callback=_get_email_default,
-    is_eager=True,
-    help="Author email for git commits. Defaults to git config user.email.",
-)
 def web(
     session_id: str | None,
     output: Path | None,
     token: str | None,
     org_uuid: str | None,
-    author: str,
-    email: str,
 ) -> None:
     """Process a Claude Code web session.
 
@@ -1035,13 +1008,15 @@ def web(
                 # Fall back to session-based naming
                 output = Path.home() / ".agentgit" / "web-sessions" / session_id
 
+        # Get user author from git config for prompt commits
+        user_author = get_default_author()
+
         _run_process(
             transcripts=[temp_path],
             output=output,
             plugin_type=None,
-            author=author,
-            email=email,
             source_repo=None,
+            user_author=user_author,
         )
 
     finally:
