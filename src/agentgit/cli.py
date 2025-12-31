@@ -172,6 +172,62 @@ def translate_paths_for_agentgit_repo(args: list[str], repo_path: Path) -> list[
     return translated
 
 
+def resolve_project(ctx: click.Context) -> Path:
+    """Resolve the source project path from context or auto-detection.
+
+    Args:
+        ctx: Click context containing the --project option value.
+
+    Returns:
+        Path to the source project (git root).
+
+    Raises:
+        click.ClickException: If project cannot be determined.
+    """
+    from agentgit import find_git_root
+
+    # Check explicit --project option
+    project = ctx.obj.get("project") if ctx.obj else None
+    if project is not None:
+        if not project.exists():
+            raise click.ClickException(f"Project not found: {project}")
+        return project
+
+    # Auto-detect from current directory
+    project = find_git_root()
+    if project is None:
+        raise click.ClickException(
+            "Cannot determine project. "
+            "Use --project to specify explicitly, or run from within a git repository."
+        )
+
+    return project
+
+
+def resolve_agentgit_repo(ctx: click.Context) -> Path:
+    """Resolve the agentgit repository path for the current project.
+
+    Args:
+        ctx: Click context containing the --project option value.
+
+    Returns:
+        Path to the agentgit repository.
+
+    Raises:
+        click.ClickException: If repo cannot be determined or doesn't exist.
+    """
+    project = resolve_project(ctx)
+    repo = Path.home() / ".agentgit" / "projects" / encode_path_as_name(project)
+
+    if not repo.exists():
+        raise click.ClickException(
+            f"No agentgit repository found for project {project}. "
+            f"Run 'agentgit' first to create one."
+        )
+
+    return repo
+
+
 def run_git_passthrough(args: list[str]) -> None:
     """Run a git command on the agentgit repo."""
     import subprocess
@@ -232,7 +288,13 @@ class DefaultGroup(click.Group):
 
 @click.group(cls=DefaultGroup, default_cmd="process")
 @click.version_option()
-def main() -> None:
+@click.option(
+    "--project",
+    type=click.Path(exists=True, path_type=Path),
+    help="Source project path. Auto-detected from current directory if not specified.",
+)
+@click.pass_context
+def main(ctx: click.Context, project: Path | None) -> None:
     """Process agent transcripts into git repositories.
 
     If no command is specified, 'process' is used by default.
@@ -253,7 +315,8 @@ def main() -> None:
 
         agentgit diff HEAD~5..HEAD         # View changes in agentgit repo
     """
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj["project"] = project
 
 
 @main.command()
@@ -825,6 +888,138 @@ def web(
     finally:
         # Clean up temp file
         temp_path.unlink(missing_ok=True)
+
+
+@main.command("ingest-commit")
+@click.argument("commit_sha")
+@click.pass_context
+def ingest_commit(ctx: click.Context, commit_sha: str) -> None:
+    """Ingest a commit from the source repository into agentgit.
+
+    Takes a commit SHA from the source project and adds it to the agentgit
+    repository with appropriate metadata. Skips if the commit has already
+    been ingested.
+
+    This is typically called from a post-commit hook to keep agentgit
+    in sync with the source repository.
+
+    Examples:
+
+        agentgit ingest-commit abc123
+
+        agentgit --project /path/to/project ingest-commit HEAD
+    """
+    from git import Repo
+    from git.exc import GitCommandError, InvalidGitRepositoryError
+
+    from agentgit.core import SourceCommit
+    from agentgit.git_builder import GitRepoBuilder, parse_commit_trailers
+
+    # Resolve paths
+    project = resolve_project(ctx)
+    agentgit_repo_path = Path.home() / ".agentgit" / "projects" / encode_path_as_name(project)
+
+    # Ensure agentgit repo exists
+    if not agentgit_repo_path.exists():
+        raise click.ClickException(
+            f"No agentgit repository found for project {project}. "
+            f"Run 'agentgit' first to create one."
+        )
+
+    # Open source repo and resolve the commit SHA
+    try:
+        source_repo = Repo(project)
+    except InvalidGitRepositoryError:
+        raise click.ClickException(f"Not a git repository: {project}")
+
+    try:
+        source_commit = source_repo.commit(commit_sha)
+    except (GitCommandError, ValueError) as e:
+        raise click.ClickException(f"Invalid commit: {commit_sha} - {e}")
+
+    # Check if already ingested
+    try:
+        agentgit_repo = Repo(agentgit_repo_path)
+    except InvalidGitRepositoryError:
+        raise click.ClickException(f"Invalid agentgit repository: {agentgit_repo_path}")
+
+    for existing_commit in agentgit_repo.iter_commits():
+        metadata = parse_commit_trailers(existing_commit.message)
+        if metadata.source_commit == source_commit.hexsha:
+            click.echo(f"Commit {commit_sha[:8]} already ingested, skipping.")
+            return
+
+    # Build SourceCommit object
+    files_changed = list(source_commit.stats.files.keys())
+    sc = SourceCommit(
+        sha=source_commit.hexsha,
+        message=source_commit.message.strip(),
+        timestamp=source_commit.committed_datetime.isoformat(),
+        author=source_commit.author.name,
+        author_email=source_commit.author.email,
+        files_changed=files_changed,
+    )
+
+    # Apply the commit using GitRepoBuilder
+    builder = GitRepoBuilder(output_dir=agentgit_repo_path)
+    builder.repo = agentgit_repo
+    builder.output_dir = agentgit_repo_path
+    builder._apply_source_commit(sc, project)
+
+    click.echo(f"Ingested commit {commit_sha[:8]} by {sc.author}")
+
+
+@main.command("install-hook")
+@click.pass_context
+def install_hook(ctx: click.Context) -> None:
+    """Install a post-commit hook to sync with agentgit.
+
+    Installs a git post-commit hook in the source project that automatically
+    calls 'agentgit ingest-commit' after each commit.
+
+    Examples:
+
+        agentgit install-hook
+
+        agentgit --project /path/to/project install-hook
+    """
+    project = resolve_project(ctx)
+    hooks_dir = project / ".git" / "hooks"
+    hook_path = hooks_dir / "post-commit"
+
+    # Ensure hooks directory exists
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check if hook already exists
+    existing_content = ""
+    agentgit_marker = "# agentgit sync"
+
+    if hook_path.exists():
+        existing_content = hook_path.read_text()
+        if agentgit_marker in existing_content:
+            click.echo("Hook already installed. Use --force to reinstall.")
+            return
+
+    # Build hook script
+    hook_snippet = f'''
+{agentgit_marker}
+agentgit --project "{project}" ingest-commit HEAD 2>/dev/null || true
+'''
+
+    if existing_content:
+        # Append to existing hook
+        new_content = existing_content.rstrip() + "\n" + hook_snippet
+        click.echo(f"Appending agentgit hook to existing post-commit hook.")
+    else:
+        # Create new hook
+        new_content = "#!/bin/bash\n" + hook_snippet
+        click.echo(f"Creating post-commit hook.")
+
+    hook_path.write_text(new_content)
+    hook_path.chmod(0o755)
+
+    click.echo(f"Installed post-commit hook at: {hook_path}")
+    click.echo("Commits will now be automatically synced to agentgit.")
 
 
 if __name__ == "__main__":
