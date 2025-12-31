@@ -7,6 +7,13 @@ from typing import Any
 
 import click
 
+from agentgit.url_resolver import (
+    ResolvedSource,
+    URLResolverError,
+    is_url,
+    resolve_transcript_source,
+)
+
 
 def get_available_types() -> list[str]:
     """Get list of available plugin types."""
@@ -95,6 +102,53 @@ def resolve_transcripts(transcript: Path | None) -> list[Path]:
         )
 
     return transcripts
+
+
+def resolve_transcript_arg(arg: str | None) -> tuple[list[Path], list[ResolvedSource]]:
+    """Resolve a transcript argument that may be a URL or local path.
+
+    Args:
+        arg: The transcript argument (path, URL, or None for auto-discovery).
+
+    Returns:
+        Tuple of (transcript_paths, resolved_sources).
+        The resolved_sources list contains sources that need cleanup.
+
+    Raises:
+        click.ClickException: If resolution fails.
+    """
+    from agentgit.url_resolver import find_transcripts_in_repo
+
+    if arg is None:
+        return resolve_transcripts(None), []
+
+    # Check if it's a URL
+    if is_url(arg):
+        try:
+            resolved = resolve_transcript_source(arg)
+        except URLResolverError as e:
+            raise click.ClickException(str(e)) from e
+        except FileNotFoundError as e:
+            raise click.ClickException(str(e)) from e
+
+        if resolved.source_type == "git_repo":
+            # Find transcripts in the cloned repo
+            transcripts = find_transcripts_in_repo(resolved.path)
+            if not transcripts:
+                resolved.cleanup()
+                raise click.ClickException(
+                    f"No transcript files found in repository: {arg}"
+                )
+            return transcripts, [resolved]
+        else:
+            # Single transcript file from URL
+            return [resolved.path], [resolved]
+    else:
+        # Local path
+        path = Path(arg)
+        if not path.exists():
+            raise click.ClickException(f"File not found: {arg}")
+        return [path], []
 
 
 def get_agentgit_repo_path() -> Path | None:
@@ -225,6 +279,11 @@ class DefaultGroup(click.Group):
             args = [self.default_cmd] + args
             return super().parse_args(ctx, args)
 
+        # Check if first arg is a URL (for process command)
+        if is_url(args[0]):
+            args = [self.default_cmd] + args
+            return super().parse_args(ctx, args)
+
         # Otherwise, treat as git passthrough
         run_git_passthrough(args)
         return []  # Never reached due to SystemExit
@@ -243,11 +302,21 @@ def main() -> None:
     agentgit-created repository. This allows you to use familiar git
     commands like 'log', 'diff', 'show', etc.
 
+    TRANSCRIPT can be a local file path or a URL:
+
+    \b
+    - Local path: ./session.jsonl or /path/to/transcript.jsonl
+    - HTTP/HTTPS URL: https://example.com/session.jsonl
+    - Git repo URL: https://github.com/user/agentgit-repo.git
+    - Raw GitHub URL: https://raw.githubusercontent.com/.../session.jsonl
+
     Examples:
 
         agentgit                           # Process all transcripts for current project
 
         agentgit session.jsonl -o ./output # Process specific transcript
+
+        agentgit https://example.com/transcript.jsonl  # Process from URL
 
         agentgit log --oneline -10         # View recent commits in agentgit repo
 
@@ -257,7 +326,7 @@ def main() -> None:
 
 
 @main.command()
-@click.argument("transcript", type=click.Path(exists=True, path_type=Path), required=False)
+@click.argument("transcript", type=str, required=False)
 @click.option(
     "-o",
     "--output",
@@ -301,7 +370,7 @@ def main() -> None:
     help="Branch name for --single-repo mode. Defaults to 'agentgit'.",
 )
 def process(
-    transcript: Path | None,
+    transcript: str | None,
     output: Path | None,
     plugin_type: str | None,
     author: str,
@@ -313,32 +382,50 @@ def process(
 ) -> None:
     """Process a transcript into a git repository.
 
-    If TRANSCRIPT is not provided, discovers and processes all transcripts
-    for the current project, merging their operations by timestamp.
+    TRANSCRIPT can be a local file path or a URL (http://, https://, git@, etc.).
+    If not provided, discovers and processes all transcripts for the current project.
 
     With --watch, monitors the transcript file and automatically commits
-    new operations as they are added (only works with a single transcript).
+    new operations as they are added (only works with a single local transcript).
 
     With --single-repo, creates the agentgit output as an orphan branch
     in the source repository, using a git worktree at the output location.
     """
-    transcripts = resolve_transcripts(transcript)
+    # Resolve transcript argument (handles URLs and local paths)
+    transcripts, resolved_sources = resolve_transcript_arg(transcript)
 
-    if watch:
-        if len(transcripts) > 1:
-            raise click.ClickException(
-                "Watch mode only supports a single transcript. "
-                "Please specify a transcript file explicitly."
+    try:
+        # Show URL fetch info
+        for source in resolved_sources:
+            if source.original_url:
+                click.echo(f"Fetched from: {source.original_url}")
+                if source.source_type == "git_repo":
+                    click.echo(f"  Repository cloned to: {source.path}")
+
+        if watch:
+            if len(transcripts) > 1:
+                raise click.ClickException(
+                    "Watch mode only supports a single transcript. "
+                    "Please specify a transcript file explicitly."
+                )
+            if resolved_sources and resolved_sources[0].is_temporary:
+                raise click.ClickException(
+                    "Watch mode is not supported for URLs. "
+                    "Please use a local transcript file."
+                )
+            _run_watch_mode(
+                transcripts[0], output, author, email, source_repo,
+                single_repo=single_repo, branch=branch
             )
-        _run_watch_mode(
-            transcripts[0], output, author, email, source_repo,
-            single_repo=single_repo, branch=branch
-        )
-    else:
-        _run_process(
-            transcripts, output, plugin_type, author, email, source_repo,
-            single_repo=single_repo, branch=branch
-        )
+        else:
+            _run_process(
+                transcripts, output, plugin_type, author, email, source_repo,
+                single_repo=single_repo, branch=branch
+            )
+    finally:
+        # Clean up temporary files
+        for source in resolved_sources:
+            source.cleanup()
 
 
 def _run_process(
