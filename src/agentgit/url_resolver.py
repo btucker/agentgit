@@ -320,3 +320,146 @@ def find_transcripts_in_repo(repo_path: Path) -> list[Path]:
     transcripts.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
     return transcripts
+
+
+def is_agentgit_repo(repo_path: Path) -> bool:
+    """Check if a repository is an agentgit-created repository.
+
+    Looks for agentgit-specific commit trailers like Tool-Id, Prompt-Id.
+
+    Args:
+        repo_path: Path to the git repository.
+
+    Returns:
+        True if this appears to be an agentgit repo.
+    """
+    try:
+        from git import Repo
+        from git.exc import InvalidGitRepositoryError
+
+        repo = Repo(repo_path)
+
+        # Check the most recent commits for agentgit trailers
+        for commit in list(repo.iter_commits(max_count=5)):
+            message = commit.message
+            if "Tool-Id:" in message or "Prompt-Id:" in message:
+                return True
+
+        return False
+    except (InvalidGitRepositoryError, Exception):
+        return False
+
+
+def get_agentgit_project_name(repo_path: Path) -> str | None:
+    """Extract the project name from an agentgit repo.
+
+    Looks for Project-Path trailer in commit messages.
+
+    Args:
+        repo_path: Path to the agentgit repository.
+
+    Returns:
+        Project name (encoded path) or None if not found.
+    """
+    try:
+        from git import Repo
+
+        repo = Repo(repo_path)
+
+        for commit in list(repo.iter_commits(max_count=10)):
+            message = commit.message
+            for line in message.split("\n"):
+                if line.startswith("Project-Path:"):
+                    # Extract path and encode it
+                    path = line.split(":", 1)[1].strip()
+                    return path.replace("/", "-")
+
+        return None
+    except Exception:
+        return None
+
+
+def find_local_agentgit_repo(project_name: str) -> Path | None:
+    """Find a local agentgit repo for the given project.
+
+    Args:
+        project_name: Encoded project name (e.g., '-Users-name-project').
+
+    Returns:
+        Path to existing agentgit repo, or None if not found.
+    """
+    agentgit_dir = Path.home() / ".agentgit" / "projects" / project_name
+    if agentgit_dir.exists() and (agentgit_dir / ".git").exists():
+        return agentgit_dir
+    return None
+
+
+def merge_remote_agentgit_repo(
+    local_repo_path: Path,
+    remote_repo_path: Path,
+    remote_url: str,
+) -> tuple[bool, str]:
+    """Add a remote agentgit repo and merge its commits.
+
+    Args:
+        local_repo_path: Path to the local agentgit repo.
+        remote_repo_path: Path to the cloned remote repo.
+        remote_url: Original URL of the remote repo (for remote name).
+
+    Returns:
+        Tuple of (success, message).
+    """
+    try:
+        from git import Repo
+
+        local_repo = Repo(local_repo_path)
+
+        # Generate a remote name from the URL
+        remote_name = "remote-" + re.sub(r"[^\w]", "-", remote_url.split("/")[-1].replace(".git", ""))[:20]
+
+        # Check if remote already exists
+        existing_remotes = [r.name for r in local_repo.remotes]
+        if remote_name in existing_remotes:
+            # Remove existing remote to update it
+            local_repo.delete_remote(remote_name)
+
+        # Add the cloned repo as a remote (using local path since it's already cloned)
+        remote = local_repo.create_remote(remote_name, str(remote_repo_path))
+
+        # Fetch from the remote
+        remote.fetch()
+
+        # Get the default branch of the remote
+        remote_refs = list(remote.refs)
+        if not remote_refs:
+            return False, "Remote has no branches"
+
+        # Find HEAD or main/master branch
+        target_ref = None
+        for ref in remote_refs:
+            if ref.name.endswith("/HEAD") or ref.name.endswith("/main") or ref.name.endswith("/master"):
+                target_ref = ref
+                break
+        if target_ref is None:
+            target_ref = remote_refs[0]
+
+        # Merge the remote branch
+        # Use --allow-unrelated-histories since agentgit repos may have different roots
+        try:
+            local_repo.git.merge(
+                target_ref.name,
+                "--allow-unrelated-histories",
+                "-m", f"Merge remote agentgit history from {remote_url}",
+            )
+            merged_commits = len(list(local_repo.iter_commits(f"HEAD...{target_ref.name}")))
+            return True, f"Merged {merged_commits} commit(s) from {remote_url}"
+        except Exception as e:
+            # If merge fails (conflicts), abort and report
+            try:
+                local_repo.git.merge("--abort")
+            except Exception:
+                pass
+            return False, f"Merge failed (conflicts?): {e}"
+
+    except Exception as e:
+        return False, f"Failed to merge remote repo: {e}"

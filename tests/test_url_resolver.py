@@ -311,6 +311,88 @@ class TestFindTranscriptsInRepo:
         assert transcripts == []
 
 
+class TestIsAgentgitRepo:
+    """Tests for is_agentgit_repo function."""
+
+    def test_agentgit_repo_with_trailers(self, tmp_path):
+        """Should detect agentgit repo by commit trailers."""
+        from git import Repo as GitRepo
+
+        from agentgit.url_resolver import is_agentgit_repo
+
+        repo = GitRepo.init(tmp_path)
+        with repo.config_writer() as config:
+            config.set_value("user", "name", "Test")
+            config.set_value("user", "email", "test@test.com")
+
+        # Create a file and commit with agentgit trailers
+        (tmp_path / "test.py").write_text("x = 1")
+        repo.index.add(["test.py"])
+        repo.index.commit("Add test file\n\nTool-Id: toolu_001\nPrompt-Id: abc123")
+
+        assert is_agentgit_repo(tmp_path)
+
+    def test_regular_repo_not_agentgit(self, tmp_path):
+        """Should not detect regular repos as agentgit."""
+        from git import Repo as GitRepo
+
+        from agentgit.url_resolver import is_agentgit_repo
+
+        repo = GitRepo.init(tmp_path)
+        with repo.config_writer() as config:
+            config.set_value("user", "name", "Test")
+            config.set_value("user", "email", "test@test.com")
+
+        (tmp_path / "test.py").write_text("x = 1")
+        repo.index.add(["test.py"])
+        repo.index.commit("Add test file")
+
+        assert not is_agentgit_repo(tmp_path)
+
+    def test_non_repo_directory(self, tmp_path):
+        """Should return False for non-git directory."""
+        from agentgit.url_resolver import is_agentgit_repo
+
+        (tmp_path / "test.py").write_text("x = 1")
+
+        assert not is_agentgit_repo(tmp_path)
+
+
+class TestGitConfigDefaults:
+    """Tests for git config author defaults."""
+
+    def test_get_git_config_user(self):
+        """Should get user from git config."""
+        from agentgit.cli import get_git_config_user
+
+        # This will get the actual git config - just verify it returns tuple
+        name, email = get_git_config_user()
+        assert name is None or isinstance(name, str)
+        assert email is None or isinstance(email, str)
+
+    def test_get_default_author_with_git_config(self):
+        """Should use git config values when available."""
+        from unittest.mock import patch
+
+        from agentgit.cli import get_default_author
+
+        with patch("agentgit.cli.get_git_config_user", return_value=("Test User", "test@example.com")):
+            name, email = get_default_author()
+            assert name == "Test User"
+            assert email == "test@example.com"
+
+    def test_get_default_author_fallback(self):
+        """Should fall back to Agent when git config not available."""
+        from unittest.mock import patch
+
+        from agentgit.cli import get_default_author
+
+        with patch("agentgit.cli.get_git_config_user", return_value=(None, None)):
+            name, email = get_default_author()
+            assert name == "Agent"
+            assert email == "agent@local"
+
+
 class TestCliIntegration:
     """Integration tests for CLI with URL support."""
 

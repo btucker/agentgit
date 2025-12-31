@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,11 @@ import click
 from agentgit.url_resolver import (
     ResolvedSource,
     URLResolverError,
+    find_local_agentgit_repo,
+    get_agentgit_project_name,
+    is_agentgit_repo,
     is_url,
+    merge_remote_agentgit_repo,
     resolve_transcript_source,
 )
 
@@ -26,6 +31,59 @@ def get_available_types() -> list[str]:
         if info and "name" in info:
             types.append(info["name"])
     return types
+
+
+def get_git_config_user() -> tuple[str | None, str | None]:
+    """Get user name and email from git config.
+
+    Checks local repo config first, then global config.
+
+    Returns:
+        Tuple of (name, email), either may be None if not configured.
+    """
+    import subprocess
+
+    name = None
+    email = None
+
+    try:
+        # Try to get from git config (checks local then global)
+        result = subprocess.run(
+            ["git", "config", "user.name"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            name = result.stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    try:
+        result = subprocess.run(
+            ["git", "config", "user.email"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            email = result.stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return name, email
+
+
+def get_default_author() -> tuple[str, str]:
+    """Get default author name and email for commits.
+
+    Uses git config if available, falls back to 'Agent <agent@local>'.
+
+    Returns:
+        Tuple of (name, email).
+    """
+    name, email = get_git_config_user()
+    return (name or "Agent", email or "agent@local")
 
 
 def encode_path_as_name(path: Path) -> str:
@@ -104,15 +162,25 @@ def resolve_transcripts(transcript: Path | None) -> list[Path]:
     return transcripts
 
 
-def resolve_transcript_arg(arg: str | None) -> tuple[list[Path], list[ResolvedSource]]:
+@dataclass
+class TranscriptResolution:
+    """Result of resolving a transcript argument."""
+
+    transcripts: list[Path]
+    resolved_sources: list[ResolvedSource]
+    is_agentgit_merge: bool = False
+    merge_result: tuple[bool, str] | None = None
+    local_repo_path: Path | None = None
+
+
+def resolve_transcript_arg(arg: str | None) -> TranscriptResolution:
     """Resolve a transcript argument that may be a URL or local path.
 
     Args:
         arg: The transcript argument (path, URL, or None for auto-discovery).
 
     Returns:
-        Tuple of (transcript_paths, resolved_sources).
-        The resolved_sources list contains sources that need cleanup.
+        TranscriptResolution with paths and metadata.
 
     Raises:
         click.ClickException: If resolution fails.
@@ -120,7 +188,10 @@ def resolve_transcript_arg(arg: str | None) -> tuple[list[Path], list[ResolvedSo
     from agentgit.url_resolver import find_transcripts_in_repo
 
     if arg is None:
-        return resolve_transcripts(None), []
+        return TranscriptResolution(
+            transcripts=resolve_transcripts(None),
+            resolved_sources=[],
+        )
 
     # Check if it's a URL
     if is_url(arg):
@@ -132,23 +203,50 @@ def resolve_transcript_arg(arg: str | None) -> tuple[list[Path], list[ResolvedSo
             raise click.ClickException(str(e)) from e
 
         if resolved.source_type == "git_repo":
-            # Find transcripts in the cloned repo
+            # Check if this is an agentgit repo that we can merge
+            if is_agentgit_repo(resolved.path):
+                project_name = get_agentgit_project_name(resolved.path)
+                if project_name:
+                    local_repo = find_local_agentgit_repo(project_name)
+                    if local_repo:
+                        # We have a local repo - merge instead of processing
+                        success, message = merge_remote_agentgit_repo(
+                            local_repo, resolved.path, arg
+                        )
+                        return TranscriptResolution(
+                            transcripts=[],
+                            resolved_sources=[resolved],
+                            is_agentgit_merge=True,
+                            merge_result=(success, message),
+                            local_repo_path=local_repo,
+                        )
+
+            # Not an agentgit repo or no local repo - find transcripts
             transcripts = find_transcripts_in_repo(resolved.path)
             if not transcripts:
                 resolved.cleanup()
                 raise click.ClickException(
                     f"No transcript files found in repository: {arg}"
                 )
-            return transcripts, [resolved]
+            return TranscriptResolution(
+                transcripts=transcripts,
+                resolved_sources=[resolved],
+            )
         else:
             # Single transcript file from URL
-            return [resolved.path], [resolved]
+            return TranscriptResolution(
+                transcripts=[resolved.path],
+                resolved_sources=[resolved],
+            )
     else:
         # Local path
         path = Path(arg)
         if not path.exists():
             raise click.ClickException(f"File not found: {arg}")
-        return [path], []
+        return TranscriptResolution(
+            transcripts=[path],
+            resolved_sources=[],
+        )
 
 
 def get_agentgit_repo_path() -> Path | None:
@@ -325,6 +423,22 @@ def main() -> None:
     pass
 
 
+def _get_author_default(ctx: click.Context, param: click.Parameter, value: str | None) -> str:
+    """Callback to get author default from git config."""
+    if value is not None:
+        return value
+    name, _ = get_default_author()
+    return name
+
+
+def _get_email_default(ctx: click.Context, param: click.Parameter, value: str | None) -> str:
+    """Callback to get email default from git config."""
+    if value is not None:
+        return value
+    _, email = get_default_author()
+    return email
+
+
 @main.command()
 @click.argument("transcript", type=str, required=False)
 @click.option(
@@ -341,13 +455,17 @@ def main() -> None:
 )
 @click.option(
     "--author",
-    default="Agent",
-    help="Author name for git commits.",
+    default=None,
+    callback=_get_author_default,
+    is_eager=True,
+    help="Author name for git commits. Defaults to git config user.name.",
 )
 @click.option(
     "--email",
-    default="agent@local",
-    help="Author email for git commits.",
+    default=None,
+    callback=_get_email_default,
+    is_eager=True,
+    help="Author email for git commits. Defaults to git config user.email.",
 )
 @click.option(
     "--source-repo",
@@ -385,6 +503,9 @@ def process(
     TRANSCRIPT can be a local file path or a URL (http://, https://, git@, etc.).
     If not provided, discovers and processes all transcripts for the current project.
 
+    When given a URL to an existing agentgit repository, it will be added as a
+    remote and merged into the local agentgit repo for the same project.
+
     With --watch, monitors the transcript file and automatically commits
     new operations as they are added (only works with a single local transcript).
 
@@ -392,39 +513,49 @@ def process(
     in the source repository, using a git worktree at the output location.
     """
     # Resolve transcript argument (handles URLs and local paths)
-    transcripts, resolved_sources = resolve_transcript_arg(transcript)
+    resolution = resolve_transcript_arg(transcript)
 
     try:
         # Show URL fetch info
-        for source in resolved_sources:
+        for source in resolution.resolved_sources:
             if source.original_url:
                 click.echo(f"Fetched from: {source.original_url}")
                 if source.source_type == "git_repo":
                     click.echo(f"  Repository cloned to: {source.path}")
 
+        # Handle agentgit repo merge case
+        if resolution.is_agentgit_merge:
+            success, message = resolution.merge_result
+            if success:
+                click.echo(f"Merged remote agentgit repository: {message}")
+                click.echo(f"Local repository: {resolution.local_repo_path}")
+            else:
+                raise click.ClickException(f"Failed to merge: {message}")
+            return
+
         if watch:
-            if len(transcripts) > 1:
+            if len(resolution.transcripts) > 1:
                 raise click.ClickException(
                     "Watch mode only supports a single transcript. "
                     "Please specify a transcript file explicitly."
                 )
-            if resolved_sources and resolved_sources[0].is_temporary:
+            if resolution.resolved_sources and resolution.resolved_sources[0].is_temporary:
                 raise click.ClickException(
                     "Watch mode is not supported for URLs. "
                     "Please use a local transcript file."
                 )
             _run_watch_mode(
-                transcripts[0], output, author, email, source_repo,
+                resolution.transcripts[0], output, author, email, source_repo,
                 single_repo=single_repo, branch=branch
             )
         else:
             _run_process(
-                transcripts, output, plugin_type, author, email, source_repo,
+                resolution.transcripts, output, plugin_type, author, email, source_repo,
                 single_repo=single_repo, branch=branch
             )
     finally:
         # Clean up temporary files
-        for source in resolved_sources:
+        for source in resolution.resolved_sources:
             source.cleanup()
 
 
@@ -754,13 +885,17 @@ def agents() -> None:
 )
 @click.option(
     "--author",
-    default="Agent",
-    help="Author name for git commits.",
+    default=None,
+    callback=_get_author_default,
+    is_eager=True,
+    help="Author name for git commits. Defaults to git config user.name.",
 )
 @click.option(
     "--email",
-    default="agent@local",
-    help="Author email for git commits.",
+    default=None,
+    callback=_get_email_default,
+    is_eager=True,
+    help="Author email for git commits. Defaults to git config user.email.",
 )
 def web(
     session_id: str | None,
