@@ -1,6 +1,6 @@
 # agentgit
 
-Turn AI agent transcripts into git repositories.
+Turn AI agent transcripts into git repositories with full provenance tracking.
 
 ## The Problem
 
@@ -72,13 +72,22 @@ codex: OpenAI Codex CLI JSONL transcripts
 
 ## How It Works
 
-agentgit reads transcript files from standard locations:
+agentgit creates a **separate repository** that shares content with your code repo:
+
+```
+~/.agentgit/projects/<repo-id>/    # AI provenance history
+├── .git/
+│   └── objects/info/alternates → your-repo/.git/objects
+└── refs/heads/session/...
+```
+
+The repos share git's object store via alternates. Same content = same blob SHA = automatic correlation between your code and AI history.
+
+**Source transcripts** are read from standard locations:
 - Claude Code: `~/.claude/projects/`
 - Codex: `~/.codex/sessions/`
 
-It parses file operations (writes, edits, deletes) and reconstructs them as git commits, preserving timestamps and grouping changes by prompt.
-
-**Git structure:**
+**Git structure** (prompts as merge commits):
 
 ```
 ○ Merge: "Add user authentication" [prompt #a1b2c3d4]
@@ -93,7 +102,7 @@ It parses file operations (writes, edits, deletes) and reconstructs them as git 
 ○ Initial commit
 ```
 
-**Commit messages include context:**
+**Commit messages include full context:**
 
 ```
 Refactor auth to use dependency injection
@@ -105,7 +114,11 @@ Context:
 I'll refactor the auth module to use dependency injection for better testability.
 
 Prompt-Id: a1b2c3d4e5f67890abcdef1234567890
+Tool-Id: toolu_abc123
+Timestamp: 2025-01-01T10:30:00Z
 ```
+
+**Repo identification** uses the first commit SHA (12 chars) of your code repo, so it stays stable even if you move or rename the project.
 
 ## Programmatic Usage
 
