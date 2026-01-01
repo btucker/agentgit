@@ -28,8 +28,6 @@ class TranscriptWatcher:
         author_name: str = "Agent",
         author_email: str = "agent@local",
         source_repo: Path | None = None,
-        branch: str | None = None,
-        orphan: bool = False,
         on_update: Callable[[int], None] | None = None,
         enhance_config: "EnhanceConfig | None" = None,
     ):
@@ -40,10 +38,7 @@ class TranscriptWatcher:
             output_dir: Directory for the git repo.
             author_name: Name for git commits.
             author_email: Email for git commits.
-            source_repo: Optional source repository. When used with branch,
-                creates a worktree instead of a standalone repo.
-            branch: Branch name for worktree mode (e.g., "agentgit/history").
-            orphan: If True, create an orphan branch.
+            source_repo: Optional source repository to interleave commits from.
             on_update: Optional callback called with number of new commits after each update.
             enhance_config: Optional configuration for generating commit messages.
         """
@@ -52,8 +47,6 @@ class TranscriptWatcher:
         self.author_name = author_name
         self.author_email = author_email
         self.source_repo = source_repo
-        self.branch = branch
-        self.orphan = orphan
         self.on_update = on_update
         self.enhance_config = enhance_config
         self._observer: Observer | None = None
@@ -65,12 +58,8 @@ class TranscriptWatcher:
         try:
             transcript = parse_transcript(self.transcript_path)
 
-            # Use worktree mode if branch is specified
             builder = GitRepoBuilder(
                 output_dir=self.output_dir,
-                source_repo=self.source_repo if self.branch else None,
-                branch=self.branch,
-                orphan=self.orphan,
                 enhance_config=self.enhance_config,
             )
 
@@ -88,7 +77,7 @@ class TranscriptWatcher:
                 operations=transcript.operations,
                 author_name=self.author_name,
                 author_email=self.author_email,
-                source_repo=self.source_repo if not self.branch else None,
+                source_repo=self.source_repo,
                 incremental=True,
             )
 
