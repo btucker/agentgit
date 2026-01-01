@@ -65,19 +65,31 @@ codex: OpenAI Codex CLI JSONL transcripts
 agentgit can generate better commit messages using either heuristic rules or AI:
 
 ```bash
-# Use rules-based enhancement (default, no AI)
-agentgit --enhance
+# Use rules-based enhancement (fast, no AI)
+agentgit --enhancer rules
 
 # Use Claude Code for AI-powered messages
-agentgit --enhance --enhancer claude_code
+agentgit --enhancer claude_code
 ```
 
 **Available enhancers:**
 
-- `rules` (default) - Uses heuristics to generate messages from prompts and context. Fast, no external dependencies.
+- `rules` - Uses heuristics to generate messages from prompts and context. Fast, no external dependencies.
 - `claude_code` - Uses Claude Code to generate intelligent commit messages. Requires `claude` CLI installed and uses your existing Claude subscription.
 
-The AI enhancer uses efficient batch processing - all commit messages are generated in a single Claude CLI call, regardless of how many commits are in the transcript.
+The `claude_code` enhancer uses efficient batch processing - all commit messages are generated in a single call.
+
+**Preferences are saved per-project.** Once you set an enhancer, it's used automatically on future runs:
+
+```bash
+# First run: set the enhancer
+agentgit --enhancer claude_code
+
+# Future runs: enhancer is remembered
+agentgit  # Uses claude_code automatically
+```
+
+Settings are stored in git config (`agentgit.enhancer`, `agentgit.enhanceModel`).
 
 ## How It Works
 

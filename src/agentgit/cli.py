@@ -291,19 +291,14 @@ def main() -> None:
     help="Watch transcript for changes and auto-commit.",
 )
 @click.option(
-    "--enhance",
-    is_flag=True,
-    help="Enhance commit messages using the specified enhancer.",
-)
-@click.option(
     "--enhancer",
-    default="rules",
-    help="Enhancer plugin ('rules' for heuristics, 'claude_code' for AI). Defaults to 'rules'.",
+    default=None,
+    help="Enhancer plugin ('rules' for heuristics, 'claude_code' for AI). Saved per-project.",
 )
 @click.option(
     "--enhance-model",
-    default="haiku",
-    help="Model to use for enhancement. Defaults to 'haiku'.",
+    default=None,
+    help="Model to use for enhancement (e.g., 'haiku', 'sonnet'). Saved per-project.",
 )
 def process(
     transcript: Path | None,
@@ -313,9 +308,8 @@ def process(
     email: str,
     source_repo: Path | None,
     watch: bool,
-    enhance: bool,
-    enhancer: str,
-    enhance_model: str,
+    enhancer: str | None,
+    enhance_model: str | None,
 ) -> None:
     """Process a transcript into a git repository.
 
@@ -325,8 +319,8 @@ def process(
     With --watch, monitors the transcript file and automatically commits
     new operations as they are added (only works with a single transcript).
 
-    With --enhance, generates better commit messages. Use --enhancer to choose
-    between 'rules' (heuristics, no AI) or 'claude_code' (AI-powered).
+    Use --enhancer to generate better commit messages. The preference is saved
+    per-project and used automatically on future runs.
     """
     transcripts = resolve_transcripts(transcript)
 
@@ -338,12 +332,12 @@ def process(
             )
         _run_watch_mode(
             transcripts[0], output, author, email, source_repo,
-            enhance=enhance, enhancer=enhancer, enhance_model=enhance_model
+            enhancer=enhancer, enhance_model=enhance_model
         )
     else:
         _run_process(
             transcripts, output, plugin_type, author, email, source_repo,
-            enhance=enhance, enhancer=enhancer, enhance_model=enhance_model
+            enhancer=enhancer, enhance_model=enhance_model
         )
 
 
@@ -354,17 +348,22 @@ def _run_process(
     author: str,
     email: str,
     source_repo: Path | None,
-    enhance: bool = False,
-    enhancer: str = "rules",
-    enhance_model: str = "haiku",
+    enhancer: str | None = None,
+    enhance_model: str | None = None,
 ) -> None:
     """Run processing of one or more transcripts."""
     from agentgit import build_repo, parse_transcripts
+    from agentgit.config import ProjectConfig, load_config, save_config
     from agentgit.enhance import EnhanceConfig
 
     # Use default output directory if not specified
     if output is None:
         output = get_default_output_dir(transcripts[0])
+
+    # Load saved config and merge with CLI options
+    saved_config = load_config(output)
+    effective_enhancer = enhancer or saved_config.enhancer
+    effective_model = enhance_model or saved_config.enhance_model or "haiku"
 
     if len(transcripts) == 1:
         click.echo(f"Processing transcript: {transcripts[0]}")
@@ -375,11 +374,13 @@ def _run_process(
 
     parsed = parse_transcripts(transcripts, plugin_type=plugin_type)
 
-    # Configure enhancement if enabled
+    # Configure enhancement if an enhancer is set
     enhance_config = None
-    if enhance:
-        enhance_config = EnhanceConfig(enhancer=enhancer, model=enhance_model, enabled=True)
-        click.echo(f"Enhancement enabled (enhancer: {enhancer}, model: {enhance_model})")
+    if effective_enhancer:
+        enhance_config = EnhanceConfig(
+            enhancer=effective_enhancer, model=effective_model, enabled=True
+        )
+        click.echo(f"Enhancement: {effective_enhancer} (model: {effective_model})")
 
     repo, repo_path, _ = build_repo(
         operations=parsed.operations,
@@ -389,6 +390,14 @@ def _run_process(
         source_repo=source_repo,
         enhance_config=enhance_config,
     )
+
+    # Save new preferences if explicitly provided (after repo exists)
+    if enhancer is not None or enhance_model is not None:
+        new_config = ProjectConfig(
+            enhancer=enhancer or saved_config.enhancer,
+            enhance_model=enhance_model or saved_config.enhance_model,
+        )
+        save_config(output, new_config)
 
     click.echo(f"Created git repository at: {repo_path}")
     click.echo(f"  Prompts: {len(parsed.prompts)}")
@@ -402,11 +411,11 @@ def _run_watch_mode(
     author: str,
     email: str,
     source_repo: Path | None,
-    enhance: bool = False,
-    enhancer: str = "rules",
-    enhance_model: str = "haiku",
+    enhancer: str | None = None,
+    enhance_model: str | None = None,
 ) -> None:
     """Run in watch mode."""
+    from agentgit.config import ProjectConfig, load_config, save_config
     from agentgit.enhance import EnhanceConfig
     from agentgit.watcher import TranscriptWatcher
 
@@ -414,11 +423,18 @@ def _run_watch_mode(
     if output is None:
         output = get_default_output_dir(transcript)
 
-    # Configure enhancement if enabled
+    # Load saved config and merge with CLI options
+    saved_config = load_config(output)
+    effective_enhancer = enhancer or saved_config.enhancer
+    effective_model = enhance_model or saved_config.enhance_model or "haiku"
+
+    # Configure enhancement if an enhancer is set
     enhance_config = None
-    if enhance:
-        enhance_config = EnhanceConfig(enhancer=enhancer, model=enhance_model, enabled=True)
-        click.echo(f"Enhancement enabled (enhancer: {enhancer}, model: {enhance_model})")
+    if effective_enhancer:
+        enhance_config = EnhanceConfig(
+            enhancer=effective_enhancer, model=effective_model, enabled=True
+        )
+        click.echo(f"Enhancement: {effective_enhancer} (model: {effective_model})")
 
     click.echo(f"Watching transcript: {transcript}")
     click.echo(f"Output directory: {output}")
@@ -442,6 +458,14 @@ def _run_watch_mode(
     from git.exc import InvalidGitRepositoryError
 
     watcher.start()
+
+    # Save new preferences if explicitly provided (after repo exists)
+    if enhancer is not None or enhance_model is not None:
+        new_config = ProjectConfig(
+            enhancer=enhancer or saved_config.enhancer,
+            enhance_model=enhance_model or saved_config.enhance_model,
+        )
+        save_config(output, new_config)
 
     try:
         repo = Repo(output)
