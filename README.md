@@ -166,6 +166,53 @@ Register in `pyproject.toml`:
 my_format = "my_package:MyFormatPlugin"
 ```
 
+## Adding Enhancer Plugins
+
+Enhancer plugins generate commit messages. They can use AI, heuristics, or any other approach:
+
+```python
+from agentgit import hookimpl
+
+class MyEnhancerPlugin:
+    @hookimpl
+    def agentgit_get_ai_enhancer_info(self):
+        return {
+            "name": "my_enhancer",
+            "description": "My custom commit message enhancer",
+        }
+
+    @hookimpl
+    def agentgit_enhance_merge_message(self, prompt, turns, enhancer, model):
+        if enhancer != "my_enhancer":
+            return None
+        # Generate a commit message from the prompt and turns
+        return f"Implement: {prompt.text[:50]}"
+
+    @hookimpl
+    def agentgit_enhance_turn_message(self, turn, prompt, enhancer, model):
+        if enhancer != "my_enhancer":
+            return None
+        # Generate a commit message for a single assistant turn
+        files = turn.files_created + turn.files_modified
+        return f"Update {', '.join(files[:3])}"
+
+    @hookimpl
+    def agentgit_enhance_operation_message(self, operation, enhancer, model):
+        if enhancer != "my_enhancer":
+            return None
+        # Generate a commit message for a single file operation
+        return f"Modify {operation.filename}"
+```
+
+Register in `pyproject.toml`:
+
+```toml
+[project.entry-points."agentgit"]
+my_enhancer = "my_package:MyEnhancerPlugin"
+```
+
+Use with: `agentgit --enhance --enhancer my_enhancer`
+
 ## License
 
 MIT
