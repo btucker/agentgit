@@ -2,7 +2,7 @@
 
 See the context behind every line of code written by coding agents.
 
-After a session with Claude Code or Codex, you can diff to see *what* changed—but not *why*. Which prompt triggered that refactor? What was the agent thinking when it modified that file?
+After a session with Claude Code or Codex, you can diff to see *what* changed—but not *why*. Which prompt triggered that refactor? What was the agent thinking when it modified that line?
 
 agentgit preserves the full story—in a separate repo that never touches your codebase. Each prompt becomes a merge commit, each response becomes commits with the agent's reasoning, and standard git tools reveal everything:
 
