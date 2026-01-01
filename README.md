@@ -1,6 +1,6 @@
 # agentgit
 
-Turn AI agent transcripts into git repositories with full provenance tracking.
+See the context behind every line of code written by coding agents.
 
 ## The Problem
 
@@ -10,7 +10,7 @@ The code changes are visible. The context behind them is lost.
 
 ## The Solution
 
-agentgit converts agent transcripts into git repositories, connecting each change to the prompt that caused it:
+agentgit connects every code change to the prompt and reasoning that caused it:
 
 - **Prompt → Merge commit**: See all changes from a single request
 - **Response → Commit**: Each logical step becomes a commit with the agent's reasoning
@@ -72,16 +72,18 @@ codex: OpenAI Codex CLI JSONL transcripts
 
 ## How It Works
 
-agentgit creates a **separate repository** that shares content with your code repo:
+agentgit reads coding agent transcripts and builds a git history where each commit preserves the full context—prompt, reasoning, and changes together.
+
+It creates a **separate repository** that shares content with your code repo:
 
 ```
-~/.agentgit/projects/<repo-id>/    # AI provenance history
+~/.agentgit/projects/<repo-id>/    # Provenance history
 ├── .git/
 │   └── objects/info/alternates → your-repo/.git/objects
 └── refs/heads/session/...
 ```
 
-The repos share git's object store via alternates. Same content = same blob SHA = automatic correlation between your code and AI history.
+The repos share git's object store. Same content = same blob SHA = automatic correlation between your code and its history.
 
 **Source transcripts** are read from standard locations:
 - Claude Code: `~/.claude/projects/`
