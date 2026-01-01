@@ -153,7 +153,7 @@ class AgentGitSpec:
         """Return AI enhancer plugin identification info.
 
         Returns:
-            Dict with 'name' (short identifier like 'claude_cli') and
+            Dict with 'name' (short identifier like 'claude_code') and
             'description' (human-readable description), or None.
         """
 
@@ -168,7 +168,7 @@ class AgentGitSpec:
 
         Args:
             operation: The file operation to generate a message for.
-            enhancer: The enhancer type to use (e.g., 'claude_cli').
+            enhancer: The enhancer type to use (e.g., 'claude_code').
             model: Optional model override (e.g., 'haiku', 'sonnet').
 
         Returns:
@@ -188,7 +188,7 @@ class AgentGitSpec:
         Args:
             turn: The assistant turn containing grouped operations.
             prompt: Optional user prompt that triggered this turn.
-            enhancer: The enhancer type to use (e.g., 'claude_cli').
+            enhancer: The enhancer type to use (e.g., 'claude_code').
             model: Optional model override.
 
         Returns:
@@ -208,7 +208,7 @@ class AgentGitSpec:
         Args:
             prompt: The user prompt.
             turns: All assistant turns that responded to the prompt.
-            enhancer: The enhancer type to use (e.g., 'claude_cli').
+            enhancer: The enhancer type to use (e.g., 'claude_code').
             model: Optional model override.
 
         Returns:
@@ -234,11 +234,11 @@ def register_builtin_plugins(pm: pluggy.PluginManager) -> None:
 
 def register_enhancer_plugins(pm: pluggy.PluginManager) -> None:
     """Register the built-in AI enhancer plugins."""
-    from agentgit.enhancers.claude_cli import ClaudeCLIEnhancerPlugin
+    from agentgit.enhancers.claude_code import ClaudeCodeEnhancerPlugin
     from agentgit.enhancers.rules import RulesEnhancerPlugin
 
     pm.register(RulesEnhancerPlugin())
-    pm.register(ClaudeCLIEnhancerPlugin())
+    pm.register(ClaudeCodeEnhancerPlugin())
 
 
 _configured_plugin_manager: pluggy.PluginManager | None = None

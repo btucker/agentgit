@@ -1,4 +1,4 @@
-"""Claude CLI AI enhancement plugin for agentgit."""
+"""Claude Code AI enhancement plugin for agentgit."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "haiku"
 
 # Plugin identifier
-ENHANCER_NAME = "claude_cli"
+ENHANCER_NAME = "claude_code"
 
 # Global cache for batch-processed messages
 _message_cache: dict[str, str] = {}
@@ -279,8 +279,8 @@ def clear_message_cache() -> None:
     _message_cache = {}
 
 
-class ClaudeCLIEnhancerPlugin:
-    """AI enhancement plugin using Claude Code CLI."""
+class ClaudeCodeEnhancerPlugin:
+    """AI enhancement plugin using Claude Code."""
 
     @hookimpl
     def agentgit_get_ai_enhancer_info(self) -> dict[str, str]:

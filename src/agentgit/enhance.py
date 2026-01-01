@@ -10,7 +10,7 @@ from agentgit.plugins import get_configured_plugin_manager
 if TYPE_CHECKING:
     from agentgit.core import AssistantTurn, FileOperation, Prompt, PromptResponse
 
-# Default enhancer to use (rules = no AI, claude_cli = AI-powered)
+# Default enhancer to use (rules = no AI, claude_code = AI-powered)
 DEFAULT_ENHANCER = "rules"
 DEFAULT_MODEL = "haiku"
 
@@ -131,7 +131,7 @@ def preprocess_batch_enhancement(
 ) -> None:
     """Pre-process all prompt responses for batch enhancement.
 
-    For AI-powered enhancers like claude_cli, this sends all items to the
+    For AI-powered enhancers like claude_code, this sends all items to the
     AI in a single call, which is much more efficient than individual calls.
     The results are cached and returned by subsequent individual hook calls.
 
@@ -147,8 +147,8 @@ def preprocess_batch_enhancement(
     if not config.enabled:
         return
 
-    # Only do batch processing for claude_cli enhancer
-    if config.enhancer == "claude_cli":
-        from agentgit.enhancers.claude_cli import batch_enhance_prompt_responses
+    # Only do batch processing for claude_code enhancer
+    if config.enhancer == "claude_code":
+        from agentgit.enhancers.claude_code import batch_enhance_prompt_responses
 
         batch_enhance_prompt_responses(prompt_responses, config.model)

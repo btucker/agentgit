@@ -298,7 +298,7 @@ def main() -> None:
 @click.option(
     "--enhancer",
     default="rules",
-    help="Enhancer plugin ('rules' for heuristics, 'claude_cli' for AI). Defaults to 'rules'.",
+    help="Enhancer plugin ('rules' for heuristics, 'claude_code' for AI). Defaults to 'rules'.",
 )
 @click.option(
     "--enhance-model",
@@ -326,7 +326,7 @@ def process(
     new operations as they are added (only works with a single transcript).
 
     With --enhance, generates better commit messages. Use --enhancer to choose
-    between 'rules' (heuristics, no AI) or 'claude_cli' (AI-powered).
+    between 'rules' (heuristics, no AI) or 'claude_code' (AI-powered).
     """
     transcripts = resolve_transcripts(transcript)
 

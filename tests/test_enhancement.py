@@ -4,7 +4,7 @@ import pytest
 
 from agentgit.enhance import EnhanceConfig, get_available_enhancers
 from agentgit.core import AssistantTurn, FileOperation, OperationType, Prompt
-from agentgit.enhancers.claude_cli import ClaudeCLIEnhancerPlugin
+from agentgit.enhancers.claude_code import ClaudeCodeEnhancerPlugin
 from agentgit.enhancers.rules import (
     RulesEnhancerPlugin,
     _prompt_needs_context,
@@ -25,8 +25,8 @@ class TestEnhanceConfig:
 
     def test_custom_config(self):
         """Should accept custom values."""
-        config = EnhanceConfig(enhancer="claude_cli", model="sonnet", enabled=False)
-        assert config.enhancer == "claude_cli"
+        config = EnhanceConfig(enhancer="claude_code", model="sonnet", enabled=False)
+        assert config.enhancer == "claude_code"
         assert config.model == "sonnet"
         assert config.enabled is False
 
@@ -40,7 +40,7 @@ class TestGetAvailableEnhancers:
         assert isinstance(enhancers, list)
         names = [e["name"] for e in enhancers]
         assert "rules" in names
-        assert "claude_cli" in names
+        assert "claude_code" in names
 
     def test_enhancer_has_name_and_description(self):
         """Each enhancer should have name and description."""
@@ -108,7 +108,7 @@ class TestRulesEnhancerPlugin:
         )
         result = plugin.agentgit_enhance_operation_message(
             operation=operation,
-            enhancer="claude_cli",
+            enhancer="claude_code",
             model=None,
         )
         assert result is None
@@ -287,19 +287,19 @@ class TestSummarizeFiles:
         assert _summarize_files([]) == ""
 
 
-class TestClaudeCLIEnhancerPlugin:
-    """Tests for ClaudeCLIEnhancerPlugin."""
+class TestClaudeCodeEnhancerPlugin:
+    """Tests for ClaudeCodeEnhancerPlugin."""
 
     def test_get_enhancer_info(self):
         """Should return plugin info."""
-        plugin = ClaudeCLIEnhancerPlugin()
+        plugin = ClaudeCodeEnhancerPlugin()
         info = plugin.agentgit_get_ai_enhancer_info()
-        assert info["name"] == "claude_cli"
+        assert info["name"] == "claude_code"
         assert "description" in info
 
     def test_enhance_operation_message_wrong_enhancer(self):
         """Should return None for wrong enhancer type."""
-        plugin = ClaudeCLIEnhancerPlugin()
+        plugin = ClaudeCodeEnhancerPlugin()
         operation = FileOperation(
             file_path="/test/file.py",
             operation_type=OperationType.WRITE,
@@ -315,11 +315,11 @@ class TestClaudeCLIEnhancerPlugin:
 
 
 class TestContextBuilders:
-    """Tests for claude_cli context building helpers."""
+    """Tests for claude_code context building helpers."""
 
     def test_build_operation_context_write(self):
         """Should build context for write operation."""
-        from agentgit.enhancers.claude_cli import _build_operation_context
+        from agentgit.enhancers.claude_code import _build_operation_context
 
         operation = FileOperation(
             file_path="/project/src/test.py",
@@ -334,7 +334,7 @@ class TestContextBuilders:
 
     def test_build_operation_context_edit(self):
         """Should build context for edit operation."""
-        from agentgit.enhancers.claude_cli import _build_operation_context
+        from agentgit.enhancers.claude_code import _build_operation_context
 
         operation = FileOperation(
             file_path="/project/src/test.py",
@@ -351,7 +351,7 @@ class TestContextBuilders:
 
     def test_truncate_text(self):
         """Should truncate long text."""
-        from agentgit.enhancers.claude_cli import _truncate_text
+        from agentgit.enhancers.claude_code import _truncate_text
 
         short = "short"
         assert _truncate_text(short, 10) == "short"
@@ -363,7 +363,7 @@ class TestContextBuilders:
 
     def test_clean_message(self):
         """Should clean up generated message."""
-        from agentgit.enhancers.claude_cli import _clean_message
+        from agentgit.enhancers.claude_code import _clean_message
 
         # Remove quotes
         assert _clean_message('"Add feature"') == "Add feature"

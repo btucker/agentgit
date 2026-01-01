@@ -68,14 +68,14 @@ agentgit can generate better commit messages using either heuristic rules or AI:
 # Use rules-based enhancement (default, no AI)
 agentgit --enhance
 
-# Use Claude CLI for AI-powered messages
-agentgit --enhance --enhancer claude_cli
+# Use Claude Code for AI-powered messages
+agentgit --enhance --enhancer claude_code
 ```
 
 **Available enhancers:**
 
 - `rules` (default) - Uses heuristics to generate messages from prompts and context. Fast, no external dependencies.
-- `claude_cli` - Uses Claude Code CLI to generate intelligent commit messages. Requires `claude` CLI installed and uses your existing Claude subscription.
+- `claude_code` - Uses Claude Code to generate intelligent commit messages. Requires `claude` CLI installed and uses your existing Claude subscription.
 
 The AI enhancer uses efficient batch processing - all commit messages are generated in a single Claude CLI call, regardless of how many commits are in the transcript.
 
