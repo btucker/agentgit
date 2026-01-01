@@ -436,44 +436,34 @@ def _run_watch_mode(
     "--type",
     "filter_type",
     type=str,
-    help="Filter by transcript type (e.g., claude_code, codex).",
-)
-@click.option(
-    "--no-web",
-    is_flag=True,
-    help="Skip fetching web sessions (only show local transcripts).",
+    help="Filter by transcript type (e.g., claude_code, codex, claude_code_web).",
 )
 def discover(
     project: Path | None,
     all_projects: bool,
     list_only: bool,
     filter_type: str | None,
-    no_web: bool,
 ) -> None:
     """Discover and process transcripts interactively.
 
-    Shows all transcript files and web sessions found for the current project
-    in a tabular view. Enter a number to process a transcript into a git repository.
+    Shows all transcript files found for the current project in a tabular view.
+    This includes both local transcripts and web sessions (if credentials are
+    available). Enter a number to process a transcript into a git repository.
 
     Use --all to show transcripts from all projects.
-    Use --no-web to skip fetching web sessions.
     """
-    from dataclasses import dataclass
-    from typing import Union
-
     from rich.console import Console
     from rich.panel import Panel
     from rich.table import Table
 
-    from agentgit import DiscoveredTranscript, discover_transcripts_enriched, find_git_root
-    from agentgit.web_sessions import DiscoveredWebSession, discover_web_sessions
+    from agentgit import discover_transcripts_enriched, find_git_root
 
     console = Console()
     home = Path.home()
 
-    # Determine project path
     if all_projects:
-        project_for_discovery = None
+        # Discover from all projects
+        transcripts = discover_transcripts_enriched(all_projects=True)
         header_path = "all projects"
     else:
         if project is None:
@@ -482,104 +472,25 @@ def discover(
                 raise click.ClickException(
                     "Not in a git repository. Use --project to specify a project path, or --all for all projects."
                 )
-        project_for_discovery = project
+        transcripts = discover_transcripts_enriched(project)
         header_path = str(project)
 
-    # Discover local transcripts
-    transcripts = discover_transcripts_enriched(
-        project_path=project_for_discovery,
-        all_projects=all_projects,
-    )
-
-    # Discover web sessions (unless disabled)
-    web_sessions: list[DiscoveredWebSession] = []
-    if not no_web:
-        web_sessions = discover_web_sessions(project_path=project_for_discovery)
-
-    # Create unified list of items for display
-    @dataclass
-    class DiscoverItem:
-        """Unified item for display in discover table."""
-        index: int
-        source: str  # "Local" or "Web"
-        agent: str
-        name: str
-        timestamp: str
-        size_or_title: str
-        # Original objects for processing
-        transcript: DiscoveredTranscript | None = None
-        web_session: DiscoveredWebSession | None = None
-
-    items: list[DiscoverItem] = []
-
-    # Add local transcripts
-    for t in transcripts:
-        # Convert path to ~/... format
-        try:
-            rel_path = "~/" + str(t.path.relative_to(home))
-        except ValueError:
-            rel_path = str(t.path)
-
-        items.append(DiscoverItem(
-            index=0,  # Will be set later
-            source="Local",
-            agent=t.plugin_name,
-            name=rel_path,
-            timestamp=t.mtime_formatted,
-            size_or_title=t.size_human,
-            transcript=t,
-        ))
-
-    # Add web sessions
-    for ws in web_sessions:
-        items.append(DiscoverItem(
-            index=0,
-            source="Web",
-            agent="Claude Code",
-            name=ws.display_name,
-            timestamp=ws.created_at_formatted,
-            size_or_title=ws.project_name or "—",
-            web_session=ws,
-        ))
-
-    # Sort all items by timestamp (most recent first)
-    # For local: mtime, for web: created_at
-    def get_sort_key(item: DiscoverItem) -> str:
-        if item.transcript:
-            from datetime import datetime
-            return datetime.fromtimestamp(item.transcript.mtime).isoformat()
-        elif item.web_session:
-            return item.web_session.created_at
-        return ""
-
-    items.sort(key=get_sort_key, reverse=True)
-
-    # Assign indices
-    for i, item in enumerate(items, 1):
-        item.index = i
+    if not transcripts:
+        msg = "No transcripts found." if all_projects else "No transcripts found for this project."
+        console.print(f"[yellow]{msg}[/yellow]")
+        return
 
     # Filter by type if specified
     if filter_type:
-        filter_lower = filter_type.lower()
-        if filter_lower == "web":
-            items = [item for item in items if item.source == "Web"]
-        elif filter_lower == "local":
-            items = [item for item in items if item.source == "Local"]
-        else:
-            items = [
-                item for item in items
-                if item.transcript and filter_lower in item.transcript.format_type.lower()
-            ]
-        if not items:
+        transcripts = [
+            t for t in transcripts if filter_type.lower() in t.format_type.lower()
+            or filter_type.lower() in t.plugin_name.lower()
+        ]
+        if not transcripts:
             console.print(
                 f"[yellow]No transcripts found matching type '{filter_type}'.[/yellow]"
             )
             return
-
-    if not items:
-        msg = "No transcripts or web sessions found." if all_projects else "No transcripts or web sessions found for this project."
-        console.print(f"[yellow]{msg}[/yellow]")
-        return
 
     # Display header
     console.print(
@@ -588,31 +499,25 @@ def discover(
     console.print()
 
     # Build unified table
-    local_count = sum(1 for item in items if item.source == "Local")
-    web_count = sum(1 for item in items if item.source == "Web")
-    title_parts = []
-    if local_count > 0:
-        title_parts.append(f"{local_count} local")
-    if web_count > 0:
-        title_parts.append(f"{web_count} web")
-    table = Table(title=" + ".join(title_parts) + " sessions")
+    count_label = "transcript" if len(transcripts) == 1 else "transcripts"
+    table = Table(title=f"{len(transcripts)} {count_label}")
     table.add_column("#", style="dim", width=4)
-    table.add_column("Source", style="blue", width=6)
     table.add_column("Agent", style="magenta")
     table.add_column("Name/Path", style="cyan")
-    table.add_column("Time", style="green")
-    table.add_column("Size/Project", style="yellow", justify="right")
+    table.add_column("Modified", style="green")
+    table.add_column("Size", style="yellow", justify="right")
 
-    for item in items:
-        source_style = "[blue]Local[/blue]" if item.source == "Local" else "[green]Web[/green]"
-        table.add_row(
-            str(item.index),
-            source_style,
-            item.agent,
-            item.name,
-            item.timestamp,
-            item.size_or_title,
-        )
+    for i, t in enumerate(transcripts, 1):
+        # Use display name if available, otherwise path
+        if t.display_name:
+            name = t.display_name
+        else:
+            # Convert path to ~/... format
+            try:
+                name = "~/" + str(t.path.relative_to(home))
+            except ValueError:
+                name = str(t.path)
+        table.add_row(str(i), t.plugin_name, name, t.mtime_formatted, t.size_human)
 
     console.print(table)
     console.print()
@@ -639,112 +544,25 @@ def discover(
 
     try:
         idx = int(choice)
-        if idx < 1 or idx > len(items):
-            console.print(f"[red]Invalid number. Enter 1-{len(items)}.[/red]")
+        if idx < 1 or idx > len(transcripts):
+            console.print(f"[red]Invalid number. Enter 1-{len(transcripts)}.[/red]")
             return
     except ValueError:
         console.print("[red]Invalid input. Enter a number.[/red]")
         return
 
-    selected = items[idx - 1]
+    selected = transcripts[idx - 1]
 
-    # Process the selected item
+    # Process the selected transcript
     console.print()
+    console.print(f"[bold]Processing[/bold] {selected.display_name or selected.path.name}...")
 
-    if selected.transcript:
-        # Process local transcript
-        console.print(f"[bold]Processing[/bold] {selected.transcript.path.name}...")
-
-        output_dir = get_default_output_dir(selected.transcript.path)
-        try:
-            from agentgit import transcript_to_repo
-
-            repo, repo_path, transcript = transcript_to_repo(
-                selected.transcript.path,
-                output_dir=output_dir,
-            )
-
-            # Count commits and files
-            commit_count = sum(1 for _ in repo.iter_commits())
-            prompt_count = len(transcript.prompt_responses)
-            file_count = len(set(op.file_path for op in transcript.operations))
-
-            console.print(f"[green]Created git repository at[/green] {repo_path}")
-            console.print(f"  - {commit_count} commits ({prompt_count} prompts)")
-            console.print(f"  - {file_count} files modified")
-
-        except Exception as e:
-            console.print(f"[red]Error processing transcript:[/red] {e}")
-            raise click.ClickException(str(e))
-
-    elif selected.web_session:
-        # Process web session
-        ws = selected.web_session
-        console.print(f"[bold]Processing web session[/bold] {ws.display_name}...")
-
-        try:
-            _process_web_session(ws, console)
-        except Exception as e:
-            console.print(f"[red]Error processing web session:[/red] {e}")
-            raise click.ClickException(str(e))
-
-
-def _process_web_session(
-    web_session: "DiscoveredWebSession",
-    console: "Console",
-) -> None:
-    """Process a web session into a git repository.
-
-    Args:
-        web_session: The web session to process.
-        console: Rich console for output.
-    """
-    import json
-    import tempfile
-
-    from agentgit.web_sessions import (
-        fetch_session_data,
-        resolve_credentials,
-        session_to_jsonl_entries,
-    )
-
-    # Get credentials
-    token, org_uuid = resolve_credentials()
-
-    # Fetch session data
-    console.print(f"  Fetching session {web_session.session_id[:8]}...")
-    session_data = fetch_session_data(token, org_uuid, web_session.session_id)
-
-    # Convert to JSONL entries
-    entries = session_to_jsonl_entries(session_data)
-    if not entries:
-        raise click.ClickException("No transcript entries found in session.")
-
-    # Create temporary transcript file
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".jsonl",
-        delete=False,
-        prefix=f"web-session-{web_session.session_id[:8]}-",
-    ) as f:
-        for entry in entries:
-            f.write(json.dumps(entry) + "\n")
-        temp_path = Path(f.name)
-
+    output_dir = get_default_output_dir(selected.path)
     try:
-        # Determine output directory
-        if web_session.project_path:
-            output_dir = Path.home() / ".agentgit" / "projects" / encode_path_as_name(
-                Path(web_session.project_path)
-            )
-        else:
-            output_dir = Path.home() / ".agentgit" / "web-sessions" / web_session.session_id
-
-        # Process the transcript
         from agentgit import transcript_to_repo
 
         repo, repo_path, transcript = transcript_to_repo(
-            temp_path,
+            selected.path,
             output_dir=output_dir,
         )
 
@@ -757,9 +575,9 @@ def _process_web_session(
         console.print(f"  - {commit_count} commits ({prompt_count} prompts)")
         console.print(f"  - {file_count} files modified")
 
-    finally:
-        # Clean up temp file
-        temp_path.unlink(missing_ok=True)
+    except Exception as e:
+        console.print(f"[red]Error processing transcript:[/red] {e}")
+        raise click.ClickException(str(e))
 
 
 @main.command()
