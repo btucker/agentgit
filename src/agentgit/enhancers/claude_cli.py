@@ -11,7 +11,7 @@ from agentgit.core import OperationType
 from agentgit.plugins import hookimpl
 
 if TYPE_CHECKING:
-    from agentgit.core import AssistantTurn, FileOperation, Prompt
+    from agentgit.core import AssistantTurn, FileOperation, Prompt, PromptResponse
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,9 @@ DEFAULT_MODEL = "haiku"
 
 # Plugin identifier
 ENHANCER_NAME = "claude_cli"
+
+# Global cache for batch-processed messages
+_message_cache: dict[str, str] = {}
 
 
 def _run_claude_cli(prompt: str, model: str = DEFAULT_MODEL) -> str | None:
@@ -148,6 +151,134 @@ def _clean_message(message: str) -> str:
     return message
 
 
+def _get_prompt_key(prompt: "Prompt") -> str:
+    """Generate a cache key for a prompt."""
+    return f"prompt:{prompt.prompt_id}"
+
+
+def _get_turn_key(turn: "AssistantTurn") -> str:
+    """Generate a cache key for a turn."""
+    # Use timestamp and first operation tool_id for uniqueness
+    if turn.operations and turn.operations[0].tool_id:
+        return f"turn:{turn.timestamp}:{turn.operations[0].tool_id}"
+    return f"turn:{turn.timestamp}"
+
+
+def batch_enhance_prompt_responses(
+    prompt_responses: list["PromptResponse"],
+    model: str = DEFAULT_MODEL,
+) -> dict[str, str]:
+    """Batch process all prompt responses to generate commit messages efficiently.
+
+    This function sends all prompts to Claude CLI in a single call, which is
+    much more efficient than making individual calls for each commit message.
+
+    Args:
+        prompt_responses: List of PromptResponse objects to process.
+        model: The model to use (e.g., "haiku", "sonnet").
+
+    Returns:
+        Dictionary mapping cache keys to generated commit messages.
+    """
+    global _message_cache
+
+    if not prompt_responses:
+        return {}
+
+    # Build batch prompt with all items
+    items = []
+    item_keys = []
+
+    for pr in prompt_responses:
+        # Add prompt/merge message request
+        prompt_key = _get_prompt_key(pr.prompt)
+        if prompt_key not in _message_cache:
+            context_parts = [f"User request: {_truncate_text(pr.prompt.text, 500)}"]
+
+            # Summarize files changed
+            all_files = []
+            for turn in pr.turns:
+                all_files.extend(turn.files_created)
+                all_files.extend(turn.files_modified)
+
+            if all_files:
+                context_parts.append(f"Files changed: {', '.join(all_files[:10])}")
+
+            items.append({
+                "id": len(items) + 1,
+                "type": "merge",
+                "context": "\n".join(context_parts),
+            })
+            item_keys.append(prompt_key)
+
+        # Add turn message requests
+        for turn in pr.turns:
+            turn_key = _get_turn_key(turn)
+            if turn_key not in _message_cache:
+                items.append({
+                    "id": len(items) + 1,
+                    "type": "turn",
+                    "context": _build_turn_context(turn, 800),
+                })
+                item_keys.append(turn_key)
+
+    if not items:
+        return _message_cache
+
+    # Build the batch prompt
+    batch_prompt = """Generate concise git commit message subject lines (max 72 characters each) for these items.
+
+Rules:
+- Start with a verb (Add, Fix, Update, Remove, Refactor, Implement)
+- Be specific but concise
+- Focus on the purpose/intent
+- Use imperative mood ("Add feature" not "Added feature")
+
+Items:
+"""
+
+    for item in items:
+        batch_prompt += f"\n[{item['id']}] ({item['type']})\n{item['context']}\n"
+
+    batch_prompt += f"""
+Respond with a JSON object mapping item IDs to commit messages:
+{{"1": "Add user authentication", "2": "Fix login validation", ...}}
+
+ONLY respond with the JSON object, nothing else."""
+
+    # Call Claude CLI once for all items
+    response = _run_claude_cli(batch_prompt, model)
+
+    if response:
+        try:
+            # Try to parse JSON response
+            # Handle potential markdown code blocks
+            response = response.strip()
+            if response.startswith("```"):
+                lines = response.split("\n")
+                response = "\n".join(lines[1:-1])
+
+            messages = json.loads(response)
+
+            # Map responses back to cache keys
+            for i, key in enumerate(item_keys):
+                item_id = str(i + 1)
+                if item_id in messages:
+                    _message_cache[key] = _clean_message(messages[item_id])
+
+        except json.JSONDecodeError as e:
+            logger.debug("Failed to parse batch response as JSON: %s", e)
+            # Fall back to individual processing
+
+    return _message_cache
+
+
+def clear_message_cache() -> None:
+    """Clear the message cache."""
+    global _message_cache
+    _message_cache = {}
+
+
 class ClaudeCLIEnhancerPlugin:
     """AI enhancement plugin using Claude Code CLI."""
 
@@ -216,6 +347,11 @@ Respond with ONLY the commit message subject line, nothing else."""
         if enhancer != ENHANCER_NAME:
             return None
 
+        # Check cache first (populated by batch processing)
+        turn_key = _get_turn_key(turn)
+        if turn_key in _message_cache:
+            return _message_cache[turn_key]
+
         model = model or DEFAULT_MODEL
 
         # Build context
@@ -243,7 +379,9 @@ Respond with ONLY the commit message subject line, nothing else."""
 
         message = _run_claude_cli(ai_prompt, model)
         if message:
-            return _clean_message(message)
+            result = _clean_message(message)
+            _message_cache[turn_key] = result
+            return result
         return None
 
     @hookimpl
@@ -257,6 +395,11 @@ Respond with ONLY the commit message subject line, nothing else."""
         """Generate an AI-enhanced merge commit message for a user prompt."""
         if enhancer != ENHANCER_NAME:
             return None
+
+        # Check cache first (populated by batch processing)
+        prompt_key = _get_prompt_key(prompt)
+        if prompt_key in _message_cache:
+            return _message_cache[prompt_key]
 
         model = model or DEFAULT_MODEL
 
@@ -303,5 +446,7 @@ Respond with ONLY the commit message subject line, nothing else."""
 
         message = _run_claude_cli(ai_prompt, model)
         if message:
-            return _clean_message(message)
+            result = _clean_message(message)
+            _message_cache[prompt_key] = result
+            return result
         return None

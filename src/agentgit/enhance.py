@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from agentgit.plugins import get_configured_plugin_manager
 
 if TYPE_CHECKING:
-    from agentgit.core import AssistantTurn, FileOperation, Prompt
+    from agentgit.core import AssistantTurn, FileOperation, Prompt, PromptResponse
 
 # Default enhancer to use (rules = no AI, claude_cli = AI-powered)
 DEFAULT_ENHANCER = "rules"
@@ -123,3 +123,32 @@ def generate_merge_commit_message(
         enhancer=config.enhancer,
         model=config.model,
     )
+
+
+def preprocess_batch_enhancement(
+    prompt_responses: list["PromptResponse"],
+    config: EnhanceConfig | None = None,
+) -> None:
+    """Pre-process all prompt responses for batch enhancement.
+
+    For AI-powered enhancers like claude_cli, this sends all items to the
+    AI in a single call, which is much more efficient than individual calls.
+    The results are cached and returned by subsequent individual hook calls.
+
+    For non-AI enhancers like rules, this is a no-op.
+
+    Args:
+        prompt_responses: List of PromptResponse objects to process.
+        config: Optional configuration for enhancement.
+    """
+    if config is None:
+        config = EnhanceConfig()
+
+    if not config.enabled:
+        return
+
+    # Only do batch processing for claude_cli enhancer
+    if config.enhancer == "claude_cli":
+        from agentgit.enhancers.claude_cli import batch_enhance_prompt_responses
+
+        batch_enhance_prompt_responses(prompt_responses, config.model)

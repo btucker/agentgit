@@ -452,6 +452,9 @@ class GitRepoBuilder:
             return True
         except InvalidGitRepositoryError:
             self.repo = Repo.init(self.output_dir)
+            # Disable commit signing for agentgit-created repos
+            with self.repo.config_writer() as config:
+                config.set_value("commit", "gpgsign", "false")
             return False
 
     def _get_merged_timeline(
@@ -570,6 +573,12 @@ class GitRepoBuilder:
         # Ensure we have an initial commit
         if not self._has_commits():
             self._create_initial_commit()
+
+        # Pre-process batch enhancement for AI enhancers (much more efficient)
+        if self.enhance_config and self.enhance_config.enabled:
+            from agentgit.enhance import preprocess_batch_enhancement
+
+            preprocess_batch_enhancement(prompt_responses, self.enhance_config)
 
         for pr in prompt_responses:
             self._process_prompt_response(pr, incremental)
