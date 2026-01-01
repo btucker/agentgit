@@ -147,11 +147,12 @@ class TestCLI:
         monkeypatch.chdir(repo_path)
 
         # Use --list flag to avoid interactive selection
-        result = runner.invoke(main, ["discover", "--list"])
+        # Use --no-web to skip web session discovery (avoids credential issues in tests)
+        result = runner.invoke(main, ["discover", "--list", "--no-web"])
         assert result.exit_code == 0
-        assert "1 transcript" in result.output
-        # Path column shows ~/.claude/projects/... format
-        assert ".claude/projects" in result.output
+        assert "1 local" in result.output
+        # Path column shows ~/.claude/... format (may be truncated in narrow terminal)
+        assert "~/.claude" in result.output or ".claude/pro" in result.output
 
     def test_discover_no_transcripts(self, runner, tmp_path, monkeypatch):
         """Should show message when no transcripts found."""
@@ -164,9 +165,10 @@ class TestCLI:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.chdir(repo_path)
 
-        result = runner.invoke(main, ["discover", "--list"])
+        # Use --no-web to skip web session discovery (avoids credential issues in tests)
+        result = runner.invoke(main, ["discover", "--list", "--no-web"])
         assert result.exit_code == 0
-        assert "No transcripts found" in result.output
+        assert "No transcripts or web sessions found" in result.output
 
 
 class TestPathTranslation:

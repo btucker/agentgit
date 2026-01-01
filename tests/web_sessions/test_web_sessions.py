@@ -9,8 +9,10 @@ import pytest
 
 from agentgit.web_sessions import (
     API_BASE_URL,
+    DiscoveredWebSession,
     WebSession,
     WebSessionError,
+    discover_web_sessions,
     fetch_session_data,
     fetch_sessions,
     find_matching_local_project,
@@ -18,6 +20,7 @@ from agentgit.web_sessions import (
     get_org_uuid_from_config,
     resolve_credentials,
     session_to_jsonl_entries,
+    try_resolve_credentials,
 )
 
 
@@ -344,3 +347,234 @@ class TestSessionToJsonlEntries:
         entries = session_to_jsonl_entries(session_data)
 
         assert entries == []
+
+
+class TestDiscoveredWebSession:
+    """Tests for DiscoveredWebSession dataclass."""
+
+    def test_created_at_formatted(self):
+        """Should format ISO timestamp correctly."""
+        session = DiscoveredWebSession(
+            session_id="test-123",
+            title="Test Session",
+            created_at="2025-01-15T10:30:00Z",
+        )
+
+        assert session.created_at_formatted == "2025-01-15 10:30:00"
+
+    def test_created_at_formatted_handles_invalid(self):
+        """Should return raw value for invalid timestamps."""
+        session = DiscoveredWebSession(
+            session_id="test-123",
+            title="Test Session",
+            created_at="invalid-date",
+        )
+
+        assert session.created_at_formatted == "invalid-date"
+
+    def test_display_name_uses_title(self):
+        """Should use title as display name."""
+        session = DiscoveredWebSession(
+            session_id="test-123",
+            title="My Session",
+            created_at="2025-01-15T10:30:00Z",
+        )
+
+        assert session.display_name == "My Session"
+
+    def test_display_name_truncates_long_title(self):
+        """Should truncate long titles."""
+        long_title = "A" * 60
+        session = DiscoveredWebSession(
+            session_id="test-123",
+            title=long_title,
+            created_at="2025-01-15T10:30:00Z",
+        )
+
+        assert len(session.display_name) == 50
+        assert session.display_name.endswith("...")
+
+    def test_display_name_fallback(self):
+        """Should fall back to session ID if no title."""
+        session = DiscoveredWebSession(
+            session_id="abc12345xyz",
+            title="",
+            created_at="2025-01-15T10:30:00Z",
+        )
+
+        assert session.display_name == "session-abc12345"
+
+    def test_matches_project_true(self, tmp_path):
+        """Should return True when paths match."""
+        project = tmp_path / "myproject"
+        project.mkdir()
+
+        session = DiscoveredWebSession(
+            session_id="test-123",
+            title="Test",
+            created_at="2025-01-15T10:30:00Z",
+            project_path=str(project),
+        )
+
+        assert session.matches_project(project) is True
+
+    def test_matches_project_false(self, tmp_path):
+        """Should return False when paths don't match."""
+        project1 = tmp_path / "project1"
+        project2 = tmp_path / "project2"
+        project1.mkdir()
+        project2.mkdir()
+
+        session = DiscoveredWebSession(
+            session_id="test-123",
+            title="Test",
+            created_at="2025-01-15T10:30:00Z",
+            project_path=str(project1),
+        )
+
+        assert session.matches_project(project2) is False
+
+    def test_matches_project_no_path(self, tmp_path):
+        """Should return False when session has no project_path."""
+        session = DiscoveredWebSession(
+            session_id="test-123",
+            title="Test",
+            created_at="2025-01-15T10:30:00Z",
+        )
+
+        assert session.matches_project(tmp_path) is False
+
+
+class TestTryResolveCredentials:
+    """Tests for try_resolve_credentials function."""
+
+    def test_returns_none_on_failure(self, monkeypatch):
+        """Should return None when credentials not available."""
+        monkeypatch.setattr("sys.platform", "linux")
+
+        result = try_resolve_credentials()
+
+        assert result is None
+
+    def test_returns_credentials_when_available(self, monkeypatch):
+        """Should return credentials when available."""
+        with patch(
+            "agentgit.web_sessions.resolve_credentials",
+            return_value=("token-123", "org-456"),
+        ):
+            result = try_resolve_credentials()
+
+            assert result == ("token-123", "org-456")
+
+
+class TestDiscoverWebSessions:
+    """Tests for discover_web_sessions function."""
+
+    def test_returns_empty_when_no_credentials(self, monkeypatch):
+        """Should return empty list when credentials not available."""
+        monkeypatch.setattr("sys.platform", "linux")
+
+        result = discover_web_sessions()
+
+        assert result == []
+
+    def test_returns_empty_on_api_error(self):
+        """Should return empty list when API fails."""
+        with patch(
+            "agentgit.web_sessions.try_resolve_credentials",
+            return_value=("token", "org"),
+        ):
+            with patch(
+                "agentgit.web_sessions.fetch_sessions",
+                side_effect=WebSessionError("API Error"),
+            ):
+                result = discover_web_sessions()
+
+                assert result == []
+
+    def test_returns_sessions(self):
+        """Should return discovered web sessions."""
+        mock_sessions = [
+            WebSession(
+                id="session-1",
+                title="First Session",
+                created_at="2025-01-15T10:00:00Z",
+                project_path="/path/to/project",
+            ),
+            WebSession(
+                id="session-2",
+                title="Second Session",
+                created_at="2025-01-15T11:00:00Z",
+            ),
+        ]
+
+        with patch(
+            "agentgit.web_sessions.try_resolve_credentials",
+            return_value=("token", "org"),
+        ):
+            with patch(
+                "agentgit.web_sessions.fetch_sessions",
+                return_value=mock_sessions,
+            ):
+                result = discover_web_sessions()
+
+                assert len(result) == 2
+                # Should be sorted by created_at, newest first
+                assert result[0].session_id == "session-2"
+                assert result[1].session_id == "session-1"
+                assert result[1].project_name == "project"
+
+    def test_filters_by_project(self, tmp_path):
+        """Should filter sessions by project path."""
+        project = tmp_path / "myproject"
+        project.mkdir()
+
+        mock_sessions = [
+            WebSession(
+                id="session-1",
+                title="Matching",
+                created_at="2025-01-15T10:00:00Z",
+                project_path=str(project),
+            ),
+            WebSession(
+                id="session-2",
+                title="Non-matching",
+                created_at="2025-01-15T11:00:00Z",
+                project_path="/other/project",
+            ),
+        ]
+
+        with patch(
+            "agentgit.web_sessions.try_resolve_credentials",
+            return_value=("token", "org"),
+        ):
+            with patch(
+                "agentgit.web_sessions.fetch_sessions",
+                return_value=mock_sessions,
+            ):
+                result = discover_web_sessions(project_path=project)
+
+                assert len(result) == 1
+                assert result[0].session_id == "session-1"
+
+    def test_uses_provided_credentials(self):
+        """Should use explicitly provided credentials."""
+        mock_sessions = [
+            WebSession(
+                id="session-1",
+                title="Test",
+                created_at="2025-01-15T10:00:00Z",
+            ),
+        ]
+
+        with patch(
+            "agentgit.web_sessions.fetch_sessions",
+            return_value=mock_sessions,
+        ) as mock_fetch:
+            result = discover_web_sessions(
+                token="my-token",
+                org_uuid="my-org",
+            )
+
+            assert len(result) == 1
+            mock_fetch.assert_called_once_with("my-token", "my-org")
