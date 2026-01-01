@@ -211,3 +211,18 @@ def get_agentgit_repo(code_repo: Path) -> Path:
 | Code repo rebased | Blob SHAs unchanged → matching still works |
 | Repo moved/renamed | First commit SHA unchanged → still finds agentgit repo |
 | Multiple roots (orphan branches) | Use primary branch's root commit |
+
+## Migration from Previous Design
+
+The previous design supported `--single-repo` mode which created orphan branches
+and git worktrees within the code repository. This has been removed in favor of
+the separate agentgit repo with shared object store approach because:
+
+1. **Cleaner separation** - The code repo stays completely unmodified
+2. **Simpler implementation** - No worktree management complexity
+3. **Better for shared repos** - No risk of accidentally pushing agentgit branches
+4. **Consistent behavior** - Same approach whether local or shared project
+
+The following CLI options have been removed:
+- `--single-repo` - No longer needed; agentgit always uses separate repo
+- `--branch` - Branch naming is now automatic (session/<session-id>)
