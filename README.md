@@ -2,21 +2,16 @@
 
 See the context behind every line of code written by coding agents.
 
-## The Problem
+After a session with Claude Code or Codex, you can diff to see *what* changed—but not *why*. Which prompt triggered that refactor? What was the agent thinking when it modified that file?
 
-You spent an hour with Claude Code or Codex making changes across your codebase. You can easily see *what* changed—just diff your working directory. But which changes came from which prompts? Why did the agent modify that file? What was it trying to accomplish?
-
-The code changes are visible. The context behind them is lost.
-
-## The Solution
-
-agentgit connects every code change to the prompt and reasoning that caused it:
-
-- **Prompt → Merge commit**: See all changes from a single request
-- **Response → Commit**: Each logical step becomes a commit with the agent's reasoning
-- **`git log`, `git blame`, `git show`**: Standard tools reveal the story
+agentgit preserves the full story. Each prompt becomes a merge commit, each response becomes commits with the agent's reasoning, and standard git tools reveal everything:
 
 ```
+$ agentgit log --first-parent --oneline
+a1b2c3d Add user authentication
+x9y8z7w Fix database connection bug
+f3e4d5c Initial setup
+
 $ agentgit show a1b2c3d
 commit a1b2c3d
 Prompt: "Add user authentication"
@@ -25,14 +20,9 @@ Prompt: "Add user authentication"
 
     Context: I'll add JWT-based authentication with
     middleware to protect the API routes...
-
-$ agentgit log --first-parent --oneline
-a1b2c3d Add user authentication
-x9y8z7w Fix database connection bug
-f3e4d5c Initial setup
 ```
 
-Now `git blame` tells you not just what changed, but *why*.
+Now `git blame` tells you not just what changed, but why.
 
 ## Installation
 
