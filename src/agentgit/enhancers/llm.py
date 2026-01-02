@@ -382,7 +382,7 @@ class LLMEnhancerPlugin:
         }
 
     @hookimpl
-    def agentgit_enhance_operation_message(
+    def agentgit_enhance_operation_summary(
         self,
         operation: "FileOperation",
         enhancer: str,
@@ -427,7 +427,7 @@ Respond with ONLY the commit message subject line, nothing else."""
         return None
 
     @hookimpl
-    def agentgit_enhance_turn_message(
+    def agentgit_enhance_turn_summary(
         self,
         turn: "AssistantTurn",
         prompt: "Prompt | None",
@@ -476,7 +476,7 @@ Respond with ONLY the commit message subject line, nothing else."""
         return None
 
     @hookimpl
-    def agentgit_enhance_merge_message(
+    def agentgit_enhance_prompt_summary(
         self,
         prompt: "Prompt",
         turns: list["AssistantTurn"],

@@ -145,9 +145,9 @@ def format_commit_message(
     # Try AI-generated subject if configured
     subject = None
     if enhance_config and enhance_config.enabled:
-        from agentgit.enhance import generate_operation_commit_message
+        from agentgit.enhance import generate_operation_summary
 
-        subject = generate_operation_commit_message(operation, enhance_config)
+        subject = generate_operation_summary(operation, enhance_config)
 
     # Fall back to default format
     if not subject:
@@ -212,13 +212,13 @@ def format_turn_commit_message(
     # Try AI-generated subject if configured
     subject = None
     if enhance_config and enhance_config.enabled:
-        from agentgit.enhance import generate_turn_commit_message
+        from agentgit.enhance import generate_turn_summary
 
         # Get the prompt from the first operation if available
         prompt = None
         if turn.operations and turn.operations[0].prompt:
             prompt = turn.operations[0].prompt
-        subject = generate_turn_commit_message(turn, prompt, enhance_config)
+        subject = generate_turn_summary(turn, prompt, enhance_config)
 
     # Fall back to default format
     if not subject:
@@ -292,9 +292,9 @@ def format_prompt_merge_message(
     # Try AI-generated subject if configured
     subject = None
     if enhance_config and enhance_config.enabled:
-        from agentgit.enhance import generate_merge_commit_message
+        from agentgit.enhance import generate_prompt_summary
 
-        subject = generate_merge_commit_message(prompt, turns, enhance_config)
+        subject = generate_prompt_summary(prompt, turns, enhance_config)
 
     # Fall back to default format
     if not subject:

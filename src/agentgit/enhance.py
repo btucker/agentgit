@@ -38,18 +38,18 @@ def get_available_enhancers() -> list[dict[str, str]]:
     return enhancers
 
 
-def generate_operation_commit_message(
+def generate_operation_summary(
     operation: "FileOperation",
     config: EnhanceConfig | None = None,
 ) -> str | None:
-    """Generate an enhanced commit message for a single file operation.
+    """Generate an enhanced summary for a file operation entry.
 
     Args:
-        operation: The file operation to generate a message for.
+        operation: The file operation to generate a summary for.
         config: Optional configuration for enhancement.
 
     Returns:
-        Generated commit message subject line, or None if generation fails.
+        Generated entry summary, or None if generation fails.
     """
     if config is None:
         config = EnhanceConfig()
@@ -58,19 +58,19 @@ def generate_operation_commit_message(
         return None
 
     pm = get_configured_plugin_manager()
-    return pm.hook.agentgit_enhance_operation_message(
+    return pm.hook.agentgit_enhance_operation_summary(
         operation=operation,
         enhancer=config.enhancer,
         model=config.model,
     )
 
 
-def generate_turn_commit_message(
+def generate_turn_summary(
     turn: "AssistantTurn",
     prompt: "Prompt | None" = None,
     config: EnhanceConfig | None = None,
 ) -> str | None:
-    """Generate an enhanced commit message for an assistant turn.
+    """Generate an enhanced summary for an assistant turn entry.
 
     Args:
         turn: The assistant turn containing grouped operations.
@@ -78,7 +78,7 @@ def generate_turn_commit_message(
         config: Optional configuration for enhancement.
 
     Returns:
-        Generated commit message subject line, or None if generation fails.
+        Generated entry summary, or None if generation fails.
     """
     if config is None:
         config = EnhanceConfig()
@@ -87,7 +87,7 @@ def generate_turn_commit_message(
         return None
 
     pm = get_configured_plugin_manager()
-    return pm.hook.agentgit_enhance_turn_message(
+    return pm.hook.agentgit_enhance_turn_summary(
         turn=turn,
         prompt=prompt,
         enhancer=config.enhancer,
@@ -95,12 +95,12 @@ def generate_turn_commit_message(
     )
 
 
-def generate_merge_commit_message(
+def generate_prompt_summary(
     prompt: "Prompt",
     turns: list["AssistantTurn"],
     config: EnhanceConfig | None = None,
 ) -> str | None:
-    """Generate an enhanced merge commit message for a user prompt.
+    """Generate an enhanced summary for a user prompt entry.
 
     Args:
         prompt: The user prompt.
@@ -108,7 +108,7 @@ def generate_merge_commit_message(
         config: Optional configuration for enhancement.
 
     Returns:
-        Generated commit message subject line, or None if generation fails.
+        Generated entry summary, or None if generation fails.
     """
     if config is None:
         config = EnhanceConfig()
@@ -117,7 +117,7 @@ def generate_merge_commit_message(
         return None
 
     pm = get_configured_plugin_manager()
-    return pm.hook.agentgit_enhance_merge_message(
+    return pm.hook.agentgit_enhance_prompt_summary(
         prompt=prompt,
         turns=turns,
         enhancer=config.enhancer,

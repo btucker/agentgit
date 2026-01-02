@@ -5,9 +5,9 @@ import pytest
 from agentgit.enhance import (
     EnhanceConfig,
     get_available_enhancers,
-    generate_operation_commit_message,
-    generate_turn_commit_message,
-    generate_merge_commit_message,
+    generate_operation_summary,
+    generate_turn_summary,
+    generate_prompt_summary,
     preprocess_batch_enhancement,
 )
 from agentgit.core import AssistantContext, AssistantTurn, FileOperation, OperationType, Prompt, PromptResponse
@@ -76,7 +76,7 @@ class TestRulesEnhancerPlugin:
             timestamp="2025-01-01T00:00:00Z",
             content="print('hello')",
         )
-        result = plugin.agentgit_enhance_operation_message(
+        result = plugin.agentgit_enhance_operation_summary(
             operation=operation,
             enhancer="rules",
             model=None,
@@ -95,7 +95,7 @@ class TestRulesEnhancerPlugin:
             old_string="old",
             new_string="new",
         )
-        result = plugin.agentgit_enhance_operation_message(
+        result = plugin.agentgit_enhance_operation_summary(
             operation=operation,
             enhancer="rules",
             model=None,
@@ -113,7 +113,7 @@ class TestRulesEnhancerPlugin:
             timestamp="2025-01-01T00:00:00Z",
             content="print('hello')",
         )
-        result = plugin.agentgit_enhance_operation_message(
+        result = plugin.agentgit_enhance_operation_summary(
             operation=operation,
             enhancer="llm",
             model=None,
@@ -140,7 +140,7 @@ class TestRulesEnhancerPlugin:
             ],
             timestamp="2025-01-01T00:00:00Z",
         )
-        result = plugin.agentgit_enhance_turn_message(
+        result = plugin.agentgit_enhance_turn_summary(
             turn=turn,
             prompt=None,
             enhancer="rules",
@@ -167,7 +167,7 @@ class TestRulesEnhancerPlugin:
             ],
             timestamp="2025-01-01T00:00:00Z",
         )
-        result = plugin.agentgit_enhance_merge_message(
+        result = plugin.agentgit_enhance_prompt_summary(
             prompt=prompt,
             turns=[turn],
             enhancer="rules",
@@ -190,7 +190,7 @@ class TestRulesEnhancerPlugin:
             ],
             timestamp="2025-01-01T00:00:00Z",
         )
-        result = plugin.agentgit_enhance_merge_message(
+        result = plugin.agentgit_enhance_prompt_summary(
             prompt=prompt,
             turns=[turn],
             enhancer="rules",
@@ -430,7 +430,7 @@ class TestLLMEnhancerPlugin:
             ],
             timestamp="2025-01-01T00:00:00Z",
         )
-        result = plugin.agentgit_enhance_turn_message(
+        result = plugin.agentgit_enhance_turn_summary(
             turn=turn,
             prompt=None,
             enhancer="rules",
@@ -442,7 +442,7 @@ class TestLLMEnhancerPlugin:
         """Should return None for wrong enhancer type."""
         plugin = LLMEnhancerPlugin()
         prompt = Prompt(text="Test", timestamp="2025-01-01T00:00:00Z")
-        result = plugin.agentgit_enhance_merge_message(
+        result = plugin.agentgit_enhance_prompt_summary(
             prompt=prompt,
             turns=[],
             enhancer="rules",
@@ -459,7 +459,7 @@ class TestLLMEnhancerPlugin:
             timestamp="2025-01-01T00:00:00Z",
             content="print('hello')",
         )
-        result = plugin.agentgit_enhance_operation_message(
+        result = plugin.agentgit_enhance_operation_summary(
             operation=operation,
             enhancer="rules",
             model="haiku",
@@ -799,7 +799,7 @@ class TestContextBuilders:
 class TestGenerateCommitMessages:
     """Tests for the generate_*_commit_message functions."""
 
-    def test_generate_operation_commit_message(self):
+    def test_generate_operation_summary(self):
         """Should generate a commit message for an operation."""
         operation = FileOperation(
             file_path="/project/src/auth.py",
@@ -808,11 +808,11 @@ class TestGenerateCommitMessages:
             content="def authenticate(): pass",
         )
         config = EnhanceConfig(enhancer="rules", enabled=True)
-        message = generate_operation_commit_message(operation, config)
+        message = generate_operation_summary(operation, config)
         assert message is not None
         assert "auth.py" in message
 
-    def test_generate_operation_commit_message_disabled(self):
+    def test_generate_operation_summary_disabled(self):
         """Should return None when disabled."""
         operation = FileOperation(
             file_path="/project/src/auth.py",
@@ -821,10 +821,10 @@ class TestGenerateCommitMessages:
             content="code",
         )
         config = EnhanceConfig(enabled=False)
-        message = generate_operation_commit_message(operation, config)
+        message = generate_operation_summary(operation, config)
         assert message is None
 
-    def test_generate_operation_commit_message_default_config(self):
+    def test_generate_operation_summary_default_config(self):
         """Should use default config if not provided."""
         operation = FileOperation(
             file_path="/project/src/test.py",
@@ -832,10 +832,10 @@ class TestGenerateCommitMessages:
             timestamp="2025-01-01T00:00:00Z",
             content="code",
         )
-        message = generate_operation_commit_message(operation)
+        message = generate_operation_summary(operation)
         assert message is not None
 
-    def test_generate_turn_commit_message(self):
+    def test_generate_turn_summary(self):
         """Should generate a commit message for a turn."""
         turn = AssistantTurn(
             operations=[
@@ -849,10 +849,10 @@ class TestGenerateCommitMessages:
             timestamp="2025-01-01T00:00:00Z",
         )
         config = EnhanceConfig(enhancer="rules", enabled=True)
-        message = generate_turn_commit_message(turn, config=config)
+        message = generate_turn_summary(turn, config=config)
         assert message is not None
 
-    def test_generate_turn_commit_message_with_prompt(self):
+    def test_generate_turn_summary_with_prompt(self):
         """Should use prompt when generating turn message."""
         turn = AssistantTurn(
             operations=[
@@ -867,10 +867,10 @@ class TestGenerateCommitMessages:
         )
         prompt = Prompt(text="Add utility functions", timestamp="2025-01-01T00:00:00Z")
         config = EnhanceConfig(enhancer="rules", enabled=True)
-        message = generate_turn_commit_message(turn, prompt=prompt, config=config)
+        message = generate_turn_summary(turn, prompt=prompt, config=config)
         assert message is not None
 
-    def test_generate_turn_commit_message_disabled(self):
+    def test_generate_turn_summary_disabled(self):
         """Should return None when disabled."""
         turn = AssistantTurn(
             operations=[
@@ -884,10 +884,10 @@ class TestGenerateCommitMessages:
             timestamp="2025-01-01T00:00:00Z",
         )
         config = EnhanceConfig(enabled=False)
-        message = generate_turn_commit_message(turn, config=config)
+        message = generate_turn_summary(turn, config=config)
         assert message is None
 
-    def test_generate_merge_commit_message(self):
+    def test_generate_prompt_summary(self):
         """Should generate a merge commit message."""
         prompt = Prompt(
             text="Add user authentication with JWT tokens",
@@ -905,14 +905,14 @@ class TestGenerateCommitMessages:
             timestamp="2025-01-01T00:00:00Z",
         )
         config = EnhanceConfig(enhancer="rules", enabled=True)
-        message = generate_merge_commit_message(prompt, [turn], config)
+        message = generate_prompt_summary(prompt, [turn], config)
         assert message is not None
 
-    def test_generate_merge_commit_message_disabled(self):
+    def test_generate_prompt_summary_disabled(self):
         """Should return None when disabled."""
         prompt = Prompt(text="Test", timestamp="2025-01-01T00:00:00Z")
         config = EnhanceConfig(enabled=False)
-        message = generate_merge_commit_message(prompt, [], config)
+        message = generate_prompt_summary(prompt, [], config)
         assert message is None
 
 
@@ -1032,7 +1032,7 @@ class TestMergeMessagePreservesPrompt:
             ],
             timestamp="2025-01-01T00:00:00Z",
         )
-        result = plugin.agentgit_enhance_merge_message(
+        result = plugin.agentgit_enhance_prompt_summary(
             prompt=prompt,
             turns=[turn],
             enhancer="llm",
@@ -1067,7 +1067,7 @@ class TestMergeMessagePreservesPrompt:
             timestamp="2025-01-01T00:00:00Z",
             context=AssistantContext(thinking="Implementing JWT auth"),
         )
-        result = plugin.agentgit_enhance_merge_message(
+        result = plugin.agentgit_enhance_prompt_summary(
             prompt=prompt,
             turns=[turn],
             enhancer="llm",
@@ -1089,7 +1089,7 @@ class TestMergeMessagePreservesPrompt:
             operations=[],
             timestamp="2025-01-01T00:00:00Z",
         )
-        result = plugin.agentgit_enhance_merge_message(
+        result = plugin.agentgit_enhance_prompt_summary(
             prompt=prompt,
             turns=[turn],
             enhancer="llm",

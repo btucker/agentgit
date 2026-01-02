@@ -158,61 +158,61 @@ class AgentGitSpec:
         """
 
     @hookspec(firstresult=True)
-    def agentgit_enhance_operation_message(
+    def agentgit_enhance_operation_summary(
         self,
         operation: FileOperation,
         enhancer: str,
         model: str | None,
     ) -> str | None:
-        """Generate an AI-enhanced commit message for a file operation.
+        """Generate an enhanced summary for a file operation entry.
 
         Args:
-            operation: The file operation to generate a message for.
-            enhancer: The enhancer type to use (e.g., 'claude_code').
-            model: Optional model override (e.g., 'haiku', 'sonnet').
+            operation: The file operation to generate a summary for.
+            enhancer: The enhancer type to use (e.g., 'llm', 'rules').
+            model: Optional model override (e.g., 'claude-cli-haiku').
 
         Returns:
-            Generated commit message subject line, or None if generation fails.
+            Generated entry summary, or None if generation fails.
         """
 
     @hookspec(firstresult=True)
-    def agentgit_enhance_turn_message(
+    def agentgit_enhance_turn_summary(
         self,
         turn: AssistantTurn,
         prompt: Prompt | None,
         enhancer: str,
         model: str | None,
     ) -> str | None:
-        """Generate an AI-enhanced commit message for an assistant turn.
+        """Generate an enhanced summary for an assistant turn entry.
 
         Args:
             turn: The assistant turn containing grouped operations.
             prompt: Optional user prompt that triggered this turn.
-            enhancer: The enhancer type to use (e.g., 'claude_code').
+            enhancer: The enhancer type to use (e.g., 'llm', 'rules').
             model: Optional model override.
 
         Returns:
-            Generated commit message subject line, or None if generation fails.
+            Generated entry summary, or None if generation fails.
         """
 
     @hookspec(firstresult=True)
-    def agentgit_enhance_merge_message(
+    def agentgit_enhance_prompt_summary(
         self,
         prompt: Prompt,
         turns: list[AssistantTurn],
         enhancer: str,
         model: str | None,
     ) -> str | None:
-        """Generate an AI-enhanced merge commit message for a user prompt.
+        """Generate an enhanced summary for a user prompt entry.
 
         Args:
             prompt: The user prompt.
             turns: All assistant turns that responded to the prompt.
-            enhancer: The enhancer type to use (e.g., 'claude_code').
+            enhancer: The enhancer type to use (e.g., 'llm', 'rules').
             model: Optional model override.
 
         Returns:
-            Generated commit message subject line, or None if generation fails.
+            Generated entry summary, or None if generation fails.
         """
 
     @hookspec(firstresult=True)

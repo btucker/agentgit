@@ -194,14 +194,14 @@ class MyEnhancerPlugin:
         }
 
     @hookimpl
-    def agentgit_enhance_merge_message(self, prompt, turns, enhancer, model):
+    def agentgit_enhance_prompt_summary(self, prompt, turns, enhancer, model):
         if enhancer != "my_enhancer":
             return None
         # Generate an entry summary from the prompt and turns
         return f"Implement: {prompt.text[:50]}"
 
     @hookimpl
-    def agentgit_enhance_turn_message(self, turn, prompt, enhancer, model):
+    def agentgit_enhance_turn_summary(self, turn, prompt, enhancer, model):
         if enhancer != "my_enhancer":
             return None
         # Generate an entry summary for a single assistant turn
@@ -209,7 +209,7 @@ class MyEnhancerPlugin:
         return f"Update {', '.join(files[:3])}"
 
     @hookimpl
-    def agentgit_enhance_operation_message(self, operation, enhancer, model):
+    def agentgit_enhance_operation_summary(self, operation, enhancer, model):
         if enhancer != "my_enhancer":
             return None
         # Generate an entry summary for a single file operation

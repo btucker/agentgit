@@ -209,13 +209,13 @@ class RulesEnhancerPlugin:
         }
 
     @hookimpl
-    def agentgit_enhance_operation_message(
+    def agentgit_enhance_operation_summary(
         self,
         operation: "FileOperation",
         enhancer: str,
         model: str | None,
     ) -> str | None:
-        """Generate a commit message for a file operation using rules."""
+        """Generate a summary for a file operation entry using rules."""
         if enhancer != ENHANCER_NAME:
             return None
 
@@ -225,14 +225,14 @@ class RulesEnhancerPlugin:
         )
 
     @hookimpl
-    def agentgit_enhance_turn_message(
+    def agentgit_enhance_turn_summary(
         self,
         turn: "AssistantTurn",
         prompt: "Prompt | None",
         enhancer: str,
         model: str | None,
     ) -> str | None:
-        """Generate a commit message for an assistant turn using rules."""
+        """Generate a summary for an assistant turn entry using rules."""
         if enhancer != ENHANCER_NAME:
             return None
 
@@ -242,14 +242,14 @@ class RulesEnhancerPlugin:
         )
 
     @hookimpl
-    def agentgit_enhance_merge_message(
+    def agentgit_enhance_prompt_summary(
         self,
         prompt: "Prompt",
         turns: list["AssistantTurn"],
         enhancer: str,
         model: str | None,
     ) -> str | None:
-        """Generate a merge commit message using rules."""
+        """Generate a summary for a user prompt entry using rules."""
         if enhancer != ENHANCER_NAME:
             return None
 
