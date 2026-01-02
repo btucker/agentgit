@@ -60,24 +60,24 @@ claude_code: Claude Code JSONL transcripts
 codex: OpenAI Codex CLI JSONL transcripts
 ```
 
-## Commit Message Enhancement
+## Provenance Enhancement
 
-agentgit can generate better commit messages using either heuristic rules or AI:
+agentgit can generate better provenance entries using either heuristic rules or AI:
 
 ```bash
 # Use rules-based enhancement (fast, no AI)
 agentgit --enhancer rules
 
-# Use LLM for AI-powered messages
+# Use LLM for AI-powered enhancement
 agentgit --enhancer llm --llm-model claude-cli-haiku
 ```
 
 **Available enhancers:**
 
-- `rules` - Uses heuristics to generate messages from prompts and context. Fast, no external dependencies.
-- `llm` - Uses LLM to generate intelligent commit messages. Requires `pip install 'agentgit[llm]'` which installs `llm` and `llm-claude-cli`.
+- `rules` - Uses heuristics to generate entries from prompts and context. Fast, no external dependencies.
+- `llm` - Uses LLM to generate intelligent provenance entries. Requires `pip install 'agentgit[llm]'` which installs `llm` and `llm-claude-cli`.
 
-The `llm` enhancer uses efficient batch processing - commit messages are generated in batched calls.
+The `llm` enhancer uses efficient batch processing - entries are generated in batched calls.
 
 **Preferences are saved per-project.** Once you set an enhancer, it's used automatically on future runs:
 
@@ -125,7 +125,7 @@ The repos share git's object store. Same content = same blob SHA = automatic cor
 ○ Initial commit
 ```
 
-**Commit messages include full context:**
+**Provenance entries include full context:**
 
 ```
 Refactor auth to use dependency injection
@@ -180,7 +180,7 @@ my_format = "my_package:MyFormatPlugin"
 
 ## Adding Enhancer Plugins
 
-Enhancer plugins generate commit messages. They can use AI, heuristics, or any other approach:
+Enhancer plugins generate provenance entry summaries. They can use AI, heuristics, or any other approach:
 
 ```python
 from agentgit import hookimpl
@@ -190,21 +190,21 @@ class MyEnhancerPlugin:
     def agentgit_get_ai_enhancer_info(self):
         return {
             "name": "my_enhancer",
-            "description": "My custom commit message enhancer",
+            "description": "My custom provenance enhancer",
         }
 
     @hookimpl
     def agentgit_enhance_merge_message(self, prompt, turns, enhancer, model):
         if enhancer != "my_enhancer":
             return None
-        # Generate a commit message from the prompt and turns
+        # Generate an entry summary from the prompt and turns
         return f"Implement: {prompt.text[:50]}"
 
     @hookimpl
     def agentgit_enhance_turn_message(self, turn, prompt, enhancer, model):
         if enhancer != "my_enhancer":
             return None
-        # Generate a commit message for a single assistant turn
+        # Generate an entry summary for a single assistant turn
         files = turn.files_created + turn.files_modified
         return f"Update {', '.join(files[:3])}"
 
@@ -212,7 +212,7 @@ class MyEnhancerPlugin:
     def agentgit_enhance_operation_message(self, operation, enhancer, model):
         if enhancer != "my_enhancer":
             return None
-        # Generate a commit message for a single file operation
+        # Generate an entry summary for a single file operation
         return f"Modify {operation.filename}"
 ```
 
