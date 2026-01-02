@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 from typing import TYPE_CHECKING
 
 from agentgit.core import OperationType
@@ -24,62 +23,57 @@ ENHANCER_NAME = "claude_code"
 # Global cache for batch-processed messages
 _message_cache: dict[str, str] = {}
 
+# Cached model instance
+_model_cache: dict[str, object] = {}
 
-def _run_claude_cli(prompt: str, model: str = DEFAULT_MODEL) -> str | None:
-    """Run Claude CLI with a prompt and return the response text.
+
+def _get_model(model: str = DEFAULT_MODEL):
+    """Get or create a ClaudeCode model instance.
+
+    Args:
+        model: The Claude model to use (e.g., "haiku", "sonnet").
+
+    Returns:
+        ClaudeCode model instance, or None if llm-claude-cli is not installed.
+    """
+    if model in _model_cache:
+        return _model_cache[model]
+
+    try:
+        from llm_claude_cli import ClaudeCode
+
+        instance = ClaudeCode(f"claude-code-{model}", claude_model=model)
+        _model_cache[model] = instance
+        return instance
+    except ImportError:
+        logger.warning(
+            "llm-claude-cli not installed. Install with: pip install 'agentgit[ai]'"
+        )
+        return None
+    except Exception as e:
+        logger.warning("Failed to initialize Claude model: %s", e)
+        return None
+
+
+def _run_claude(prompt: str, model: str = DEFAULT_MODEL) -> str | None:
+    """Run a prompt through Claude and return the response text.
 
     Args:
         prompt: The prompt to send to Claude.
         model: The model to use (e.g., "haiku", "sonnet").
 
     Returns:
-        The response text, or None if the command fails.
+        The response text, or None if the request fails.
     """
+    claude_model = _get_model(model)
+    if claude_model is None:
+        return None
+
     try:
-        result = subprocess.run(
-            [
-                "claude",
-                "-p", prompt,
-                "--model", model,
-                "--output-format", "json",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-
-        if result.returncode != 0:
-            logger.debug("Claude CLI failed: %s", result.stderr)
-            return None
-
-        # Parse JSON output
-        response = json.loads(result.stdout)
-
-        # Extract the text from the response
-        # The JSON format includes a "result" field with the response
-        if "result" in response:
-            return response["result"].strip()
-
-        # Fallback: try to find text in content blocks
-        if "content" in response:
-            for block in response["content"]:
-                if block.get("type") == "text":
-                    return block.get("text", "").strip()
-
-        logger.debug("Could not extract text from Claude response: %s", response)
-        return None
-
-    except subprocess.TimeoutExpired:
-        logger.warning("Claude CLI timed out")
-        return None
-    except FileNotFoundError:
-        logger.debug("Claude CLI not found in PATH")
-        return None
-    except json.JSONDecodeError as e:
-        logger.debug("Failed to parse Claude CLI output: %s", e)
-        return None
+        response = claude_model.prompt(prompt, stream=False)
+        return response.text()
     except Exception as e:
-        logger.warning("Claude CLI error: %s", e)
+        logger.warning("Claude request failed: %s", e)
         return None
 
 
@@ -170,7 +164,7 @@ def batch_enhance_prompt_responses(
 ) -> dict[str, str]:
     """Batch process all prompt responses to generate commit messages efficiently.
 
-    This function sends all prompts to Claude CLI in a single call, which is
+    This function sends all prompts to Claude in a single call, which is
     much more efficient than making individual calls for each commit message.
 
     Args:
@@ -246,8 +240,8 @@ Respond with a JSON object mapping item IDs to commit messages:
 
 ONLY respond with the JSON object, nothing else."""
 
-    # Call Claude CLI once for all items
-    response = _run_claude_cli(batch_prompt, model)
+    # Call Claude once for all items
+    response = _run_claude(batch_prompt, model)
 
     if response:
         try:
@@ -280,14 +274,14 @@ def clear_message_cache() -> None:
 
 
 class ClaudeCodeEnhancerPlugin:
-    """AI enhancement plugin using Claude Code."""
+    """AI enhancement plugin using Claude Code via llm-claude-cli."""
 
     @hookimpl
     def agentgit_get_ai_enhancer_info(self) -> dict[str, str]:
         """Return plugin identification info."""
         return {
             "name": ENHANCER_NAME,
-            "description": "Use Claude Code CLI to generate commit messages",
+            "description": "Use Claude Code to generate commit messages (requires llm-claude-cli)",
         }
 
     @hookimpl
@@ -330,7 +324,7 @@ Context:
 
 Respond with ONLY the commit message subject line, nothing else."""
 
-        message = _run_claude_cli(prompt, model)
+        message = _run_claude(prompt, model)
         if message:
             return _clean_message(message)
         return None
@@ -377,7 +371,7 @@ Context:
 
 Respond with ONLY the commit message subject line, nothing else."""
 
-        message = _run_claude_cli(ai_prompt, model)
+        message = _run_claude(ai_prompt, model)
         if message:
             result = _clean_message(message)
             _message_cache[turn_key] = result
@@ -444,7 +438,7 @@ Context:
 
 Respond with ONLY the commit message subject line, nothing else."""
 
-        message = _run_claude_cli(ai_prompt, model)
+        message = _run_claude(ai_prompt, model)
         if message:
             result = _clean_message(message)
             _message_cache[prompt_key] = result
