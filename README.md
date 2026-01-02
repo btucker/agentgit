@@ -69,7 +69,7 @@ agentgit can enhance the structured transcript using either heuristic rules or A
 agentgit --enhancer rules
 
 # Use LLM for AI-powered enhancement
-agentgit --enhancer llm --llm-model claude-cli-haiku
+agentgit --enhancer llm --enhance-model claude-cli-haiku
 ```
 
 **Available enhancers:**
@@ -83,7 +83,7 @@ The `llm` enhancer uses efficient batch processing - entries are generated in ba
 
 ```bash
 # First run: set the enhancer and model
-agentgit --enhancer llm --llm-model claude-cli-haiku
+agentgit --enhancer llm --enhance-model claude-cli-haiku
 
 # Future runs: settings are remembered
 agentgit  # Uses llm with claude-cli-haiku automatically
