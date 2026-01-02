@@ -4,7 +4,7 @@ See the context behind every line of code written by coding agents.
 
 After a session with Claude Code or Codex, you can diff to see *what* changed—but not *why*. Which prompt triggered that refactor? What was the agent thinking when it modified that line?
 
-agentgit creates **provenance entries**—a separate history that preserves the full story without touching your codebase. Each prompt becomes a merge entry, each response becomes entries with the agent's reasoning, and standard git tools reveal everything:
+agentgit transforms raw agent transcripts into a **structured transcript**—a separate git history that preserves the full story without touching your codebase. Each prompt becomes a merge commit, each response becomes commits with the agent's reasoning, and standard git tools reveal everything:
 
 ```
 $ agentgit log --first-parent --oneline
@@ -60,9 +60,9 @@ claude_code: Claude Code JSONL transcripts
 codex: OpenAI Codex CLI JSONL transcripts
 ```
 
-## Provenance Enhancement
+## Transcript Enhancement
 
-agentgit can generate better provenance entries using either heuristic rules or AI:
+agentgit can enhance the structured transcript using either heuristic rules or AI:
 
 ```bash
 # Use rules-based enhancement (fast, no AI)
@@ -75,7 +75,7 @@ agentgit --enhancer llm --llm-model claude-cli-haiku
 **Available enhancers:**
 
 - `rules` - Uses heuristics to generate entries from prompts and context. Fast, no external dependencies.
-- `llm` - Uses LLM to generate intelligent provenance entries. Requires `pip install 'agentgit[llm]'` which installs `llm` and `llm-claude-cli`.
+- `llm` - Uses LLM to generate intelligent transcript entries. Requires `pip install 'agentgit[llm]'` which installs `llm` and `llm-claude-cli`.
 
 The `llm` enhancer uses efficient batch processing - entries are generated in batched calls.
 
@@ -98,7 +98,7 @@ agentgit reads coding agent transcripts and builds a git history where each comm
 It creates a **separate repository** that shares content with your code repo:
 
 ```
-~/.agentgit/projects/<repo-id>/    # Provenance history
+~/.agentgit/projects/<repo-id>/    # Structured transcript
 ├── .git/
 │   └── objects/info/alternates → your-repo/.git/objects
 └── refs/heads/session/...
@@ -125,7 +125,7 @@ The repos share git's object store. Same content = same blob SHA = automatic cor
 ○ Initial commit
 ```
 
-**Provenance entries include full context:**
+**Transcript entries include full context:**
 
 ```
 Refactor auth to use dependency injection
@@ -180,7 +180,7 @@ my_format = "my_package:MyFormatPlugin"
 
 ## Adding Enhancer Plugins
 
-Enhancer plugins generate provenance entry summaries. They can use AI, heuristics, or any other approach:
+Enhancer plugins generate transcript entry summaries. They can use AI, heuristics, or any other approach:
 
 ```python
 from agentgit import hookimpl
@@ -190,7 +190,7 @@ class MyEnhancerPlugin:
     def agentgit_get_ai_enhancer_info(self):
         return {
             "name": "my_enhancer",
-            "description": "My custom provenance enhancer",
+            "description": "My custom transcript enhancer",
         }
 
     @hookimpl
