@@ -125,6 +125,36 @@ def generate_merge_commit_message(
     )
 
 
+def curate_turn_context(
+    turn: "AssistantTurn",
+    config: EnhanceConfig | None = None,
+) -> str | None:
+    """Curate the context/reasoning to include in a turn commit body.
+
+    The enhancer can select and organize the most relevant parts of the
+    assistant's thinking to include in the commit message body.
+
+    Args:
+        turn: The assistant turn to curate context for.
+        config: Optional configuration for enhancement.
+
+    Returns:
+        Curated context string to include in commit body, or None to use default.
+    """
+    if config is None:
+        config = EnhanceConfig()
+
+    if not config.enabled:
+        return None
+
+    pm = get_configured_plugin_manager()
+    return pm.hook.agentgit_curate_turn_context(
+        turn=turn,
+        enhancer=config.enhancer,
+        model=config.model,
+    )
+
+
 def preprocess_batch_enhancement(
     prompt_responses: list["PromptResponse"],
     config: EnhanceConfig | None = None,

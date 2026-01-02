@@ -10,7 +10,7 @@ from agentgit.enhance import (
     generate_merge_commit_message,
     preprocess_batch_enhancement,
 )
-from agentgit.core import AssistantTurn, FileOperation, OperationType, Prompt, PromptResponse
+from agentgit.core import AssistantContext, AssistantTurn, FileOperation, OperationType, Prompt, PromptResponse
 from agentgit.enhancers.llm import LLMEnhancerPlugin
 from agentgit.enhancers.rules import (
     RulesEnhancerPlugin,
@@ -967,3 +967,176 @@ class TestPreprocessBatchEnhancement:
         # Default config uses 'rules' which is a no-op
         # Just verify it doesn't raise
         preprocess_batch_enhancement([])
+
+
+class TestCurateTurnContext:
+    """Tests for curate_turn_context function."""
+
+    def test_curate_disabled(self):
+        """Should return None when enhancement is disabled."""
+        from agentgit.enhance import curate_turn_context
+
+        turn = AssistantTurn(
+            operations=[],
+            timestamp="2025-01-01T00:00:00Z",
+            context=AssistantContext(thinking="Some reasoning"),
+        )
+        config = EnhanceConfig(enabled=False)
+        assert curate_turn_context(turn, config) is None
+
+    def test_curate_with_rules_enhancer(self):
+        """Rules enhancer doesn't implement curation, returns None."""
+        from agentgit.enhance import curate_turn_context
+
+        turn = AssistantTurn(
+            operations=[],
+            timestamp="2025-01-01T00:00:00Z",
+            context=AssistantContext(thinking="Some reasoning"),
+        )
+        config = EnhanceConfig(enhancer="rules", enabled=True)
+        # Rules enhancer doesn't curate, returns None
+        assert curate_turn_context(turn, config) is None
+
+
+class TestMergeMessagePreservesPrompt:
+    """Tests for merge message preserving exact user prompts."""
+
+    def test_self_contained_prompt_used_as_is(self, monkeypatch):
+        """Self-contained prompts should be used directly without LLM."""
+        from agentgit.enhancers import llm as llm_enhancer
+
+        llm_enhancer.clear_message_cache()
+
+        # Mock _run_llm to ensure it's NOT called
+        calls = []
+
+        def mock_run_llm(prompt, model="claude-cli-haiku"):
+            calls.append(prompt)
+            return "Should not be used"
+
+        monkeypatch.setattr(llm_enhancer, "_run_llm", mock_run_llm)
+
+        plugin = LLMEnhancerPlugin()
+        prompt = Prompt(
+            text="Add user authentication",
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/auth.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T00:00:00Z",
+                    content="code",
+                )
+            ],
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        result = plugin.agentgit_enhance_merge_message(
+            prompt=prompt,
+            turns=[turn],
+            enhancer="llm",
+            model=None,
+        )
+        # Should use the prompt directly, no LLM call
+        assert result == "Add user authentication"
+        assert len(calls) == 0
+
+    def test_referential_prompt_gets_context(self, monkeypatch):
+        """Referential prompts should get context appended."""
+        from agentgit.enhancers import llm as llm_enhancer
+
+        llm_enhancer.clear_message_cache()
+
+        def mock_run_llm(prompt, model="claude-cli-haiku"):
+            return "Add JWT authentication"
+
+        monkeypatch.setattr(llm_enhancer, "_run_llm", mock_run_llm)
+
+        plugin = LLMEnhancerPlugin()
+        prompt = Prompt(text="yes", timestamp="2025-01-01T00:00:00Z")
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/auth.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T00:00:00Z",
+                    content="jwt code",
+                )
+            ],
+            timestamp="2025-01-01T00:00:00Z",
+            context=AssistantContext(thinking="Implementing JWT auth"),
+        )
+        result = plugin.agentgit_enhance_merge_message(
+            prompt=prompt,
+            turns=[turn],
+            enhancer="llm",
+            model=None,
+        )
+        # Should combine: "yes - Add JWT authentication"
+        assert result == "yes - Add JWT authentication"
+
+    def test_long_prompt_truncated(self, monkeypatch):
+        """Long self-contained prompts should be truncated."""
+        from agentgit.enhancers import llm as llm_enhancer
+
+        llm_enhancer.clear_message_cache()
+
+        plugin = LLMEnhancerPlugin()
+        long_text = "Add " + "x" * 100
+        prompt = Prompt(text=long_text, timestamp="2025-01-01T00:00:00Z")
+        turn = AssistantTurn(
+            operations=[],
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        result = plugin.agentgit_enhance_merge_message(
+            prompt=prompt,
+            turns=[turn],
+            enhancer="llm",
+            model=None,
+        )
+        assert len(result) <= 72
+        assert result.endswith("...")
+
+
+class TestCurateTurnContextHook:
+    """Tests for the agentgit_curate_turn_context hook."""
+
+    def test_wrong_enhancer_returns_none(self):
+        """Should return None for non-llm enhancer."""
+        plugin = LLMEnhancerPlugin()
+        turn = AssistantTurn(
+            operations=[],
+            timestamp="2025-01-01T00:00:00Z",
+            context=AssistantContext(thinking="Some context"),
+        )
+        result = plugin.agentgit_curate_turn_context(
+            turn=turn, enhancer="rules", model=None
+        )
+        assert result is None
+
+    def test_no_context_returns_none(self):
+        """Should return None when turn has no context."""
+        plugin = LLMEnhancerPlugin()
+        turn = AssistantTurn(
+            operations=[],
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        result = plugin.agentgit_curate_turn_context(
+            turn=turn, enhancer="llm", model=None
+        )
+        assert result is None
+
+    def test_short_context_returned_as_is(self):
+        """Short context should be returned without LLM call."""
+        plugin = LLMEnhancerPlugin()
+        short_context = "Brief reasoning about the change."
+        turn = AssistantTurn(
+            operations=[],
+            timestamp="2025-01-01T00:00:00Z",
+            context=AssistantContext(thinking=short_context),
+        )
+        result = plugin.agentgit_curate_turn_context(
+            turn=turn, enhancer="llm", model=None
+        )
+        assert result == short_context

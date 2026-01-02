@@ -1,7 +1,8 @@
 """LLM-based AI enhancement plugin for agentgit.
 
-This enhancer uses the `llm` library to generate commit messages.
-Any model available through `llm` can be used.
+This enhancer uses the `llm` library to:
+1. Add context to referential prompts (e.g., "yes" → "yes - Add JWT auth")
+2. Curate which assistant thinking/reasoning to include in commits
 """
 
 from __future__ import annotations
@@ -32,6 +33,17 @@ _message_cache: dict[str, str] = {}
 
 # Cached model instance
 _model_cache: dict[str, object] = {}
+
+
+def _prompt_needs_context(text: str) -> bool:
+    """Determine if a prompt is too short/referential to stand alone.
+
+    Returns True if the prompt likely needs assistant context to make sense.
+    """
+    # Import the shared logic from rules enhancer
+    from agentgit.enhancers.rules import _prompt_needs_context as rules_needs_context
+
+    return rules_needs_context(text)
 
 
 def _get_model(model: str = DEFAULT_MODEL):
@@ -171,8 +183,12 @@ def batch_enhance_prompt_responses(
 ) -> dict[str, str]:
     """Batch process all prompt responses to generate commit messages efficiently.
 
-    This function sends all prompts to the LLM in batched calls, which is
-    more efficient than making individual calls for each commit message.
+    For merge commits (user prompts):
+    - Self-contained prompts are used as-is
+    - Referential prompts get context appended: "yes - Add JWT auth"
+
+    For turn commits:
+    - Generate a summary of what the assistant did
 
     Args:
         prompt_responses: List of PromptResponse objects to process.
@@ -186,31 +202,47 @@ def batch_enhance_prompt_responses(
     if not prompt_responses:
         return {}
 
-    # Build batch prompt with all items
+    # First pass: handle self-contained prompts directly (no LLM needed)
+    # and collect items that need LLM processing
     items = []
     item_keys = []
+    item_metadata = []  # Store extra info for post-processing
 
     for pr in prompt_responses:
-        # Add prompt/merge message request
         prompt_key = _get_prompt_key(pr.prompt)
         if prompt_key not in _message_cache:
-            context_parts = [f"User request: {_truncate_text(pr.prompt.text, 500)}"]
+            first_line = pr.prompt.text.split("\n")[0].strip()
 
-            # Summarize files changed
-            all_files = []
-            for turn in pr.turns:
-                all_files.extend(turn.files_created)
-                all_files.extend(turn.files_modified)
+            # Self-contained prompts don't need LLM
+            if not _prompt_needs_context(pr.prompt.text):
+                if len(first_line) <= 72:
+                    _message_cache[prompt_key] = first_line
+                else:
+                    _message_cache[prompt_key] = first_line[:69] + "..."
+            else:
+                # Referential prompt - need LLM to add context
+                context_parts = []
+                all_files = []
+                for turn in pr.turns:
+                    all_files.extend(turn.files_created)
+                    all_files.extend(turn.files_modified)
+                if all_files:
+                    context_parts.append(f"Files: {', '.join(all_files[:10])}")
 
-            if all_files:
-                context_parts.append(f"Files changed: {', '.join(all_files[:10])}")
+                for turn in pr.turns[:2]:
+                    if turn.context and turn.context.summary:
+                        context_parts.append(
+                            _truncate_text(turn.context.summary, 300)
+                        )
 
-            items.append({
-                "id": len(items) + 1,
-                "type": "merge",
-                "context": "\n".join(context_parts),
-            })
-            item_keys.append(prompt_key)
+                items.append({
+                    "id": len(items) + 1,
+                    "type": "merge",
+                    "prompt": first_line,
+                    "context": "\n".join(context_parts),
+                })
+                item_keys.append(prompt_key)
+                item_metadata.append({"first_line": first_line})
 
         # Add turn message requests
         for turn in pr.turns:
@@ -222,6 +254,7 @@ def batch_enhance_prompt_responses(
                     "context": _build_turn_context(turn, 800),
                 })
                 item_keys.append(turn_key)
+                item_metadata.append({})
 
     if not items:
         return _message_cache
@@ -231,26 +264,33 @@ def batch_enhance_prompt_responses(
         chunk_end = min(chunk_start + MAX_BATCH_SIZE, len(items))
         chunk_items = items[chunk_start:chunk_end]
         chunk_keys = item_keys[chunk_start:chunk_end]
+        chunk_metadata = item_metadata[chunk_start:chunk_end]
 
         # Build the batch prompt for this chunk
-        batch_prompt = """Generate concise git commit message subject lines (max 72 characters each) for these items.
+        batch_prompt = """Generate commit message content for these items.
 
-Examples of good commit messages:
-- "Add user authentication with JWT tokens"
-- "Fix race condition in database connection pool"
-- "Refactor payment processing for better testability"
-- "Remove deprecated API endpoints"
-- "Update dependencies to address security vulnerability"
+For "merge" items: The user prompt is referential (like "yes" or "do it").
+Summarize what they were agreeing to in ~30-50 chars.
+
+For "turn" items: Summarize what the assistant did in ~50-70 chars.
+
+Examples:
+- merge prompt "yes" with JWT context → "Add JWT authentication"
+- merge prompt "go ahead" with refactor context → "Refactor database layer"
+- turn with auth files → "Implement login and session handling"
 
 Items:
 """
 
         for idx, item in enumerate(chunk_items, 1):
-            batch_prompt += f"\n[{idx}] ({item['type']})\n{item['context']}\n"
+            if item["type"] == "merge":
+                batch_prompt += f'\n[{idx}] (merge) User said: "{item["prompt"]}"\nContext: {item["context"]}\n'
+            else:
+                batch_prompt += f"\n[{idx}] (turn)\n{item['context']}\n"
 
-        batch_prompt += f"""
-Respond with a JSON object mapping item IDs to commit messages:
-{{"1": "Add user authentication", "2": "Fix login validation", ...}}
+        batch_prompt += """
+Respond with a JSON object mapping item IDs to the summary text:
+{"1": "Add JWT authentication", "2": "Implement login flow", ...}
 
 ONLY respond with the JSON object, nothing else."""
 
@@ -260,7 +300,6 @@ ONLY respond with the JSON object, nothing else."""
         if response:
             try:
                 # Try to parse JSON response
-                # Handle potential markdown code blocks
                 response = response.strip()
                 if response.startswith("```"):
                     lines = response.split("\n")
@@ -269,14 +308,33 @@ ONLY respond with the JSON object, nothing else."""
                 messages = json.loads(response)
 
                 # Map responses back to cache keys
-                for idx, key in enumerate(chunk_keys, 1):
+                for idx, (key, item, meta) in enumerate(
+                    zip(chunk_keys, chunk_items, chunk_metadata), 1
+                ):
                     item_id = str(idx)
                     if item_id in messages:
-                        _message_cache[key] = _clean_message(messages[item_id])
+                        summary = messages[item_id].strip().strip('"').strip("'")
+
+                        if item["type"] == "merge":
+                            # Combine: "{prompt} - {summary}"
+                            first_line = meta["first_line"]
+                            max_len = 72 - len(first_line) - 3
+                            if max_len > 10 and summary:
+                                if len(summary) > max_len:
+                                    summary = summary[: max_len - 3] + "..."
+                                _message_cache[key] = f"{first_line} - {summary}"
+                            else:
+                                _message_cache[key] = (
+                                    first_line[:69] + "..."
+                                    if len(first_line) > 72
+                                    else first_line
+                                )
+                        else:
+                            # Turn - just use the summary
+                            _message_cache[key] = _clean_message(summary)
 
             except json.JSONDecodeError as e:
                 logger.debug("Failed to parse batch response as JSON: %s", e)
-                # Fall back to individual processing for this chunk
 
     return _message_cache
 
@@ -400,7 +458,11 @@ Respond with ONLY the commit message subject line, nothing else."""
         enhancer: str,
         model: str | None,
     ) -> str | None:
-        """Generate an AI-enhanced merge commit message for a user prompt."""
+        """Generate an enhanced merge commit message for a user prompt.
+
+        Preserves the exact user prompt text. For referential prompts like
+        "yes" or "do it", appends context about what was agreed to.
+        """
         if enhancer != ENHANCER_NAME:
             return None
 
@@ -409,11 +471,23 @@ Respond with ONLY the commit message subject line, nothing else."""
         if prompt_key in _message_cache:
             return _message_cache[prompt_key]
 
+        # Get first line of prompt for subject
+        first_line = prompt.text.split("\n")[0].strip()
+
+        # If prompt is self-contained, just use it as-is (truncated if needed)
+        if not _prompt_needs_context(prompt.text):
+            if len(first_line) <= 72:
+                result = first_line
+            else:
+                result = first_line[:69] + "..."
+            _message_cache[prompt_key] = result
+            return result
+
+        # Prompt is referential - need to add context from assistant
         model = model or DEFAULT_MODEL
 
-        # Build context
+        # Gather context about what was done
         context_parts = []
-        context_parts.append(f"User request:\n{_truncate_text(prompt.text, 1000)}")
 
         # Summarize what was done
         all_created = []
@@ -431,30 +505,93 @@ Respond with ONLY the commit message subject line, nothing else."""
         if all_deleted:
             context_parts.append(f"Files deleted: {', '.join(all_deleted[:10])}")
 
-        # Include some assistant reasoning
+        # Include assistant reasoning
         for turn in turns[:3]:
             if turn.context and turn.context.summary:
-                reasoning = _truncate_text(turn.context.summary, 300)
-                context_parts.append(f"\nAssistant work:\n{reasoning}")
+                reasoning = _truncate_text(turn.context.summary, 500)
+                context_parts.append(f"\nAssistant reasoning:\n{reasoning}")
 
         context = "\n".join(context_parts)
 
-        ai_prompt = f"""Generate a concise git commit message subject line (max 72 characters) that summarizes the work done in response to this user request.
+        # Ask LLM to summarize what the user was agreeing to
+        ai_prompt = f"""The user said: "{first_line}"
 
-Examples of good commit messages:
-- "Add dark mode support with system preference detection"
-- "Fix checkout flow breaking on expired sessions"
-- "Migrate user settings from localStorage to database"
-- "Set up CI pipeline with automated testing"
+This was a response to assistant work. Summarize what the user was agreeing to in a few words (max 50 characters).
 
-Context:
 {context}
 
-Respond with ONLY the commit message subject line, nothing else."""
+Examples:
+- User: "yes" → "Add JWT authentication"
+- User: "go ahead" → "Refactor database queries"
+- User: "the first one" → "Use Redis for caching"
 
-        message = _run_llm(ai_prompt, model)
-        if message:
-            result = _clean_message(message)
-            _message_cache[prompt_key] = result
-            return result
-        return None
+Respond with ONLY the short summary, nothing else."""
+
+        summary = _run_llm(ai_prompt, model)
+        if summary:
+            summary = summary.strip().strip('"').strip("'")
+            # Combine: "{prompt} - {summary}"
+            # Ensure total length <= 72
+            max_summary_len = 72 - len(first_line) - 3  # 3 for " - "
+            if max_summary_len > 10 and len(summary) > 0:
+                if len(summary) > max_summary_len:
+                    summary = summary[: max_summary_len - 3] + "..."
+                result = f"{first_line} - {summary}"
+            else:
+                # Prompt too long, just use it
+                result = first_line[:69] + "..." if len(first_line) > 72 else first_line
+        else:
+            # LLM failed, just use the prompt
+            result = first_line[:69] + "..." if len(first_line) > 72 else first_line
+
+        _message_cache[prompt_key] = result
+        return result
+
+    @hookimpl
+    def agentgit_curate_turn_context(
+        self,
+        turn: "AssistantTurn",
+        enhancer: str,
+        model: str | None,
+    ) -> str | None:
+        """Curate the context/reasoning to include in a turn commit body.
+
+        Selects and organizes the most relevant parts of the assistant's
+        thinking to explain why these changes were made.
+        """
+        if enhancer != ENHANCER_NAME:
+            return None
+
+        # If no context available, nothing to curate
+        if not turn.context or not turn.context.summary:
+            return None
+
+        model = model or DEFAULT_MODEL
+
+        # Build the raw context
+        raw_context = turn.context.summary
+
+        # If context is short enough, use as-is
+        if len(raw_context) <= 500:
+            return raw_context
+
+        # Ask LLM to curate/summarize the key reasoning
+        ai_prompt = f"""Summarize the key reasoning from this assistant's thinking.
+Focus on:
+- Why these changes were made
+- Key decisions or trade-offs
+- Important context for understanding the code
+
+Keep it concise (2-4 sentences, max 300 chars).
+
+Assistant thinking:
+{_truncate_text(raw_context, 2000)}
+
+Respond with ONLY the summary, nothing else."""
+
+        result = _run_llm(ai_prompt, model)
+        if result:
+            return result.strip()
+
+        # Fall back to truncated original
+        return _truncate_text(raw_context, 500)

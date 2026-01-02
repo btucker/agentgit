@@ -215,6 +215,27 @@ class AgentGitSpec:
             Generated commit message subject line, or None if generation fails.
         """
 
+    @hookspec(firstresult=True)
+    def agentgit_curate_turn_context(
+        self,
+        turn: AssistantTurn,
+        enhancer: str,
+        model: str | None,
+    ) -> str | None:
+        """Curate the context/reasoning to include in a turn commit body.
+
+        The enhancer can select and organize the most relevant parts of the
+        assistant's thinking to include in the commit message body.
+
+        Args:
+            turn: The assistant turn to curate context for.
+            enhancer: The enhancer type to use.
+            model: Optional model override.
+
+        Returns:
+            Curated context string to include in commit body, or None to use default.
+        """
+
 
 def get_plugin_manager() -> pluggy.PluginManager:
     """Create and configure the plugin manager."""

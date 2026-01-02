@@ -237,11 +237,19 @@ def format_turn_commit_message(
     if file_lists:
         body_parts.append("\n".join(file_lists))
 
-    # Assistant context (the reasoning)
-    if turn.context and turn.context.summary:
+    # Assistant context (the reasoning) - use curated version if available
+    context = None
+    if enhance_config and enhance_config.enabled:
+        from agentgit.enhance import curate_turn_context
+
+        context = curate_turn_context(turn, enhance_config)
+
+    # Fall back to raw context
+    if context is None and turn.context and turn.context.summary:
         context = turn.context.summary
-        if context:
-            body_parts.append(f"Context:\n{context}")
+
+    if context:
+        body_parts.append(f"Context:\n{context}")
 
     body = "\n\n".join(body_parts) if body_parts else ""
 
