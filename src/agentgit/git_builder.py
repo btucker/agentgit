@@ -8,7 +8,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, Optional, Union
 
 from git import Repo
 from git.exc import GitCommandError, InvalidGitRepositoryError
@@ -21,6 +21,9 @@ from agentgit.core import (
     PromptResponse,
     SourceCommit,
 )
+
+if TYPE_CHECKING:
+    from agentgit.enhance import EnhanceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -131,13 +134,15 @@ def format_commit_message(operation: FileOperation) -> str:
     - Assistant context if available
     - Blank line
     - Git trailers for machine parsing
+
+    Args:
+        operation: The file operation to format.
     """
     op_verb = {
         OperationType.WRITE: "Create",
         OperationType.EDIT: "Edit",
         OperationType.DELETE: "Delete",
     }.get(operation.operation_type, "Modify")
-
     subject = f"{op_verb} {operation.filename}"
 
     body_parts = []
@@ -172,19 +177,39 @@ def format_commit_message(operation: FileOperation) -> str:
         return f"{subject}\n\n{trailers_str}"
 
 
-def format_turn_commit_message(turn: AssistantTurn) -> str:
+def format_turn_commit_message(
+    turn: AssistantTurn,
+    enhance_config: Optional["EnhanceConfig"] = None,
+) -> str:
     """Format a commit message for an assistant turn (grouped operations).
 
     Structure:
-    - Subject line: summary of what was done
+    - Subject line: summary of what was done (or AI-generated)
     - Blank line
     - Files modified/created/deleted
     - Blank line
     - Context if available
     - Blank line
     - Trailers
+
+    Args:
+        turn: The assistant turn to format.
+        enhance_config: Optional AI config for generating smarter commit messages.
     """
-    subject = turn.summary_line
+    # Try AI-generated subject if configured
+    subject = None
+    if enhance_config and enhance_config.enabled:
+        from agentgit.enhance import generate_turn_summary
+
+        # Get the prompt from the first operation if available
+        prompt = None
+        if turn.operations and turn.operations[0].prompt:
+            prompt = turn.operations[0].prompt
+        subject = generate_turn_summary(turn, prompt, enhance_config)
+
+    # Fall back to default format
+    if not subject:
+        subject = turn.summary_line
 
     body_parts = []
 
@@ -199,11 +224,19 @@ def format_turn_commit_message(turn: AssistantTurn) -> str:
     if file_lists:
         body_parts.append("\n".join(file_lists))
 
-    # Assistant context (the reasoning)
-    if turn.context and turn.context.summary:
+    # Assistant context (the reasoning) - use curated version if available
+    context = None
+    if enhance_config and enhance_config.enabled:
+        from agentgit.enhance import curate_turn_context
+
+        context = curate_turn_context(turn, enhance_config)
+
+    # Fall back to raw context
+    if context is None and turn.context and turn.context.summary:
         context = turn.context.summary
-        if context:
-            body_parts.append(f"Context:\n{context}")
+
+    if context:
+        body_parts.append(f"Context:\n{context}")
 
     body = "\n\n".join(body_parts) if body_parts else ""
 
@@ -224,22 +257,39 @@ def format_turn_commit_message(turn: AssistantTurn) -> str:
         return f"{subject}\n\n{trailers_str}"
 
 
-def format_prompt_merge_message(prompt: Prompt, turns: list[AssistantTurn]) -> str:
+def format_prompt_merge_message(
+    prompt: Prompt,
+    turns: list[AssistantTurn],
+    enhance_config: Optional["EnhanceConfig"] = None,
+) -> str:
     """Format a merge commit message for a prompt.
 
     Structure:
-    - Subject line: first line of prompt (truncated if needed)
+    - Subject line: first line of prompt (truncated if needed) or AI-generated
     - Blank line
     - Full prompt text
     - Blank line
     - Trailers
+
+    Args:
+        prompt: The user prompt.
+        turns: All assistant turns that responded to the prompt.
+        enhance_config: Optional AI config for generating smarter commit messages.
     """
-    # Subject: first meaningful line of prompt
-    first_line = prompt.text.split("\n")[0].strip()
-    if len(first_line) > 72:
-        subject = first_line[:69] + "..."
-    else:
-        subject = first_line
+    # Try AI-generated subject if configured
+    subject = None
+    if enhance_config and enhance_config.enabled:
+        from agentgit.enhance import generate_prompt_summary
+
+        subject = generate_prompt_summary(prompt, turns, enhance_config)
+
+    # Fall back to default format
+    if not subject:
+        first_line = prompt.text.split("\n")[0].strip()
+        if len(first_line) > 72:
+            subject = first_line[:69] + "..."
+        else:
+            subject = first_line
 
     body_parts = []
 
@@ -346,13 +396,16 @@ class GitRepoBuilder:
     def __init__(
         self,
         output_dir: Path | None = None,
+        enhance_config: Optional["EnhanceConfig"] = None,
     ):
         """Initialize the builder.
 
         Args:
             output_dir: Directory for the git repo. If None, creates a temp dir.
+            enhance_config: Optional AI configuration for generating commit messages.
         """
         self.output_dir = output_dir
+        self.enhance_config = enhance_config
         self.repo: Repo | None = None
         self.path_mapping: dict[str, str] = {}
         self.file_states: dict[str, str] = {}
@@ -394,6 +447,9 @@ class GitRepoBuilder:
             return True
         except InvalidGitRepositoryError:
             self.repo = Repo.init(self.output_dir)
+            # Disable commit signing for agentgit-created repos
+            with self.repo.config_writer() as config:
+                config.set_value("commit", "gpgsign", "false")
             return False
 
     def _get_merged_timeline(
@@ -512,6 +568,12 @@ class GitRepoBuilder:
         # Ensure we have an initial commit
         if not self._has_commits():
             self._create_initial_commit()
+
+        # Pre-process batch enhancement for AI enhancers (much more efficient)
+        if self.enhance_config and self.enhance_config.enabled:
+            from agentgit.enhance import preprocess_batch_enhancement
+
+            preprocess_batch_enhancement(prompt_responses, self.enhance_config)
 
         for pr in prompt_responses:
             self._process_prompt_response(pr, incremental)

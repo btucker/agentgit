@@ -28,6 +28,8 @@ from agentgit.plugins import get_configured_plugin_manager, hookimpl, hookspec
 if TYPE_CHECKING:
     from git import Repo
 
+    from agentgit.enhance import EnhanceConfig
+
 __version__ = "0.1.0"
 
 # Format identifier for merged transcripts
@@ -160,6 +162,7 @@ def build_repo(
     author_name: str = "Agent",
     author_email: str = "agent@local",
     source_repo: Path | None = None,
+    enhance_config: "EnhanceConfig | None" = None,
 ) -> tuple[Repo, Path, dict[str, str]]:
     """Build a git repository from file operations.
 
@@ -169,11 +172,15 @@ def build_repo(
         author_name: Name for git commits.
         author_email: Email for git commits.
         source_repo: Optional source repository to interleave commits from.
+        enhance_config: Optional configuration for generating commit messages.
 
     Returns:
         Tuple of (repo, repo_path, path_mapping).
     """
-    builder = GitRepoBuilder(output_dir=output_dir)
+    builder = GitRepoBuilder(
+        output_dir=output_dir,
+        enhance_config=enhance_config,
+    )
     return builder.build(
         operations=operations,
         author_name=author_name,

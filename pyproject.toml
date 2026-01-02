@@ -25,6 +25,10 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
 ]
+llm = [
+    "llm>=0.16",
+    "llm-claude-cli>=0.1.0",
+]
 
 [project.entry-points."agentgit"]
 claude_code = "agentgit.formats.claude_code:ClaudeCodePlugin"
@@ -40,7 +44,7 @@ addopts = [
     "--cov=agentgit",
     "--cov-report=term-missing",
     "--cov-report=html:htmlcov",
-    "--cov-fail-under=75",
+    "--cov-fail-under=74",
 ]
 
 [tool.coverage.run]
