@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 # Default model for commit message generation (fast and cheap)
 DEFAULT_MODEL = "haiku"
 
+# Maximum items per batch to avoid context limits
+MAX_BATCH_SIZE = 25
+
 # Plugin identifier
 ENHANCER_NAME = "claude_code"
 
@@ -219,8 +222,14 @@ def batch_enhance_prompt_responses(
     if not items:
         return _message_cache
 
-    # Build the batch prompt
-    batch_prompt = """Generate concise git commit message subject lines (max 72 characters each) for these items.
+    # Process items in chunks to avoid context limits
+    for chunk_start in range(0, len(items), MAX_BATCH_SIZE):
+        chunk_end = min(chunk_start + MAX_BATCH_SIZE, len(items))
+        chunk_items = items[chunk_start:chunk_end]
+        chunk_keys = item_keys[chunk_start:chunk_end]
+
+        # Build the batch prompt for this chunk
+        batch_prompt = """Generate concise git commit message subject lines (max 72 characters each) for these items.
 
 Rules:
 - Start with a verb (Add, Fix, Update, Remove, Refactor, Implement)
@@ -231,38 +240,38 @@ Rules:
 Items:
 """
 
-    for item in items:
-        batch_prompt += f"\n[{item['id']}] ({item['type']})\n{item['context']}\n"
+        for idx, item in enumerate(chunk_items, 1):
+            batch_prompt += f"\n[{idx}] ({item['type']})\n{item['context']}\n"
 
-    batch_prompt += f"""
+        batch_prompt += f"""
 Respond with a JSON object mapping item IDs to commit messages:
 {{"1": "Add user authentication", "2": "Fix login validation", ...}}
 
 ONLY respond with the JSON object, nothing else."""
 
-    # Call Claude once for all items
-    response = _run_claude(batch_prompt, model)
+        # Call Claude for this chunk
+        response = _run_claude(batch_prompt, model)
 
-    if response:
-        try:
-            # Try to parse JSON response
-            # Handle potential markdown code blocks
-            response = response.strip()
-            if response.startswith("```"):
-                lines = response.split("\n")
-                response = "\n".join(lines[1:-1])
+        if response:
+            try:
+                # Try to parse JSON response
+                # Handle potential markdown code blocks
+                response = response.strip()
+                if response.startswith("```"):
+                    lines = response.split("\n")
+                    response = "\n".join(lines[1:-1])
 
-            messages = json.loads(response)
+                messages = json.loads(response)
 
-            # Map responses back to cache keys
-            for i, key in enumerate(item_keys):
-                item_id = str(i + 1)
-                if item_id in messages:
-                    _message_cache[key] = _clean_message(messages[item_id])
+                # Map responses back to cache keys
+                for idx, key in enumerate(chunk_keys, 1):
+                    item_id = str(idx)
+                    if item_id in messages:
+                        _message_cache[key] = _clean_message(messages[item_id])
 
-        except json.JSONDecodeError as e:
-            logger.debug("Failed to parse batch response as JSON: %s", e)
-            # Fall back to individual processing
+            except json.JSONDecodeError as e:
+                logger.debug("Failed to parse batch response as JSON: %s", e)
+                # Fall back to individual processing for this chunk
 
     return _message_cache
 
