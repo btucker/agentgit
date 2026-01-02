@@ -481,7 +481,7 @@ class TestBatchProcessing:
         # Track calls to _run_llm
         calls = []
 
-        def mock_run_llm(prompt, model="claude-code-haiku"):
+        def mock_run_llm(prompt, model="claude-cli-haiku"):
             calls.append(prompt)
             # Return valid JSON for 25 items
             items = {}
@@ -533,7 +533,7 @@ class TestBatchProcessing:
 
         calls = []
 
-        def mock_run_llm(prompt, model="claude-code-haiku"):
+        def mock_run_llm(prompt, model="claude-cli-haiku"):
             calls.append(prompt)
             # Return messages for both merge and turn items
             return '{"1": "Merge message", "2": "Turn message"}'
@@ -632,7 +632,7 @@ class TestBatchProcessing:
 
         llm_enhancer.clear_message_cache()
 
-        def mock_run_llm(prompt, model="claude-code-haiku"):
+        def mock_run_llm(prompt, model="claude-cli-haiku"):
             return "not valid json at all"
 
         monkeypatch.setattr(llm_enhancer, "_run_llm", mock_run_llm)
@@ -664,7 +664,7 @@ class TestBatchProcessing:
 
         llm_enhancer.clear_message_cache()
 
-        def mock_run_llm(prompt, model="claude-code-haiku"):
+        def mock_run_llm(prompt, model="claude-cli-haiku"):
             return '```json\n{"1": "Add feature", "2": "Fix bug"}\n```'
 
         monkeypatch.setattr(llm_enhancer, "_run_llm", mock_run_llm)

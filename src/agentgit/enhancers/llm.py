@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Default model for commit message generation (uses llm-claude-cli)
-DEFAULT_MODEL = "claude-code-haiku"
+DEFAULT_MODEL = "claude-cli-haiku"
 
 # Maximum items per batch to avoid context limits
 MAX_BATCH_SIZE = 25

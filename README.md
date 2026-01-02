@@ -69,7 +69,7 @@ agentgit can generate better commit messages using either heuristic rules or AI:
 agentgit --enhancer rules
 
 # Use LLM for AI-powered messages
-agentgit --enhancer llm --llm-model claude-code-haiku
+agentgit --enhancer llm --llm-model claude-cli-haiku
 ```
 
 **Available enhancers:**
@@ -83,10 +83,10 @@ The `llm` enhancer uses efficient batch processing - commit messages are generat
 
 ```bash
 # First run: set the enhancer and model
-agentgit --enhancer llm --llm-model claude-code-haiku
+agentgit --enhancer llm --llm-model claude-cli-haiku
 
 # Future runs: settings are remembered
-agentgit  # Uses llm with claude-code-haiku automatically
+agentgit  # Uses llm with claude-cli-haiku automatically
 ```
 
 Settings are stored in git config (`agentgit.enhancer`, `agentgit.enhanceModel`).
