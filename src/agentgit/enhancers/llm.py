@@ -235,11 +235,12 @@ def batch_enhance_prompt_responses(
         # Build the batch prompt for this chunk
         batch_prompt = """Generate concise git commit message subject lines (max 72 characters each) for these items.
 
-Rules:
-- Start with a verb (Add, Fix, Update, Remove, Refactor, Implement)
-- Be specific but concise
-- Focus on the purpose/intent
-- Use imperative mood ("Add feature" not "Added feature")
+Examples of good commit messages:
+- "Add user authentication with JWT tokens"
+- "Fix race condition in database connection pool"
+- "Refactor payment processing for better testability"
+- "Remove deprecated API endpoints"
+- "Update dependencies to address security vulnerability"
 
 Items:
 """
@@ -326,11 +327,11 @@ class LLMEnhancerPlugin:
 
         prompt = f"""Generate a concise git commit message subject line (max 72 characters) for this file operation.
 
-The message should:
-- Start with a verb (Add, Fix, Update, Remove, Refactor, etc.)
-- Be specific about what changed and why
-- Focus on the purpose/intent, not just the mechanical change
-- Be in imperative mood (e.g., "Add feature" not "Added feature")
+Examples of good commit messages:
+- "Add input validation for user registration"
+- "Fix null pointer in config parser"
+- "Rename getUserById to findUserById for consistency"
+- "Remove unused helper functions"
 
 Context:
 {context}
@@ -373,11 +374,11 @@ Respond with ONLY the commit message subject line, nothing else."""
 
         ai_prompt = f"""Generate a concise git commit message subject line (max 72 characters) for this set of file changes.
 
-The message should:
-- Start with a verb (Add, Fix, Update, Remove, Refactor, Implement, etc.)
-- Summarize the overall purpose of all the changes together
-- Focus on the intent/goal, not list individual files
-- Be in imperative mood (e.g., "Add feature" not "Added feature")
+Examples of good commit messages:
+- "Implement OAuth2 login flow"
+- "Fix form validation across signup pages"
+- "Refactor database queries to use connection pooling"
+- "Configure ESLint rules for TypeScript"
 
 Context:
 {context}
@@ -440,11 +441,11 @@ Respond with ONLY the commit message subject line, nothing else."""
 
         ai_prompt = f"""Generate a concise git commit message subject line (max 72 characters) that summarizes the work done in response to this user request.
 
-The message should:
-- Start with a verb (Add, Fix, Update, Remove, Refactor, Implement, etc.)
-- Capture the overall goal/outcome of the work
-- Be specific but concise
-- Be in imperative mood (e.g., "Add feature" not "Added feature")
+Examples of good commit messages:
+- "Add dark mode support with system preference detection"
+- "Fix checkout flow breaking on expired sessions"
+- "Migrate user settings from localStorage to database"
+- "Set up CI pipeline with automated testing"
 
 Context:
 {context}
