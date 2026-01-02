@@ -103,6 +103,47 @@ def _truncate_text(text: str, max_length: int) -> str:
     return text[: max_length - 3] + "..."
 
 
+def _truncate_subject(text: str) -> str:
+    """Truncate text to 72 chars for git subject line."""
+    return _truncate_text(text, 72)
+
+
+def _gather_turn_files(
+    turns: list["AssistantTurn"],
+) -> tuple[list[str], list[str], list[str]]:
+    """Gather all files from a list of turns.
+
+    Returns:
+        Tuple of (created, modified, deleted) file lists.
+    """
+    created, modified, deleted = [], [], []
+    for turn in turns:
+        created.extend(turn.files_created)
+        modified.extend(turn.files_modified)
+        deleted.extend(turn.files_deleted)
+    return created, modified, deleted
+
+
+def _format_referential_subject(prompt_first_line: str, summary: str | None) -> str:
+    """Format a referential prompt with context summary.
+
+    For prompts like "yes" or "do it", combines with summary:
+    "yes - Add JWT authentication"
+
+    If summary is empty or prompt is too long, just returns truncated prompt.
+    """
+    if not summary:
+        return _truncate_subject(prompt_first_line)
+
+    max_summary_len = 72 - len(prompt_first_line) - 3  # 3 for " - "
+    if max_summary_len > 10:
+        if len(summary) > max_summary_len:
+            summary = summary[: max_summary_len - 3] + "..."
+        return f"{prompt_first_line} - {summary}"
+
+    return _truncate_subject(prompt_first_line)
+
+
 def _build_operation_context(operation: "FileOperation", max_length: int = 2000) -> str:
     """Build context string for a single file operation."""
     parts = []
@@ -159,9 +200,7 @@ def _build_turn_context(turn: "AssistantTurn", max_length: int = 3000) -> str:
 def _clean_message(message: str) -> str:
     """Clean up an AI-generated commit message."""
     message = message.strip().strip('"').strip("'")
-    if len(message) > 72:
-        message = message[:69] + "..."
-    return message
+    return _truncate_subject(message)
 
 
 def _get_prompt_key(prompt: "Prompt") -> str:
@@ -215,17 +254,12 @@ def batch_enhance_prompt_responses(
 
             # Self-contained prompts don't need LLM
             if not _prompt_needs_context(pr.prompt.text):
-                if len(first_line) <= 72:
-                    _message_cache[prompt_key] = first_line
-                else:
-                    _message_cache[prompt_key] = first_line[:69] + "..."
+                _message_cache[prompt_key] = _truncate_subject(first_line)
             else:
                 # Referential prompt - need LLM to add context
                 context_parts = []
-                all_files = []
-                for turn in pr.turns:
-                    all_files.extend(turn.files_created)
-                    all_files.extend(turn.files_modified)
+                created, modified, _ = _gather_turn_files(pr.turns)
+                all_files = created + modified
                 if all_files:
                     context_parts.append(f"Files: {', '.join(all_files[:10])}")
 
@@ -316,19 +350,10 @@ ONLY respond with the JSON object, nothing else."""
                         summary = messages[item_id].strip().strip('"').strip("'")
 
                         if item["type"] == "merge":
-                            # Combine: "{prompt} - {summary}"
                             first_line = meta["first_line"]
-                            max_len = 72 - len(first_line) - 3
-                            if max_len > 10 and summary:
-                                if len(summary) > max_len:
-                                    summary = summary[: max_len - 3] + "..."
-                                _message_cache[key] = f"{first_line} - {summary}"
-                            else:
-                                _message_cache[key] = (
-                                    first_line[:69] + "..."
-                                    if len(first_line) > 72
-                                    else first_line
-                                )
+                            _message_cache[key] = _format_referential_subject(
+                                first_line, summary
+                            )
                         else:
                             # Turn - just use the summary
                             _message_cache[key] = _clean_message(summary)
@@ -476,10 +501,7 @@ Respond with ONLY the commit message subject line, nothing else."""
 
         # If prompt is self-contained, just use it as-is (truncated if needed)
         if not _prompt_needs_context(prompt.text):
-            if len(first_line) <= 72:
-                result = first_line
-            else:
-                result = first_line[:69] + "..."
+            result = _truncate_subject(first_line)
             _message_cache[prompt_key] = result
             return result
 
@@ -488,15 +510,7 @@ Respond with ONLY the commit message subject line, nothing else."""
 
         # Gather context about what was done
         context_parts = []
-
-        # Summarize what was done
-        all_created = []
-        all_modified = []
-        all_deleted = []
-        for turn in turns:
-            all_created.extend(turn.files_created)
-            all_modified.extend(turn.files_modified)
-            all_deleted.extend(turn.files_deleted)
+        all_created, all_modified, all_deleted = _gather_turn_files(turns)
 
         if all_created:
             context_parts.append(f"Files created: {', '.join(all_created[:10])}")
@@ -530,19 +544,7 @@ Respond with ONLY the short summary, nothing else."""
         summary = _run_llm(ai_prompt, model)
         if summary:
             summary = summary.strip().strip('"').strip("'")
-            # Combine: "{prompt} - {summary}"
-            # Ensure total length <= 72
-            max_summary_len = 72 - len(first_line) - 3  # 3 for " - "
-            if max_summary_len > 10 and len(summary) > 0:
-                if len(summary) > max_summary_len:
-                    summary = summary[: max_summary_len - 3] + "..."
-                result = f"{first_line} - {summary}"
-            else:
-                # Prompt too long, just use it
-                result = first_line[:69] + "..." if len(first_line) > 72 else first_line
-        else:
-            # LLM failed, just use the prompt
-            result = first_line[:69] + "..." if len(first_line) > 72 else first_line
+        result = _format_referential_subject(first_line, summary)
 
         _message_cache[prompt_key] = result
         return result
