@@ -1,4 +1,8 @@
-"""Claude Code AI enhancement plugin for agentgit."""
+"""LLM-based AI enhancement plugin for agentgit.
+
+This enhancer uses the `llm` library to generate commit messages.
+Any model available through `llm` can be used.
+"""
 
 from __future__ import annotations
 
@@ -14,14 +18,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Default model for commit message generation (fast and cheap)
-DEFAULT_MODEL = "haiku"
+# Default model for commit message generation (uses llm-claude-cli)
+DEFAULT_MODEL = "claude-code-haiku"
 
 # Maximum items per batch to avoid context limits
 MAX_BATCH_SIZE = 25
 
 # Plugin identifier
-ENHANCER_NAME = "claude_code"
+ENHANCER_NAME = "llm"
 
 # Global cache for batch-processed messages
 _message_cache: dict[str, str] = {}
@@ -31,52 +35,52 @@ _model_cache: dict[str, object] = {}
 
 
 def _get_model(model: str = DEFAULT_MODEL):
-    """Get or create a ClaudeCode model instance.
+    """Get or create an LLM model instance.
 
     Args:
-        model: The Claude model to use (e.g., "haiku", "sonnet").
+        model: The model ID to use (e.g., "claude-3-5-haiku-latest", "gpt-4o-mini").
 
     Returns:
-        ClaudeCode model instance, or None if llm-claude-cli is not installed.
+        LLM model instance, or None if llm is not installed.
     """
     if model in _model_cache:
         return _model_cache[model]
 
     try:
-        from llm_claude_cli import ClaudeCode
+        import llm
 
-        instance = ClaudeCode(f"claude-code-{model}", claude_model=model)
+        instance = llm.get_model(model)
         _model_cache[model] = instance
         return instance
     except ImportError:
         logger.warning(
-            "llm-claude-cli not installed. Install with: pip install 'agentgit[llm]'"
+            "llm not installed. Install with: pip install 'agentgit[llm]'"
         )
         return None
     except Exception as e:
-        logger.warning("Failed to initialize Claude model: %s", e)
+        logger.warning("Failed to initialize model %s: %s", model, e)
         return None
 
 
-def _run_claude(prompt: str, model: str = DEFAULT_MODEL) -> str | None:
-    """Run a prompt through Claude and return the response text.
+def _run_llm(prompt: str, model: str = DEFAULT_MODEL) -> str | None:
+    """Run a prompt through the LLM and return the response text.
 
     Args:
-        prompt: The prompt to send to Claude.
-        model: The model to use (e.g., "haiku", "sonnet").
+        prompt: The prompt to send.
+        model: The model ID to use.
 
     Returns:
         The response text, or None if the request fails.
     """
-    claude_model = _get_model(model)
-    if claude_model is None:
+    llm_model = _get_model(model)
+    if llm_model is None:
         return None
 
     try:
-        response = claude_model.prompt(prompt, stream=False)
+        response = llm_model.prompt(prompt)
         return response.text()
     except Exception as e:
-        logger.warning("Claude request failed: %s", e)
+        logger.warning("LLM request failed: %s", e)
         return None
 
 
@@ -167,12 +171,12 @@ def batch_enhance_prompt_responses(
 ) -> dict[str, str]:
     """Batch process all prompt responses to generate commit messages efficiently.
 
-    This function sends all prompts to Claude in a single call, which is
-    much more efficient than making individual calls for each commit message.
+    This function sends all prompts to the LLM in batched calls, which is
+    more efficient than making individual calls for each commit message.
 
     Args:
         prompt_responses: List of PromptResponse objects to process.
-        model: The model to use (e.g., "haiku", "sonnet").
+        model: The model ID to use.
 
     Returns:
         Dictionary mapping cache keys to generated commit messages.
@@ -249,8 +253,8 @@ Respond with a JSON object mapping item IDs to commit messages:
 
 ONLY respond with the JSON object, nothing else."""
 
-        # Call Claude for this chunk
-        response = _run_claude(batch_prompt, model)
+        # Call LLM for this chunk
+        response = _run_llm(batch_prompt, model)
 
         if response:
             try:
@@ -282,15 +286,15 @@ def clear_message_cache() -> None:
     _message_cache = {}
 
 
-class ClaudeCodeEnhancerPlugin:
-    """AI enhancement plugin using Claude Code via llm-claude-cli."""
+class LLMEnhancerPlugin:
+    """AI enhancement plugin using the llm library."""
 
     @hookimpl
     def agentgit_get_ai_enhancer_info(self) -> dict[str, str]:
         """Return plugin identification info."""
         return {
             "name": ENHANCER_NAME,
-            "description": "Use Claude Code to generate commit messages (requires llm-claude-cli)",
+            "description": "Use LLM to generate commit messages (requires llm package)",
         }
 
     @hookimpl
@@ -333,7 +337,7 @@ Context:
 
 Respond with ONLY the commit message subject line, nothing else."""
 
-        message = _run_claude(prompt, model)
+        message = _run_llm(prompt, model)
         if message:
             return _clean_message(message)
         return None
@@ -380,7 +384,7 @@ Context:
 
 Respond with ONLY the commit message subject line, nothing else."""
 
-        message = _run_claude(ai_prompt, model)
+        message = _run_llm(ai_prompt, model)
         if message:
             result = _clean_message(message)
             _message_cache[turn_key] = result
@@ -447,7 +451,7 @@ Context:
 
 Respond with ONLY the commit message subject line, nothing else."""
 
-        message = _run_claude(ai_prompt, model)
+        message = _run_llm(ai_prompt, model)
         if message:
             result = _clean_message(message)
             _message_cache[prompt_key] = result

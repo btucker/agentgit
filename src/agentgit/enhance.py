@@ -147,8 +147,8 @@ def preprocess_batch_enhancement(
     if not config.enabled:
         return
 
-    # Only do batch processing for claude_code enhancer
-    if config.enhancer == "claude_code":
-        from agentgit.enhancers.claude_code import batch_enhance_prompt_responses
+    # Only do batch processing for llm enhancer
+    if config.enhancer == "llm":
+        from agentgit.enhancers.llm import batch_enhance_prompt_responses
 
         batch_enhance_prompt_responses(prompt_responses, config.model)

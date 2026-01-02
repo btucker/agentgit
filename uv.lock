@@ -21,6 +21,7 @@ dev = [
     { name = "pytest-cov" },
 ]
 llm = [
+    { name = "llm" },
     { name = "llm-claude-cli" },
 ]
 
@@ -29,6 +30,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.0.0" },
     { name = "gitpython", specifier = ">=3.1.0" },
     { name = "httpx", specifier = ">=0.25.0" },
+    { name = "llm", marker = "extra == 'llm'", specifier = ">=0.16" },
     { name = "llm-claude-cli", marker = "extra == 'llm'", specifier = ">=0.1.0" },
     { name = "pluggy", specifier = ">=1.3.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },

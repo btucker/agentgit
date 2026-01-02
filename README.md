@@ -68,25 +68,25 @@ agentgit can generate better commit messages using either heuristic rules or AI:
 # Use rules-based enhancement (fast, no AI)
 agentgit --enhancer rules
 
-# Use Claude Code for AI-powered messages
-agentgit --enhancer claude_code
+# Use LLM for AI-powered messages (uses llm-claude-cli by default)
+agentgit --enhancer llm
 ```
 
 **Available enhancers:**
 
 - `rules` - Uses heuristics to generate messages from prompts and context. Fast, no external dependencies.
-- `claude_code` - Uses Claude Code to generate intelligent commit messages. Requires the `llm` extra: `pip install 'agentgit[llm]'`
+- `llm` - Uses LLM to generate intelligent commit messages. Requires `pip install 'agentgit[llm]'` which installs `llm` and `llm-claude-cli`.
 
-The `claude_code` enhancer uses efficient batch processing - all commit messages are generated in a single call.
+The `llm` enhancer uses efficient batch processing - commit messages are generated in batched calls.
 
 **Preferences are saved per-project.** Once you set an enhancer, it's used automatically on future runs:
 
 ```bash
 # First run: set the enhancer
-agentgit --enhancer claude_code
+agentgit --enhancer llm
 
 # Future runs: enhancer is remembered
-agentgit  # Uses claude_code automatically
+agentgit  # Uses llm automatically
 ```
 
 Settings are stored in git config (`agentgit.enhancer`, `agentgit.enhanceModel`).
@@ -223,7 +223,7 @@ Register in `pyproject.toml`:
 my_enhancer = "my_package:MyEnhancerPlugin"
 ```
 
-Use with: `agentgit --enhance --enhancer my_enhancer`
+Use with: `agentgit --enhancer my_enhancer`
 
 ## License
 

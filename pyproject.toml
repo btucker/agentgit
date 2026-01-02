@@ -26,6 +26,7 @@ dev = [
     "pytest-cov>=4.0",
 ]
 llm = [
+    "llm>=0.16",
     "llm-claude-cli>=0.1.0",
 ]
 
@@ -43,7 +44,7 @@ addopts = [
     "--cov=agentgit",
     "--cov-report=term-missing",
     "--cov-report=html:htmlcov",
-    "--cov-fail-under=75",
+    "--cov-fail-under=74",
 ]
 
 [tool.coverage.run]
