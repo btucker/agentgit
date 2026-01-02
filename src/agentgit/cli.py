@@ -296,9 +296,10 @@ def main() -> None:
     help="Enhancer plugin ('rules' for heuristics, 'claude_code' for AI). Saved per-project.",
 )
 @click.option(
-    "--enhance-model",
+    "--llm-model",
+    "enhance_model",
     default=None,
-    help="Model to use for enhancement (e.g., 'haiku', 'sonnet'). Saved per-project.",
+    help="Model for LLM enhancer (e.g., 'haiku', 'sonnet'). Saved per-project.",
 )
 def process(
     transcript: Path | None,
@@ -362,6 +363,9 @@ def _run_process(
 
     # Load saved config and merge with CLI options
     saved_config = load_config(output)
+    # Auto-set enhancer to 'llm' if --llm-model is provided
+    if enhance_model and not enhancer:
+        enhancer = "llm"
     effective_enhancer = enhancer or saved_config.enhancer
     effective_model = enhance_model or saved_config.enhance_model or "haiku"
 
@@ -425,6 +429,9 @@ def _run_watch_mode(
 
     # Load saved config and merge with CLI options
     saved_config = load_config(output)
+    # Auto-set enhancer to 'llm' if --llm-model is provided
+    if enhance_model and not enhancer:
+        enhancer = "llm"
     effective_enhancer = enhancer or saved_config.enhancer
     effective_model = enhance_model or saved_config.enhance_model or "haiku"
 

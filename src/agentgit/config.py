@@ -43,7 +43,7 @@ def load_config(output_dir: Path) -> ProjectConfig:
             pass
 
         try:
-            enhance_model = reader.get_value("agentgit", "enhanceModel")
+            enhance_model = reader.get_value("agentgit", "llmModel")
         except Exception:
             pass
 
@@ -72,7 +72,7 @@ def save_config(output_dir: Path, config: ProjectConfig) -> None:
             if config.enhancer is not None:
                 writer.set_value("agentgit", "enhancer", config.enhancer)
             if config.enhance_model is not None:
-                writer.set_value("agentgit", "enhanceModel", config.enhance_model)
+                writer.set_value("agentgit", "llmModel", config.enhance_model)
     except (InvalidGitRepositoryError, NoSuchPathError):
         # Repo doesn't exist yet, config will be saved after creation
         pass

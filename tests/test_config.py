@@ -49,7 +49,7 @@ class TestLoadConfig:
         repo = Repo.init(tmp_path)
         with repo.config_writer() as writer:
             writer.set_value("agentgit", "enhancer", "claude_code")
-            writer.set_value("agentgit", "enhanceModel", "sonnet")
+            writer.set_value("agentgit", "llmModel", "sonnet")
 
         config = load_config(tmp_path)
         assert config.enhancer == "claude_code"
@@ -106,7 +106,7 @@ class TestSaveConfig:
         repo = Repo.init(tmp_path)
         with repo.config_writer() as writer:
             writer.set_value("agentgit", "enhancer", "rules")
-            writer.set_value("agentgit", "enhanceModel", "haiku")
+            writer.set_value("agentgit", "llmModel", "haiku")
 
         # Update just the enhancer
         config = ProjectConfig(enhancer="claude_code")
@@ -114,5 +114,5 @@ class TestSaveConfig:
 
         loaded = load_config(tmp_path)
         assert loaded.enhancer == "claude_code"
-        # enhanceModel should still be there from before
+        # llmModel should still be there from before
         assert loaded.enhance_model == "haiku"
