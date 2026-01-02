@@ -158,24 +158,6 @@ class AgentGitSpec:
         """
 
     @hookspec(firstresult=True)
-    def agentgit_enhance_operation_summary(
-        self,
-        operation: FileOperation,
-        enhancer: str,
-        model: str | None,
-    ) -> str | None:
-        """Generate an enhanced summary for a file operation entry.
-
-        Args:
-            operation: The file operation to generate a summary for.
-            enhancer: The enhancer type to use (e.g., 'llm', 'rules').
-            model: Optional model override (e.g., 'claude-cli-haiku').
-
-        Returns:
-            Generated entry summary, or None if generation fails.
-        """
-
-    @hookspec(firstresult=True)
     def agentgit_enhance_turn_summary(
         self,
         turn: AssistantTurn,

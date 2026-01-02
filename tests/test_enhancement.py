@@ -5,7 +5,6 @@ import pytest
 from agentgit.enhance import (
     EnhanceConfig,
     get_available_enhancers,
-    generate_operation_summary,
     generate_turn_summary,
     generate_prompt_summary,
     preprocess_batch_enhancement,
@@ -66,59 +65,6 @@ class TestRulesEnhancerPlugin:
         info = plugin.agentgit_get_ai_enhancer_info()
         assert info["name"] == "rules"
         assert "description" in info
-
-    def test_enhance_operation_message(self):
-        """Should generate message for operation."""
-        plugin = RulesEnhancerPlugin()
-        operation = FileOperation(
-            file_path="/project/src/test.py",
-            operation_type=OperationType.WRITE,
-            timestamp="2025-01-01T00:00:00Z",
-            content="print('hello')",
-        )
-        result = plugin.agentgit_enhance_operation_summary(
-            operation=operation,
-            enhancer="rules",
-            model=None,
-        )
-        assert result is not None
-        assert "test.py" in result
-        assert result.startswith("Add")
-
-    def test_enhance_operation_message_edit(self):
-        """Should generate Update message for edit operation."""
-        plugin = RulesEnhancerPlugin()
-        operation = FileOperation(
-            file_path="/project/src/config.json",
-            operation_type=OperationType.EDIT,
-            timestamp="2025-01-01T00:00:00Z",
-            old_string="old",
-            new_string="new",
-        )
-        result = plugin.agentgit_enhance_operation_summary(
-            operation=operation,
-            enhancer="rules",
-            model=None,
-        )
-        assert result is not None
-        assert "config.json" in result
-        assert result.startswith("Update")
-
-    def test_enhance_operation_message_wrong_enhancer(self):
-        """Should return None for wrong enhancer type."""
-        plugin = RulesEnhancerPlugin()
-        operation = FileOperation(
-            file_path="/test/file.py",
-            operation_type=OperationType.WRITE,
-            timestamp="2025-01-01T00:00:00Z",
-            content="print('hello')",
-        )
-        result = plugin.agentgit_enhance_operation_summary(
-            operation=operation,
-            enhancer="llm",
-            model=None,
-        )
-        assert result is None
 
     def test_enhance_turn_message(self):
         """Should generate message for turn with multiple files."""
@@ -449,23 +395,6 @@ class TestLLMEnhancerPlugin:
             model="haiku",
         )
         assert result is None
-
-    def test_enhance_operation_message_wrong_enhancer(self):
-        """Should return None for wrong enhancer type."""
-        plugin = LLMEnhancerPlugin()
-        operation = FileOperation(
-            file_path="/test/file.py",
-            operation_type=OperationType.WRITE,
-            timestamp="2025-01-01T00:00:00Z",
-            content="print('hello')",
-        )
-        result = plugin.agentgit_enhance_operation_summary(
-            operation=operation,
-            enhancer="rules",
-            model="haiku",
-        )
-        assert result is None
-
 
 class TestBatchProcessing:
     """Tests for batch processing in llm enhancer."""
@@ -798,42 +727,6 @@ class TestContextBuilders:
 
 class TestGenerateCommitMessages:
     """Tests for the generate_*_commit_message functions."""
-
-    def test_generate_operation_summary(self):
-        """Should generate a commit message for an operation."""
-        operation = FileOperation(
-            file_path="/project/src/auth.py",
-            operation_type=OperationType.WRITE,
-            timestamp="2025-01-01T00:00:00Z",
-            content="def authenticate(): pass",
-        )
-        config = EnhanceConfig(enhancer="rules", enabled=True)
-        message = generate_operation_summary(operation, config)
-        assert message is not None
-        assert "auth.py" in message
-
-    def test_generate_operation_summary_disabled(self):
-        """Should return None when disabled."""
-        operation = FileOperation(
-            file_path="/project/src/auth.py",
-            operation_type=OperationType.WRITE,
-            timestamp="2025-01-01T00:00:00Z",
-            content="code",
-        )
-        config = EnhanceConfig(enabled=False)
-        message = generate_operation_summary(operation, config)
-        assert message is None
-
-    def test_generate_operation_summary_default_config(self):
-        """Should use default config if not provided."""
-        operation = FileOperation(
-            file_path="/project/src/test.py",
-            operation_type=OperationType.WRITE,
-            timestamp="2025-01-01T00:00:00Z",
-            content="code",
-        )
-        message = generate_operation_summary(operation)
-        assert message is not None
 
     def test_generate_turn_summary(self):
         """Should generate a commit message for a turn."""

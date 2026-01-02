@@ -123,14 +123,11 @@ def get_last_processed_timestamp(repo: Repo) -> str | None:
     return None
 
 
-def format_commit_message(
-    operation: FileOperation,
-    enhance_config: Optional["EnhanceConfig"] = None,
-) -> str:
+def format_commit_message(operation: FileOperation) -> str:
     """Format a rich commit message for a file operation.
 
     Structure:
-    - Subject line: operation type and file (or AI-generated summary)
+    - Subject line: operation type and file
     - Blank line
     - User prompt (the "why") - full text, no truncation
     - Blank line
@@ -140,23 +137,13 @@ def format_commit_message(
 
     Args:
         operation: The file operation to format.
-        enhance_config: Optional AI config for generating smarter commit messages.
     """
-    # Try AI-generated subject if configured
-    subject = None
-    if enhance_config and enhance_config.enabled:
-        from agentgit.enhance import generate_operation_summary
-
-        subject = generate_operation_summary(operation, enhance_config)
-
-    # Fall back to default format
-    if not subject:
-        op_verb = {
-            OperationType.WRITE: "Create",
-            OperationType.EDIT: "Edit",
-            OperationType.DELETE: "Delete",
-        }.get(operation.operation_type, "Modify")
-        subject = f"{op_verb} {operation.filename}"
+    op_verb = {
+        OperationType.WRITE: "Create",
+        OperationType.EDIT: "Edit",
+        OperationType.DELETE: "Delete",
+    }.get(operation.operation_type, "Modify")
+    subject = f"{op_verb} {operation.filename}"
 
     body_parts = []
 

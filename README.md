@@ -207,13 +207,6 @@ class MyEnhancerPlugin:
         # Generate an entry summary for a single assistant turn
         files = turn.files_created + turn.files_modified
         return f"Update {', '.join(files[:3])}"
-
-    @hookimpl
-    def agentgit_enhance_operation_summary(self, operation, enhancer, model):
-        if enhancer != "my_enhancer":
-            return None
-        # Generate an entry summary for a single file operation
-        return f"Modify {operation.filename}"
 ```
 
 Register in `pyproject.toml`:

@@ -382,51 +382,6 @@ class LLMEnhancerPlugin:
         }
 
     @hookimpl
-    def agentgit_enhance_operation_summary(
-        self,
-        operation: "FileOperation",
-        enhancer: str,
-        model: str | None,
-    ) -> str | None:
-        """Generate an AI-enhanced commit message for a file operation."""
-        if enhancer != ENHANCER_NAME:
-            return None
-
-        model = model or DEFAULT_MODEL
-
-        # Build context for the prompt
-        context_parts = []
-        context_parts.append(_build_operation_context(operation))
-
-        if operation.prompt:
-            prompt_text = _truncate_text(operation.prompt.text, 500)
-            context_parts.append(f"\nUser request:\n{prompt_text}")
-
-        if operation.assistant_context and operation.assistant_context.summary:
-            reasoning = _truncate_text(operation.assistant_context.summary, 500)
-            context_parts.append(f"\nAssistant reasoning:\n{reasoning}")
-
-        context = "\n".join(context_parts)
-
-        prompt = f"""Generate a concise git commit message subject line (max 72 characters) for this file operation.
-
-Examples of good commit messages:
-- "Add input validation for user registration"
-- "Fix null pointer in config parser"
-- "Rename getUserById to findUserById for consistency"
-- "Remove unused helper functions"
-
-Context:
-{context}
-
-Respond with ONLY the commit message subject line, nothing else."""
-
-        message = _run_llm(prompt, model)
-        if message:
-            return _clean_message(message)
-        return None
-
-    @hookimpl
     def agentgit_enhance_turn_summary(
         self,
         turn: "AssistantTurn",

@@ -209,22 +209,6 @@ class RulesEnhancerPlugin:
         }
 
     @hookimpl
-    def agentgit_enhance_operation_summary(
-        self,
-        operation: "FileOperation",
-        enhancer: str,
-        model: str | None,
-    ) -> str | None:
-        """Generate a summary for a file operation entry using rules."""
-        if enhancer != ENHANCER_NAME:
-            return None
-
-        return _generate_from_context(
-            operation=operation,
-            prompt=operation.prompt,
-        )
-
-    @hookimpl
     def agentgit_enhance_turn_summary(
         self,
         turn: "AssistantTurn",

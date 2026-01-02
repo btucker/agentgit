@@ -38,33 +38,6 @@ def get_available_enhancers() -> list[dict[str, str]]:
     return enhancers
 
 
-def generate_operation_summary(
-    operation: "FileOperation",
-    config: EnhanceConfig | None = None,
-) -> str | None:
-    """Generate an enhanced summary for a file operation entry.
-
-    Args:
-        operation: The file operation to generate a summary for.
-        config: Optional configuration for enhancement.
-
-    Returns:
-        Generated entry summary, or None if generation fails.
-    """
-    if config is None:
-        config = EnhanceConfig()
-
-    if not config.enabled:
-        return None
-
-    pm = get_configured_plugin_manager()
-    return pm.hook.agentgit_enhance_operation_summary(
-        operation=operation,
-        enhancer=config.enhancer,
-        model=config.model,
-    )
-
-
 def generate_turn_summary(
     turn: "AssistantTurn",
     prompt: "Prompt | None" = None,
