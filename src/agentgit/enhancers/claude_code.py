@@ -47,7 +47,7 @@ def _get_model(model: str = DEFAULT_MODEL):
         return instance
     except ImportError:
         logger.warning(
-            "llm-claude-cli not installed. Install with: pip install 'agentgit[ai]'"
+            "llm-claude-cli not installed. Install with: pip install 'agentgit[llm]'"
         )
         return None
     except Exception as e:

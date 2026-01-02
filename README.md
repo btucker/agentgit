@@ -75,7 +75,7 @@ agentgit --enhancer claude_code
 **Available enhancers:**
 
 - `rules` - Uses heuristics to generate messages from prompts and context. Fast, no external dependencies.
-- `claude_code` - Uses Claude Code to generate intelligent commit messages. Requires the `ai` extra: `pip install 'agentgit[ai]'`
+- `claude_code` - Uses Claude Code to generate intelligent commit messages. Requires the `llm` extra: `pip install 'agentgit[llm]'`
 
 The `claude_code` enhancer uses efficient batch processing - all commit messages are generated in a single call.
 
