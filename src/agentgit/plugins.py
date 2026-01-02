@@ -147,13 +147,13 @@ class AgentGitSpec:
             A display name string, or None if this plugin can't provide one.
         """
 
-    # AI Enhancement hooks
+    # Enhancement hooks
     @hookspec
-    def agentgit_get_ai_enhancer_info(self) -> dict[str, str] | None:
-        """Return AI enhancer plugin identification info.
+    def agentgit_get_enhancer_info(self) -> dict[str, str] | None:
+        """Return enhancer plugin identification info.
 
         Returns:
-            Dict with 'name' (short identifier like 'claude_code') and
+            Dict with 'name' (short identifier like 'llm' or 'rules') and
             'description' (human-readable description), or None.
         """
 

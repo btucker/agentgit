@@ -62,7 +62,7 @@ class TestRulesEnhancerPlugin:
     def test_get_enhancer_info(self):
         """Should return plugin info."""
         plugin = RulesEnhancerPlugin()
-        info = plugin.agentgit_get_ai_enhancer_info()
+        info = plugin.agentgit_get_enhancer_info()
         assert info["name"] == "rules"
         assert "description" in info
 
@@ -358,7 +358,7 @@ class TestLLMEnhancerPlugin:
     def test_get_enhancer_info(self):
         """Should return plugin info."""
         plugin = LLMEnhancerPlugin()
-        info = plugin.agentgit_get_ai_enhancer_info()
+        info = plugin.agentgit_get_enhancer_info()
         assert info["name"] == "llm"
         assert "description" in info
 

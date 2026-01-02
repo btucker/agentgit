@@ -374,7 +374,7 @@ class LLMEnhancerPlugin:
     """AI enhancement plugin using the llm library."""
 
     @hookimpl
-    def agentgit_get_ai_enhancer_info(self) -> dict[str, str]:
+    def agentgit_get_enhancer_info(self) -> dict[str, str]:
         """Return plugin identification info."""
         return {
             "name": ENHANCER_NAME,

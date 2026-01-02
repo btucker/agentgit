@@ -187,7 +187,7 @@ from agentgit import hookimpl
 
 class MyEnhancerPlugin:
     @hookimpl
-    def agentgit_get_ai_enhancer_info(self):
+    def agentgit_get_enhancer_info(self):
         return {
             "name": "my_enhancer",
             "description": "My custom transcript enhancer",

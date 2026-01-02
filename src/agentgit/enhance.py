@@ -32,7 +32,7 @@ def get_available_enhancers() -> list[dict[str, str]]:
     """
     pm = get_configured_plugin_manager()
     enhancers = []
-    for info in pm.hook.agentgit_get_ai_enhancer_info():
+    for info in pm.hook.agentgit_get_enhancer_info():
         if info:
             enhancers.append(info)
     return enhancers

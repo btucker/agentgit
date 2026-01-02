@@ -201,7 +201,7 @@ class RulesEnhancerPlugin:
     """Rules-based enhancer using heuristics (no AI required)."""
 
     @hookimpl
-    def agentgit_get_ai_enhancer_info(self) -> dict[str, str]:
+    def agentgit_get_enhancer_info(self) -> dict[str, str]:
         """Return plugin identification info."""
         return {
             "name": ENHANCER_NAME,
