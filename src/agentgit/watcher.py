@@ -6,13 +6,16 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from agentgit import parse_transcript
 from agentgit.git_builder import GitRepoBuilder
+
+if TYPE_CHECKING:
+    from agentgit.enhance import EnhanceConfig
 
 
 class TranscriptWatcher:
@@ -25,9 +28,8 @@ class TranscriptWatcher:
         author_name: str = "Agent",
         author_email: str = "agent@local",
         source_repo: Path | None = None,
-        branch: str | None = None,
-        orphan: bool = False,
         on_update: Callable[[int], None] | None = None,
+        enhance_config: "EnhanceConfig | None" = None,
     ):
         """Initialize the watcher.
 
@@ -36,20 +38,17 @@ class TranscriptWatcher:
             output_dir: Directory for the git repo.
             author_name: Name for git commits.
             author_email: Email for git commits.
-            source_repo: Optional source repository. When used with branch,
-                creates a worktree instead of a standalone repo.
-            branch: Branch name for worktree mode (e.g., "agentgit/history").
-            orphan: If True, create an orphan branch.
+            source_repo: Optional source repository to interleave commits from.
             on_update: Optional callback called with number of new commits after each update.
+            enhance_config: Optional configuration for generating commit messages.
         """
         self.transcript_path = transcript_path
         self.output_dir = output_dir
         self.author_name = author_name
         self.author_email = author_email
         self.source_repo = source_repo
-        self.branch = branch
-        self.orphan = orphan
         self.on_update = on_update
+        self.enhance_config = enhance_config
         self._observer: Observer | None = None
         self._last_mtime: float = 0
         self._lock = threading.Lock()
@@ -59,12 +58,9 @@ class TranscriptWatcher:
         try:
             transcript = parse_transcript(self.transcript_path)
 
-            # Use worktree mode if branch is specified
             builder = GitRepoBuilder(
                 output_dir=self.output_dir,
-                source_repo=self.source_repo if self.branch else None,
-                branch=self.branch,
-                orphan=self.orphan,
+                enhance_config=self.enhance_config,
             )
 
             # Get commit count before
@@ -81,7 +77,7 @@ class TranscriptWatcher:
                 operations=transcript.operations,
                 author_name=self.author_name,
                 author_email=self.author_email,
-                source_repo=self.source_repo if not self.branch else None,
+                source_repo=self.source_repo,
                 incremental=True,
             )
 
