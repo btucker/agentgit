@@ -590,39 +590,40 @@ def _run_watch_mode(
 @click.option(
     "--project",
     type=click.Path(exists=True, path_type=Path),
-    help="Project path to discover transcripts for. Defaults to current git repo.",
+    help="Project path to find sessions for. Defaults to current git repo.",
 )
 @click.option(
     "--all",
     "all_projects",
     is_flag=True,
-    help="Show transcripts from all projects, not just the current one.",
+    help="Show sessions from all projects, not just the current one.",
 )
 @click.option(
     "--list",
     "list_only",
     is_flag=True,
-    help="List transcripts without interactive selection.",
+    help="List sessions without interactive selection.",
 )
 @click.option(
     "--type",
     "filter_type",
     type=str,
-    help="Filter by transcript type (e.g., claude_code, codex, claude_code_web).",
+    help="Filter by session type (e.g., claude_code, codex, claude_code_web).",
 )
-def discover(
+def sessions(
     project: Path | None,
     all_projects: bool,
     list_only: bool,
     filter_type: str | None,
 ) -> None:
-    """Discover and process transcripts interactively.
+    """List and process AI coding sessions.
 
-    Shows all transcript files found for the current project in a tabular view.
-    This includes both local transcripts and web sessions (if credentials are
-    available). Enter a number to process a transcript into a git repository.
+    Shows all available sessions for the current project in a tabular view.
+    This includes both local transcript files and web sessions (if credentials
+    are available). Sessions that have been processed into the git repo are
+    marked with [REPO]. Enter a number to process a session.
 
-    Use --all to show transcripts from all projects.
+    Use --all to show sessions from all projects.
     """
     from rich.console import Console
     from rich.panel import Panel
@@ -666,18 +667,19 @@ def discover(
 
     # Display header
     console.print(
-        Panel(f"[bold]agentgit discover[/bold] - {header_path}", border_style="blue")
+        Panel(f"[bold]agentgit sessions[/bold] - {header_path}", border_style="blue")
     )
     console.print()
 
     # Build unified table
-    count_label = "transcript" if len(transcripts) == 1 else "transcripts"
+    count_label = "session" if len(transcripts) == 1 else "sessions"
     table = Table(title=f"{len(transcripts)} {count_label}")
     table.add_column("#", style="dim", width=4)
     table.add_column("Agent", style="magenta")
     table.add_column("Name/Path", style="cyan")
     table.add_column("Modified", style="green")
     table.add_column("Size", style="yellow", justify="right")
+    table.add_column("Status", style="blue", width=6)
 
     for i, t in enumerate(transcripts, 1):
         # Use display name if available, otherwise path
@@ -689,7 +691,14 @@ def discover(
                 name = "~/" + str(t.path.relative_to(home))
             except ValueError:
                 name = str(t.path)
-        table.add_row(str(i), t.plugin_name, name, t.mtime_formatted, t.size_human)
+
+        # Check if this session has been processed into git repo
+        output_dir = get_default_output_dir(t.path)
+        status = ""
+        if output_dir.exists() and (output_dir / ".git").exists():
+            status = "REPO"
+
+        table.add_row(str(i), t.plugin_name, name, t.mtime_formatted, t.size_human, status)
 
     console.print(table)
     console.print()
@@ -766,6 +775,25 @@ def agents() -> None:
             name = info.get("name", "unknown")
             description = info.get("description", "No description")
             click.echo(f"  {name}: {description}")
+
+
+# Alias for backward compatibility
+@main.command(hidden=True)
+@click.option("--project", type=click.Path(exists=True, path_type=Path))
+@click.option("--all", "all_projects", is_flag=True)
+@click.option("--list", "list_only", is_flag=True)
+@click.option("--type", "filter_type", type=str)
+def discover(
+    project: Path | None,
+    all_projects: bool,
+    list_only: bool,
+    filter_type: str | None,
+) -> None:
+    """Alias for 'sessions' command (deprecated, use 'sessions' instead)."""
+    from click import get_current_context
+    ctx = get_current_context()
+    ctx.invoke(sessions, project=project, all_projects=all_projects,
+               list_only=list_only, filter_type=filter_type)
 
 
 @main.command()
