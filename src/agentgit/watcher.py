@@ -6,13 +6,16 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from agentgit import parse_transcript
 from agentgit.git_builder import GitRepoBuilder
+
+if TYPE_CHECKING:
+    from agentgit.enhance import EnhanceConfig
 
 
 class TranscriptWatcher:
@@ -26,6 +29,7 @@ class TranscriptWatcher:
         author_email: str = "agent@local",
         source_repo: Path | None = None,
         on_update: Callable[[int], None] | None = None,
+        enhance_config: "EnhanceConfig | None" = None,
     ):
         """Initialize the watcher.
 
@@ -36,6 +40,7 @@ class TranscriptWatcher:
             author_email: Email for git commits.
             source_repo: Optional source repository to interleave commits from.
             on_update: Optional callback called with number of new commits after each update.
+            enhance_config: Optional configuration for generating commit messages.
         """
         self.transcript_path = transcript_path
         self.output_dir = output_dir
@@ -43,6 +48,7 @@ class TranscriptWatcher:
         self.author_email = author_email
         self.source_repo = source_repo
         self.on_update = on_update
+        self.enhance_config = enhance_config
         self._observer: Observer | None = None
         self._last_mtime: float = 0
         self._lock = threading.Lock()
@@ -52,7 +58,10 @@ class TranscriptWatcher:
         try:
             transcript = parse_transcript(self.transcript_path)
 
-            builder = GitRepoBuilder(output_dir=self.output_dir)
+            builder = GitRepoBuilder(
+                output_dir=self.output_dir,
+                enhance_config=self.enhance_config,
+            )
 
             # Get commit count before
             from git import Repo
