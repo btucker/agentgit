@@ -822,6 +822,16 @@ def discover(
     default="agent@local",
     help="Author email for git commits.",
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Enable debug logging to inspect session data structure.",
+)
+@click.option(
+    "--dump-json",
+    type=click.Path(path_type=Path),
+    help="Dump raw session JSON to this file for inspection.",
+)
 def web(
     session_id: str | None,
     output: Path | None,
@@ -829,6 +839,8 @@ def web(
     org_uuid: str | None,
     author: str,
     email: str,
+    debug: bool,
+    dump_json: Path | None,
 ) -> None:
     """Process a Claude Code web session.
 
@@ -845,7 +857,19 @@ def web(
         agentgit web abc123             # Process specific session
 
         agentgit web --token=... --org-uuid=...  # Manual credentials
+
+        agentgit web --debug abc123     # Show all available session fields
     """
+    import logging
+
+    # Enable debug logging if requested
+    if debug:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(levelname)s [%(name)s] %(message)s'
+        )
+        click.echo("Debug logging enabled - will show session data structure\n")
+
     from agentgit.web_sessions import (
         WebSessionError,
         fetch_session_data,
@@ -924,6 +948,15 @@ def web(
         session_data = fetch_session_data(resolved_token, resolved_org_uuid, session_id)
     except WebSessionError as e:
         raise click.ClickException(str(e)) from e
+
+    # Dump raw JSON if requested
+    if dump_json:
+        import json
+        with open(dump_json, 'w') as f:
+            json.dump(session_data, f, indent=2)
+        click.echo(f"Dumped raw session data to: {dump_json}")
+        click.echo(f"Top-level keys: {', '.join(sorted(session_data.keys()))}")
+        return
 
     # Convert to JSONL entries and process
     entries = session_to_jsonl_entries(session_data)

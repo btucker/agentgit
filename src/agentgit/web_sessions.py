@@ -184,6 +184,9 @@ def fetch_session_data(token: str, org_uuid: str, session_id: str) -> dict[str, 
     Raises:
         WebSessionError: If API request fails
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     headers = get_api_headers(token, org_uuid)
     try:
         response = httpx.get(
@@ -192,7 +195,26 @@ def fetch_session_data(token: str, org_uuid: str, session_id: str) -> dict[str, 
             timeout=60.0,
         )
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+
+        # Debug logging to inspect available fields
+        logger.debug(f"Session {session_id} top-level keys: {sorted(data.keys())}")
+
+        # Log git-related fields if present
+        git_fields = ["repository_url", "github_url", "git_remote", "remote_url",
+                      "repo_url", "git_url", "project_url"]
+        found_git_fields = {k: data.get(k) for k in git_fields if k in data}
+        if found_git_fields:
+            logger.info(f"Found git-related fields in session {session_id}: {found_git_fields}")
+
+        # Check for git info in nested structures
+        if "project" in data and isinstance(data["project"], dict):
+            logger.debug(f"Session has 'project' dict with keys: {sorted(data['project'].keys())}")
+            project_git_fields = {k: data["project"].get(k) for k in git_fields if k in data["project"]}
+            if project_git_fields:
+                logger.info(f"Found git-related fields in project: {project_git_fields}")
+
+        return data
     except httpx.HTTPError as e:
         raise WebSessionError(f"Failed to fetch session {session_id}: {e}") from e
 
