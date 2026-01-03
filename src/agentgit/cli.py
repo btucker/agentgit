@@ -165,20 +165,60 @@ def translate_paths_for_agentgit_repo(args: list[str], repo_path: Path) -> list[
     The agentgit repo uses normalized paths (common prefix stripped).
     This function finds matching files by filename.
     """
+    from agentgit import find_git_root
+
+    git_root = find_git_root()
     translated = []
+
     for arg in args:
-        # Skip options and things that don't look like paths
-        if arg.startswith("-") or "/" not in arg:
+        # Skip options
+        if arg.startswith("-"):
             translated.append(arg)
             continue
 
-        # Check if this looks like a local file path
+        # Try to resolve the path
         local_path = Path(arg)
+
+        # If path doesn't exist in cwd, try relative to git root
+        if not local_path.exists() and git_root:
+            potential_path = git_root / arg
+            if potential_path.exists():
+                local_path = potential_path
+
+        # If still doesn't exist, try to find by filename in agentgit repo
         if not local_path.exists():
+            # Search for the filename in agentgit repo
+            filename = Path(arg).name
+            matches = list(repo_path.rglob(filename))
+
+            if len(matches) == 1:
+                translated.append(str(matches[0].relative_to(repo_path)))
+                continue
+            elif len(matches) > 1:
+                # Multiple matches - try to find best match by path suffix
+                arg_parts = Path(arg).parts
+                best_match = None
+                best_score = 0
+                for match in matches:
+                    match_parts = match.relative_to(repo_path).parts
+                    score = 0
+                    for ap, mp in zip(reversed(arg_parts), reversed(match_parts)):
+                        if ap == mp:
+                            score += 1
+                        else:
+                            break
+                    if score > best_score:
+                        best_score = score
+                        best_match = match
+                if best_match:
+                    translated.append(str(best_match.relative_to(repo_path)))
+                    continue
+
+            # No matches found - keep original
             translated.append(arg)
             continue
 
-        # Try to find this file in the agentgit repo by filename
+        # Path exists - try to find it in the agentgit repo by filename
         filename = local_path.name
         matches = list(repo_path.rglob(filename))
 
