@@ -36,18 +36,46 @@ def encode_path_as_name(path: Path) -> str:
     return str(path.resolve()).replace("/", "-")
 
 
+def get_repo_id(code_repo: Path) -> str | None:
+    """Get the repository ID from the first (root) commit SHA.
+
+    The repo ID is the first 12 characters of the root commit SHA.
+    This provides a stable identifier that survives repo moves/renames.
+
+    Args:
+        code_repo: Path to the code repository.
+
+    Returns:
+        12-character repo ID, or None if not a git repo or has no commits.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(code_repo), "rev-list", "--max-parents=0", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        root_commit = result.stdout.strip()
+        return root_commit[:12] if root_commit else None
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
 def get_default_output_dir(transcript_path: Path) -> Path:
     """Get the default output directory for a transcript.
 
-    Uses ~/.agentgit/projects/{project_name} where project_name is derived
-    from the project (similar to Claude Code's convention).
+    Uses ~/.agentgit/projects/{repo_id} where repo_id is the first 12
+    characters of the repository's root commit SHA. This provides a stable
+    identifier across renames and clones.
 
-    The project name is determined by:
-    1. Asking plugins to get the project name from transcript location
-       (e.g., Claude Code returns "-Users-name-project" from
-       ~/.claude/projects/-Users-name-project/session.jsonl)
-    2. Falling back to encoding the current git root
-    3. Falling back to encoding the transcript's parent directory
+    The repo is determined by:
+    1. Asking plugins to get the project name from transcript location,
+       then finding the corresponding git repo (e.g., Claude Code returns
+       "-Users-name-project" which maps to a git root)
+    2. Using the current directory's git root
+    3. Falling back to path encoding for non-git directories
 
     Args:
         transcript_path: Path to the transcript file.
@@ -60,20 +88,33 @@ def get_default_output_dir(transcript_path: Path) -> Path:
 
     pm = get_configured_plugin_manager()
 
-    # Ask plugins to get the project name from transcript location
+    # Strategy 1: Ask plugins for project name, then find git repo
     project_name = pm.hook.agentgit_get_project_name(transcript_path=transcript_path)
+    if project_name:
+        # Project name might be path-encoded like "-Users-name-project"
+        # Try to decode it back to a path and check if it's a git repo
+        if project_name.startswith("-"):
+            # Convert "-Users-name-project" -> "/Users/name/project"
+            potential_path = Path(project_name.replace("-", "/", 1))
+            if potential_path.exists():
+                repo_id = get_repo_id(potential_path)
+                if repo_id:
+                    return Path.home() / ".agentgit" / "projects" / repo_id
 
-    if not project_name:
-        # Try to find git root from current directory
-        git_root = find_git_root()
-        if git_root:
-            project_name = encode_path_as_name(git_root)
+    # Strategy 2: Use current directory's git root
+    git_root = find_git_root()
+    if git_root:
+        repo_id = get_repo_id(git_root)
+        if repo_id:
+            return Path.home() / ".agentgit" / "projects" / repo_id
 
-    if not project_name:
-        # Fall back to transcript's parent directory
-        project_name = encode_path_as_name(transcript_path.resolve().parent)
+    # Strategy 3: Fall back to path encoding for non-git directories
+    if project_name:
+        return Path.home() / ".agentgit" / "projects" / project_name
 
-    return Path.home() / ".agentgit" / "projects" / project_name
+    # Last resort: encode the transcript's parent directory
+    fallback_name = encode_path_as_name(transcript_path.resolve().parent)
+    return Path.home() / ".agentgit" / "projects" / fallback_name
 
 
 def resolve_transcripts(transcript: Path | None) -> list[Path]:
