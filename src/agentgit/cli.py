@@ -386,14 +386,25 @@ def _run_process(
         )
         click.echo(f"Enhancement: {effective_enhancer} (model: {effective_model})")
 
-    repo, repo_path, _ = build_repo(
-        operations=parsed.operations,
-        output_dir=output,
-        author_name=author,
-        author_email=email,
-        source_repo=source_repo,
-        enhance_config=enhance_config,
-    )
+    # Use grouped build when enhancement is enabled to support batch processing
+    if enhance_config:
+        from agentgit import build_repo_grouped
+        repo, repo_path, _ = build_repo_grouped(
+            prompt_responses=parsed.prompt_responses,
+            output_dir=output,
+            author_name=author,
+            author_email=email,
+            enhance_config=enhance_config,
+        )
+    else:
+        repo, repo_path, _ = build_repo(
+            operations=parsed.operations,
+            output_dir=output,
+            author_name=author,
+            author_email=email,
+            source_repo=source_repo,
+            enhance_config=None,
+        )
 
     # Save new preferences if explicitly provided (after repo exists)
     if enhancer is not None or enhance_model is not None:

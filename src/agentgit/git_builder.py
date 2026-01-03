@@ -674,7 +674,7 @@ class GitRepoBuilder:
                 except GitCommandError:
                     pass
 
-            commit_msg = format_turn_commit_message(turn)
+            commit_msg = format_turn_commit_message(turn, self.enhance_config)
             try:
                 self.repo.index.commit(commit_msg)
             except GitCommandError as e:

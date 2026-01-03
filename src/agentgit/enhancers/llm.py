@@ -74,12 +74,13 @@ def _get_model(model: str = DEFAULT_MODEL):
         return None
 
 
-def _run_llm(prompt: str, model: str = DEFAULT_MODEL) -> str | None:
+def _run_llm(prompt: str, model: str = DEFAULT_MODEL, schema: dict | None = None) -> str | None:
     """Run a prompt through the LLM and return the response text.
 
     Args:
         prompt: The prompt to send.
         model: The model ID to use.
+        schema: Optional JSON schema to enforce structured output.
 
     Returns:
         The response text, or None if the request fails.
@@ -89,7 +90,7 @@ def _run_llm(prompt: str, model: str = DEFAULT_MODEL) -> str | None:
         return None
 
     try:
-        response = llm_model.prompt(prompt)
+        response = llm_model.prompt(prompt, schema=schema)
         return response.text()
     except Exception as e:
         logger.warning("LLM request failed: %s", e)
@@ -238,6 +239,8 @@ def batch_enhance_prompt_responses(
     """
     global _message_cache
 
+    logger.info("batch_enhance_prompt_responses called with %d prompt responses, model=%s", len(prompt_responses), model)
+
     if not prompt_responses:
         return {}
 
@@ -281,6 +284,9 @@ def batch_enhance_prompt_responses(
         # Add turn message requests
         for turn in pr.turns:
             turn_key = _get_turn_key(turn)
+            logger.debug("Processing turn with key: %s (timestamp=%s, tool_id=%s)",
+                        turn_key, turn.timestamp,
+                        turn.operations[0].tool_id if turn.operations else "N/A")
             if turn_key not in _message_cache:
                 items.append({
                     "id": len(items) + 1,
@@ -291,7 +297,10 @@ def batch_enhance_prompt_responses(
                 item_metadata.append({})
 
     if not items:
+        logger.info("No items need LLM processing (all prompts self-contained)")
         return _message_cache
+
+    logger.info("Processing %d items in batches (batch size: %d)", len(items), MAX_BATCH_SIZE)
 
     # Process items in chunks to avoid context limits
     for chunk_start in range(0, len(items), MAX_BATCH_SIZE):
@@ -328,10 +337,29 @@ Respond with a JSON object mapping item IDs to the summary text:
 
 ONLY respond with the JSON object, nothing else."""
 
-        # Call LLM for this chunk
-        response = _run_llm(batch_prompt, model)
+        # Define JSON schema for structured output
+        # Build properties for each item in the chunk
+        properties = {}
+        required = []
+        for idx in range(1, len(chunk_items) + 1):
+            properties[str(idx)] = {
+                "type": "string",
+                "description": f"Commit message summary for item {idx}"
+            }
+            required.append(str(idx))
+
+        schema = {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False
+        }
+
+        # Call LLM for this chunk with schema
+        response = _run_llm(batch_prompt, model, schema=schema)
 
         if response:
+            logger.debug("LLM response for chunk %d-%d: %s", chunk_start, chunk_end, response[:200])
             try:
                 # Try to parse JSON response
                 response = response.strip()
@@ -340,6 +368,7 @@ ONLY respond with the JSON object, nothing else."""
                     response = "\n".join(lines[1:-1])
 
                 messages = json.loads(response)
+                logger.info("Successfully parsed %d messages from LLM response", len(messages))
 
                 # Map responses back to cache keys
                 for idx, (key, item, meta) in enumerate(
@@ -359,8 +388,12 @@ ONLY respond with the JSON object, nothing else."""
                             _message_cache[key] = _clean_message(summary)
 
             except json.JSONDecodeError as e:
-                logger.debug("Failed to parse batch response as JSON: %s", e)
+                logger.warning("Failed to parse batch response as JSON: %s", e)
+                logger.debug("Response was: %s", response[:500])
+        else:
+            logger.warning("LLM returned no response for chunk %d-%d", chunk_start, chunk_end)
 
+    logger.info("Batch enhancement complete. Total cache entries: %d", len(_message_cache))
     return _message_cache
 
 
@@ -395,7 +428,10 @@ class LLMEnhancerPlugin:
 
         # Check cache first (populated by batch processing)
         turn_key = _get_turn_key(turn)
+        logger.debug("agentgit_enhance_turn_summary: turn_key=%s, in_cache=%s, cache_size=%d",
+                    turn_key, turn_key in _message_cache, len(_message_cache))
         if turn_key in _message_cache:
+            logger.debug("Returning cached message: %s", _message_cache[turn_key])
             return _message_cache[turn_key]
 
         model = model or DEFAULT_MODEL

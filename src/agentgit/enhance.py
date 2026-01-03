@@ -53,19 +53,25 @@ def generate_turn_summary(
     Returns:
         Generated entry summary, or None if generation fails.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     if config is None:
         config = EnhanceConfig()
 
     if not config.enabled:
+        logger.debug("generate_turn_summary: enhancement disabled")
         return None
 
     pm = get_configured_plugin_manager()
-    return pm.hook.agentgit_enhance_turn_summary(
+    result = pm.hook.agentgit_enhance_turn_summary(
         turn=turn,
         prompt=prompt,
         enhancer=config.enhancer,
         model=config.model,
     )
+    logger.debug("generate_turn_summary: enhancer=%s returned %s", config.enhancer, result)
+    return result
 
 
 def generate_prompt_summary(
@@ -144,8 +150,14 @@ def preprocess_batch_enhancement(
         prompt_responses: List of PromptResponse objects to process.
         config: Optional configuration for enhancement.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     if config is None:
         config = EnhanceConfig()
+
+    logger.info("preprocess_batch_enhancement: enabled=%s, enhancer=%s, model=%s, num_responses=%d",
+                config.enabled, config.enhancer, config.model, len(prompt_responses))
 
     if not config.enabled:
         return
@@ -154,4 +166,5 @@ def preprocess_batch_enhancement(
     if config.enhancer == "llm":
         from agentgit.enhancers.llm import batch_enhance_prompt_responses
 
-        batch_enhance_prompt_responses(prompt_responses, config.model)
+        result = batch_enhance_prompt_responses(prompt_responses, config.model)
+        logger.info("Batch processing completed, cache size: %d", len(result))
