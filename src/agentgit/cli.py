@@ -48,18 +48,18 @@ def get_repo_id(code_repo: Path) -> str | None:
     Returns:
         12-character repo ID, or None if not a git repo or has no commits.
     """
-    import subprocess
+    from git import Repo
+    from git.exc import InvalidGitRepositoryError, GitCommandError
 
     try:
-        result = subprocess.run(
-            ["git", "-C", str(code_repo), "rev-list", "--max-parents=0", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        root_commit = result.stdout.strip()
-        return root_commit[:12] if root_commit else None
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        repo = Repo(code_repo)
+        # Get root commit(s) - repos can have multiple roots from orphan branches
+        # Use HEAD's root commit
+        root_commits = list(repo.iter_commits(rev="HEAD", max_parents=0))
+        if root_commits:
+            return root_commits[0].hexsha[:12]
+        return None
+    except (InvalidGitRepositoryError, GitCommandError, ValueError):
         return None
 
 

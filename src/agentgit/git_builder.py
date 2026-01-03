@@ -397,19 +397,62 @@ class GitRepoBuilder:
         self,
         output_dir: Path | None = None,
         enhance_config: Optional["EnhanceConfig"] = None,
+        code_repo: Path | None = None,
     ):
         """Initialize the builder.
 
         Args:
             output_dir: Directory for the git repo. If None, creates a temp dir.
             enhance_config: Optional AI configuration for generating commit messages.
+            code_repo: Path to the code repository. If provided, sets up git alternates
+                to share objects with the code repo. If None, auto-detects from cwd.
         """
         self.output_dir = output_dir
         self.enhance_config = enhance_config
+        self.code_repo = code_repo
         self.repo: Repo | None = None
         self.path_mapping: dict[str, str] = {}
         self.file_states: dict[str, str] = {}
         self._processed_ops: set[str] = set()
+
+    def _get_code_repo_path(self) -> Path | None:
+        """Get the code repository path.
+
+        Returns:
+            Path to code repo, or None if not found/not a git repo.
+        """
+        if self.code_repo:
+            return self.code_repo
+
+        # Auto-detect from current directory
+        from agentgit import find_git_root
+
+        return find_git_root()
+
+    def _setup_alternates(self, code_repo: Path) -> None:
+        """Set up git alternates to share objects with code repo.
+
+        Args:
+            code_repo: Path to the code repository.
+        """
+        if not self.repo:
+            return
+
+        # Path to code repo's objects directory
+        code_objects = code_repo / ".git" / "objects"
+        if not code_objects.exists():
+            logger.warning(
+                "Code repo objects directory not found: %s", code_objects
+            )
+            return
+
+        # Create alternates file
+        alternates_file = self.output_dir / ".git" / "objects" / "info" / "alternates"
+        alternates_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write the path to code repo's objects
+        alternates_file.write_text(str(code_objects) + "\n")
+        logger.info("Set up git alternates to share objects with: %s", code_repo)
 
     def _is_operation_processed(self, operation: FileOperation) -> bool:
         """Check if an operation has already been processed."""
@@ -447,9 +490,19 @@ class GitRepoBuilder:
             return True
         except InvalidGitRepositoryError:
             self.repo = Repo.init(self.output_dir)
+
+            # Set up git alternates to share objects with code repo
+            code_repo_path = self._get_code_repo_path()
+            if code_repo_path:
+                self._setup_alternates(code_repo_path)
+
             # Disable commit signing for agentgit-created repos
             with self.repo.config_writer() as config:
                 config.set_value("commit", "gpgsign", "false")
+                # Store code repo path for reference
+                if code_repo_path:
+                    config.set_value("agentgit", "coderepo", str(code_repo_path))
+
             return False
 
     def _get_merged_timeline(
