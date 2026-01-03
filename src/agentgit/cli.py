@@ -608,7 +608,7 @@ def _run_watch_mode(
     "--type",
     "filter_type",
     type=str,
-    help="Filter by transcript type (e.g., claude_code, codex).",
+    help="Filter by transcript type (e.g., claude_code, codex, claude_code_web).",
 )
 def discover(
     project: Path | None,
@@ -619,7 +619,8 @@ def discover(
     """Discover and process transcripts interactively.
 
     Shows all transcript files found for the current project in a tabular view.
-    Enter a number to process a transcript into a git repository.
+    This includes both local transcripts and web sessions (if credentials are
+    available). Enter a number to process a transcript into a git repository.
 
     Use --all to show transcripts from all projects.
     """
@@ -655,6 +656,7 @@ def discover(
     if filter_type:
         transcripts = [
             t for t in transcripts if filter_type.lower() in t.format_type.lower()
+            or filter_type.lower() in t.plugin_name.lower()
         ]
         if not transcripts:
             console.print(
@@ -673,17 +675,21 @@ def discover(
     table = Table(title=f"{len(transcripts)} {count_label}")
     table.add_column("#", style="dim", width=4)
     table.add_column("Agent", style="magenta")
-    table.add_column("Path", style="cyan")
+    table.add_column("Name/Path", style="cyan")
     table.add_column("Modified", style="green")
     table.add_column("Size", style="yellow", justify="right")
 
     for i, t in enumerate(transcripts, 1):
-        # Convert path to ~/... format
-        try:
-            rel_path = "~/" + str(t.path.relative_to(home))
-        except ValueError:
-            rel_path = str(t.path)
-        table.add_row(str(i), t.plugin_name, rel_path, t.mtime_formatted, t.size_human)
+        # Use display name if available, otherwise path
+        if t.display_name:
+            name = t.display_name
+        else:
+            # Convert path to ~/... format
+            try:
+                name = "~/" + str(t.path.relative_to(home))
+            except ValueError:
+                name = str(t.path)
+        table.add_row(str(i), t.plugin_name, name, t.mtime_formatted, t.size_human)
 
     console.print(table)
     console.print()
@@ -721,7 +727,7 @@ def discover(
 
     # Process the selected transcript
     console.print()
-    console.print(f"[bold]Processing[/bold] {selected.path.name}...")
+    console.print(f"[bold]Processing[/bold] {selected.display_name or selected.path.name}...")
 
     output_dir = get_default_output_dir(selected.path)
     try:
