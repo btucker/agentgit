@@ -27,18 +27,25 @@ uv run agentgit --watch session.jsonl
 
 agentgit converts agent transcripts (like Claude Code JSONL) into git repositories where each file operation becomes a commit with rich metadata including the triggering prompt and assistant reasoning.
 
-### Plugin System (pluggy-based)
+### Agent Plugin System (pluggy-based)
 
-Transcript format support is pluggable via `src/agentgit/plugins.py`:
+Agent plugins enable support for different AI coding assistant transcript formats. The system is built on pluggy and supports:
+
+- **Built-in plugins**: claude_code, codex (registered in `plugins.py`)
+- **Pip-installed plugins**: Auto-discovered via entry points
+- **Config-file plugins**: Registered via `agentgit config agents add` (stored in `~/.agentgit/config.yml`)
+
+Key hooks in `src/agentgit/plugins.py`:
 
 - `agentgit_detect_format(path)` - Auto-detect transcript format
 - `agentgit_parse_transcript(path, format)` - Parse into `Transcript` object
 - `agentgit_extract_operations(transcript)` - Extract `FileOperation` list
 - `agentgit_enrich_operation(operation, transcript)` - Add prompt/context metadata
 - `agentgit_discover_transcripts(project_path)` - Find transcripts for a project
-- `agentgit_get_project_name(transcript_path)` - Decode project name from transcript location
 
 Plugins implement hooks with `@hookimpl` decorator. See `formats/claude_code.py` for the reference implementation.
+
+**See [AGENT_PLUGINS.md](AGENT_PLUGINS.md) for the complete guide to creating agent plugins.**
 
 ### Core Data Flow
 
@@ -66,7 +73,7 @@ Paths are encoded as `-Users-name-project` (leading slash becomes leading dash).
 
 ## Test Organization
 
-Plugin tests go in `tests/plugins/{plugin_name}/`.
+Agent plugin tests go in `tests/plugins/{plugin_name}/`.
 
 ## Development Process
 

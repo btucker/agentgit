@@ -761,20 +761,111 @@ def sessions(
         raise click.ClickException(str(e))
 
 
-@main.command()
-def agents() -> None:
-    """List supported agent transcript formats."""
-    from agentgit.plugins import get_configured_plugin_manager
+@main.group()
+def config() -> None:
+    """Manage agentgit configuration.
 
-    pm = get_configured_plugin_manager()
+    Examples:
 
-    click.echo("Supported agents:\n")
+    \b
+      agentgit config agents          # List installed agent plugins
+      agentgit config agents add pkg  # Install an agent plugin
+    """
+    pass
 
-    for info in pm.hook.agentgit_get_plugin_info():
-        if info:
-            name = info.get("name", "unknown")
-            description = info.get("description", "No description")
+
+@config.group(invoke_without_command=True)
+@click.pass_context
+def agents(ctx: click.Context) -> None:
+    """Manage agent plugins.
+
+    Without a subcommand, lists all available plugins.
+
+    Examples:
+
+    \b
+      agentgit config agents                      # List all plugins
+      agentgit config agents add agentgit-aider   # Install a plugin
+      agentgit config agents remove agentgit-aider
+    """
+    if ctx.invoked_subcommand is None:
+        # Default behavior: list plugins
+        ctx.invoke(agents_list)
+
+
+@agents.command("list")
+@click.option("--verbose", "-v", is_flag=True, help="Show additional details.")
+def agents_list(verbose: bool = False) -> None:
+    """List available agent plugins."""
+    from agentgit.plugins import list_configured_plugins
+
+    plugins = list_configured_plugins()
+
+    if not plugins:
+        click.echo("No agent plugins found.")
+        return
+
+    click.echo("Available agent plugins:\n")
+
+    for plugin in plugins:
+        name = plugin.get("name", "unknown")
+        description = plugin.get("description", "No description")
+        source = plugin.get("source", "unknown")
+
+        if verbose:
             click.echo(f"  {name}: {description}")
+            click.echo(f"    source: {source}")
+            click.echo()
+        else:
+            source_tag = f" [{source}]" if source != "builtin" else ""
+            click.echo(f"  {name}: {description}{source_tag}")
+
+
+@agents.command("add")
+@click.argument("package")
+def agents_add(package: str) -> None:
+    """Install an agent plugin package.
+
+    Installs the package using pip/uv and registers it with agentgit.
+    The package must define an agentgit entry point.
+
+    Examples:
+
+    \b
+      agentgit config agents add agentgit-aider
+      agentgit config agents add agentgit-cursor
+    """
+    from agentgit.plugins import add_plugin
+
+    click.echo(f"Installing {package}...")
+    success, message = add_plugin(package)
+
+    if success:
+        click.echo(message)
+    else:
+        raise click.ClickException(message)
+
+
+@agents.command("remove")
+@click.argument("package")
+def agents_remove(package: str) -> None:
+    """Uninstall an agent plugin package.
+
+    Uninstalls the package and removes it from agentgit's registry.
+
+    Examples:
+
+    \b
+      agentgit config agents remove agentgit-aider
+    """
+    from agentgit.plugins import remove_plugin
+
+    success, message = remove_plugin(package)
+
+    if success:
+        click.echo(message)
+    else:
+        raise click.ClickException(message)
 
 
 # Alias for backward compatibility
