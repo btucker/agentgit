@@ -24,5 +24,83 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Run tests
-        run: uv run pytest
+      - name: Run tests with coverage
+        run: uv run pytest --cov-report=xml
+
+      - name: Upload coverage to artifact
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  coverage-check:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download PR coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+          path: pr-coverage
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Checkout base branch for comparison
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.base_ref }}
+          path: base-branch
+
+      - name: Get base branch coverage
+        working-directory: base-branch
+        run: |
+          uv sync --all-extras
+          uv run pytest --cov-report=xml --cov-fail-under=0 || true
+          cp coverage.xml ../base-coverage.xml
+
+      - name: Compare coverage
+        run: |
+          # Extract coverage percentages
+          PR_COV=$(python -c "import xml.etree.ElementTree as ET; print(float(ET.parse('pr-coverage/coverage.xml').getroot().get('line-rate')) * 100)")
+          BASE_COV=$(python -c "import xml.etree.ElementTree as ET; print(float(ET.parse('base-coverage.xml').getroot().get('line-rate')) * 100)")
+
+          echo "PR Coverage: $PR_COV%"
+          echo "Base Coverage: $BASE_COV%"
+
+          # Calculate difference
+          DIFF=$(python -c "print(round($PR_COV - $BASE_COV, 2))")
+          echo "Coverage change: $DIFF%"
+
+          # Fail if coverage dropped
+          if python -c "exit(0 if $PR_COV >= $BASE_COV else 1)"; then
+            echo "✅ Coverage maintained or improved"
+            echo "COVERAGE_STATUS=✅ Coverage: $PR_COV% ($DIFF%)" >> $GITHUB_ENV
+          else
+            echo "❌ Coverage dropped from $BASE_COV% to $PR_COV%"
+            echo "COVERAGE_STATUS=❌ Coverage dropped: $PR_COV% ($DIFF%)" >> $GITHUB_ENV
+            exit 1
+          fi
+
+      - name: Comment on PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = process.env.COVERAGE_STATUS || 'Coverage check completed';
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `### Coverage Report\n\n${status}`
+            })
