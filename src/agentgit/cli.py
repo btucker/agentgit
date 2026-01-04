@@ -761,7 +761,20 @@ def sessions(
         raise click.ClickException(str(e))
 
 
-@main.group(invoke_without_command=True)
+@main.group()
+def config() -> None:
+    """Manage agentgit configuration.
+
+    Examples:
+
+    \b
+      agentgit config agents          # List installed agent plugins
+      agentgit config agents add pkg  # Install an agent plugin
+    """
+    pass
+
+
+@config.group(invoke_without_command=True)
 @click.pass_context
 def agents(ctx: click.Context) -> None:
     """Manage agent plugins.
@@ -771,9 +784,9 @@ def agents(ctx: click.Context) -> None:
     Examples:
 
     \b
-      agentgit agents                      # List all plugins
-      agentgit agents add agentgit-aider   # Install a plugin
-      agentgit agents remove agentgit-aider
+      agentgit config agents                      # List all plugins
+      agentgit config agents add agentgit-aider   # Install a plugin
+      agentgit config agents remove agentgit-aider
     """
     if ctx.invoked_subcommand is None:
         # Default behavior: list plugins
@@ -819,8 +832,8 @@ def agents_add(package: str) -> None:
     Examples:
 
     \b
-      agentgit agents add agentgit-aider
-      agentgit agents add agentgit-cursor
+      agentgit config agents add agentgit-aider
+      agentgit config agents add agentgit-cursor
     """
     from agentgit.plugins import add_plugin
 
@@ -843,7 +856,7 @@ def agents_remove(package: str) -> None:
     Examples:
 
     \b
-      agentgit agents remove agentgit-aider
+      agentgit config agents remove agentgit-aider
     """
     from agentgit.plugins import remove_plugin
 

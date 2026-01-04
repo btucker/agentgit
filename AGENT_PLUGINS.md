@@ -22,7 +22,7 @@ And enhancer plugins for better commit messages:
 List available plugins:
 
 ```bash
-agentgit agents
+agentgit config agents
 ```
 
 ## Plugin Architecture
@@ -397,7 +397,7 @@ pip install -e ./agentgit-my-agent
 The plugin is automatically discovered via entry points:
 
 ```bash
-agentgit agents
+agentgit config agents
 # Output:
 #   claude_code: Claude Code JSONL transcripts
 #   codex: Codex CLI JSONL transcripts
@@ -408,29 +408,29 @@ agentgit agents
 
 ### Via agentgit CLI (Recommended)
 
-Use `agentgit agents add` to install plugins:
+Use `agentgit config agents add` to install plugins:
 
 ```bash
-agentgit agents add agentgit-aider
-agentgit agents add agentgit-cursor
+agentgit config agents add agentgit-aider
+agentgit config agents add agentgit-cursor
 ```
 
 This will:
 1. Install the package using uv (or pip as fallback)
-2. Register it in `~/.agentgit/plugins.json`
+2. Register it in `~/.agentgit/config.yml`
 3. Automatically discover the plugin via entry points
 
 List installed plugins:
 
 ```bash
-agentgit agents
-agentgit agents list -v  # verbose mode
+agentgit config agents
+agentgit config agents list -v  # verbose mode
 ```
 
 Remove a plugin:
 
 ```bash
-agentgit agents remove agentgit-aider
+agentgit config agents remove agentgit-aider
 ```
 
 ### Via pip directly

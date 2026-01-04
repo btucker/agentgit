@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pluggy
+import yaml
 
 if TYPE_CHECKING:
     from agentgit.core import AssistantTurn, FileOperation, Prompt, PromptResponse, Transcript
@@ -16,8 +16,8 @@ if TYPE_CHECKING:
 hookspec = pluggy.HookspecMarker("agentgit")
 hookimpl = pluggy.HookimplMarker("agentgit")
 
-# Config file for tracking installed plugins
-PLUGINS_CONFIG_PATH = Path.home() / ".agentgit" / "plugins.json"
+# Config file path
+CONFIG_PATH = Path.home() / ".agentgit" / "config.yml"
 
 
 class AgentGitSpec:
@@ -300,34 +300,59 @@ def load_plugins_from_entry_points(pm: pluggy.PluginManager) -> int:
     return count
 
 
-def get_plugins_config() -> dict[str, Any]:
-    """Get the current plugins configuration.
+def get_config() -> dict[str, Any]:
+    """Get the current agentgit configuration.
 
-    Config file format (~/.agentgit/plugins.json):
-    {
-        "packages": ["agentgit-aider", "agentgit-cursor"]
-    }
+    Config file format (~/.agentgit/config.yml):
+    ```yaml
+    plugins:
+      packages:
+        - agentgit-aider
+        - agentgit-cursor
+    ```
 
     Returns:
-        The plugins config dict, or empty dict with "packages" key if not exists.
+        The config dict, or empty dict if not exists.
     """
-    if not PLUGINS_CONFIG_PATH.exists():
-        return {"packages": []}
+    if not CONFIG_PATH.exists():
+        return {}
 
     try:
-        return json.loads(PLUGINS_CONFIG_PATH.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {"packages": []}
+        content = CONFIG_PATH.read_text()
+        return yaml.safe_load(content) or {}
+    except (yaml.YAMLError, OSError):
+        return {}
 
 
-def save_plugins_config(config: dict[str, Any]) -> None:
-    """Save the plugins configuration.
+def save_config(config: dict[str, Any]) -> None:
+    """Save the agentgit configuration.
 
     Args:
         config: The config dict to save.
     """
-    PLUGINS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PLUGINS_CONFIG_PATH.write_text(json.dumps(config, indent=2) + "\n")
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+
+
+def get_plugins_config() -> dict[str, Any]:
+    """Get the plugins section of the configuration.
+
+    Returns:
+        The plugins config dict with "packages" key.
+    """
+    config = get_config()
+    return config.get("plugins", {"packages": []})
+
+
+def save_plugins_config(plugins_config: dict[str, Any]) -> None:
+    """Save the plugins section of the configuration.
+
+    Args:
+        plugins_config: The plugins config dict to save.
+    """
+    config = get_config()
+    config["plugins"] = plugins_config
+    save_config(config)
 
 
 def get_pip_command() -> list[str]:
@@ -513,7 +538,7 @@ def get_configured_plugin_manager() -> pluggy.PluginManager:
     Loads plugins from:
     1. Built-in plugins (claude_code, codex)
     2. Pip-installed plugins (via entry points)
-    3. Config file plugins (~/.config/agentgit/plugins.json)
+    3. Config file plugins (~/.agentgit/config.yml)
 
     This function caches the plugin manager for efficiency, so repeated
     calls return the same instance.

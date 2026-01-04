@@ -120,9 +120,9 @@ class TestCLI:
         assert result.exit_code == 0
         assert "Created git repository" in result.output
 
-    def test_agents_command(self, runner):
+    def test_config_agents_command(self, runner):
         """Should list supported agent formats."""
-        result = runner.invoke(main, ["agents"])
+        result = runner.invoke(main, ["config", "agents"])
         assert result.exit_code == 0
         assert "claude_code" in result.output
 
