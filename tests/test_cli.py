@@ -127,7 +127,7 @@ class TestCLI:
         assert "claude_code" in result.output
 
     def test_discover_command(self, runner, tmp_path, monkeypatch):
-        """Should list discovered transcripts in table format."""
+        """Should list discovered sessions in table format."""
         from git import Repo
 
         # Create a git repo
@@ -146,10 +146,10 @@ class TestCLI:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.chdir(repo_path)
 
-        # Use --list flag to avoid interactive selection
-        result = runner.invoke(main, ["discover", "--list"])
+        # Use --list flag to avoid interactive selection (discover is an alias for sessions)
+        result = runner.invoke(main, ["sessions", "--list"])
         assert result.exit_code == 0
-        assert "1 transcript" in result.output
+        assert "1 session" in result.output
         # Agent column shows Claude Code
         assert "Claude Code" in result.output
 

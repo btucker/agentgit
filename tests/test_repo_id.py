@@ -30,6 +30,13 @@ def test_get_repo_id_returns_first_12_chars_of_root_commit(tmp_path):
         check=True,
         capture_output=True,
     )
+    # Disable GPG signing for test commits
+    subprocess.run(
+        ["git", "config", "commit.gpgsign", "false"],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+    )
 
     # Create initial commit
     test_file = repo_path / "test.txt"
@@ -83,6 +90,13 @@ def test_get_default_output_dir_uses_repo_id_for_git_repo(tmp_path, monkeypatch)
     )
     subprocess.run(
         ["git", "config", "user.email", "test@example.com"],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+    )
+    # Disable GPG signing for test commits
+    subprocess.run(
+        ["git", "config", "commit.gpgsign", "false"],
         cwd=repo_path,
         check=True,
         capture_output=True,
