@@ -9,7 +9,6 @@ import yaml
 
 from agentgit.plugins import (
     add_plugin,
-    get_config,
     get_configured_plugin_manager,
     get_pip_command,
     get_plugin_manager,
@@ -21,11 +20,10 @@ from agentgit.plugins import (
     register_builtin_plugins,
     remove_plugin,
     reset_plugin_manager,
-    save_config,
     save_plugins_config,
     uninstall_plugin_package,
-    CONFIG_PATH,
 )
+from agentgit.settings import CONFIG_PATH, get_config, save_config
 
 
 class TestPluginManager:
@@ -94,7 +92,7 @@ class TestPluginsConfig:
     def test_get_config_empty(self, tmp_path, monkeypatch):
         """Should return empty dict when config doesn't exist."""
         fake_config = tmp_path / ".agentgit" / "config.yml"
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
 
         config = get_config()
         assert config == {}
@@ -104,7 +102,7 @@ class TestPluginsConfig:
         fake_config = tmp_path / ".agentgit" / "config.yml"
         fake_config.parent.mkdir(parents=True)
         fake_config.write_text("plugins:\n  packages:\n    - agentgit-test\n")
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
 
         config = get_config()
         assert config == {"plugins": {"packages": ["agentgit-test"]}}
@@ -114,7 +112,7 @@ class TestPluginsConfig:
         fake_config = tmp_path / ".agentgit" / "config.yml"
         fake_config.parent.mkdir(parents=True)
         fake_config.write_text("invalid: yaml: content:")
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
 
         config = get_config()
         assert config == {}
@@ -122,7 +120,7 @@ class TestPluginsConfig:
     def test_save_config(self, tmp_path, monkeypatch):
         """Should save config to file."""
         fake_config = tmp_path / ".agentgit" / "config.yml"
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
 
         save_config({"plugins": {"packages": ["test-pkg"]}})
 
@@ -133,7 +131,7 @@ class TestPluginsConfig:
     def test_get_plugins_config_empty(self, tmp_path, monkeypatch):
         """Should return empty packages list when config doesn't exist."""
         fake_config = tmp_path / ".agentgit" / "config.yml"
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
 
         config = get_plugins_config()
         assert config == {"packages": []}
@@ -143,7 +141,7 @@ class TestPluginsConfig:
         fake_config = tmp_path / ".agentgit" / "config.yml"
         fake_config.parent.mkdir(parents=True)
         fake_config.write_text("plugins:\n  packages:\n    - agentgit-test\n")
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
 
         config = get_plugins_config()
         assert config == {"packages": ["agentgit-test"]}
@@ -151,7 +149,7 @@ class TestPluginsConfig:
     def test_save_plugins_config(self, tmp_path, monkeypatch):
         """Should save plugins section to config."""
         fake_config = tmp_path / ".agentgit" / "config.yml"
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
 
         save_plugins_config({"packages": ["test-pkg"]})
 
@@ -210,7 +208,7 @@ class TestAddRemovePlugin:
     def test_add_plugin_success(self, tmp_path, monkeypatch):
         """Should install package and register it."""
         fake_config = tmp_path / ".agentgit" / "config.yml"
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
         monkeypatch.setattr("subprocess.run", MagicMock())
         monkeypatch.setattr("shutil.which", lambda x: None)
 
@@ -226,7 +224,7 @@ class TestAddRemovePlugin:
         fake_config = tmp_path / ".agentgit" / "config.yml"
         fake_config.parent.mkdir(parents=True)
         fake_config.write_text("plugins:\n  packages:\n    - agentgit-test\n")
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
 
         success, message = add_plugin("agentgit-test")
 
@@ -236,7 +234,7 @@ class TestAddRemovePlugin:
     def test_add_plugin_install_fails(self, tmp_path, monkeypatch):
         """Should return error on install failure."""
         fake_config = tmp_path / ".agentgit" / "config.yml"
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
         monkeypatch.setattr("shutil.which", lambda x: None)
 
         def mock_run(*args, **kwargs):
@@ -254,7 +252,7 @@ class TestAddRemovePlugin:
         fake_config = tmp_path / ".agentgit" / "config.yml"
         fake_config.parent.mkdir(parents=True)
         fake_config.write_text("plugins:\n  packages:\n    - agentgit-test\n")
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
         monkeypatch.setattr("subprocess.run", MagicMock())
         monkeypatch.setattr("shutil.which", lambda x: None)
 
@@ -270,7 +268,7 @@ class TestAddRemovePlugin:
         fake_config = tmp_path / ".agentgit" / "config.yml"
         fake_config.parent.mkdir(parents=True)
         fake_config.write_text("plugins:\n  packages: []\n")
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
 
         success, message = remove_plugin("nonexistent-package")
 
@@ -286,7 +284,7 @@ class TestListPlugins:
         fake_config = tmp_path / ".agentgit" / "config.yml"
         fake_config.parent.mkdir(parents=True)
         fake_config.write_text("plugins:\n  packages:\n    - pkg1\n    - pkg2\n")
-        monkeypatch.setattr("agentgit.plugins.CONFIG_PATH", fake_config)
+        monkeypatch.setattr("agentgit.settings.CONFIG_PATH", fake_config)
 
         packages = list_installed_packages()
         assert packages == ["pkg1", "pkg2"]
