@@ -36,18 +36,46 @@ def encode_path_as_name(path: Path) -> str:
     return str(path.resolve()).replace("/", "-")
 
 
+def get_repo_id(code_repo: Path) -> str | None:
+    """Get the repository ID from the first (root) commit SHA.
+
+    The repo ID is the first 12 characters of the root commit SHA.
+    This provides a stable identifier that survives repo moves/renames.
+
+    Args:
+        code_repo: Path to the code repository.
+
+    Returns:
+        12-character repo ID, or None if not a git repo or has no commits.
+    """
+    from git import Repo
+    from git.exc import InvalidGitRepositoryError, GitCommandError
+
+    try:
+        repo = Repo(code_repo)
+        # Get root commit(s) - repos can have multiple roots from orphan branches
+        # Use HEAD's root commit
+        root_commits = list(repo.iter_commits(rev="HEAD", max_parents=0))
+        if root_commits:
+            return root_commits[0].hexsha[:12]
+        return None
+    except (InvalidGitRepositoryError, GitCommandError, ValueError):
+        return None
+
+
 def get_default_output_dir(transcript_path: Path) -> Path:
     """Get the default output directory for a transcript.
 
-    Uses ~/.agentgit/projects/{project_name} where project_name is derived
-    from the project (similar to Claude Code's convention).
+    Uses ~/.agentgit/projects/{repo_id} where repo_id is the first 12
+    characters of the repository's root commit SHA. This provides a stable
+    identifier across renames and clones.
 
-    The project name is determined by:
-    1. Asking plugins to get the project name from transcript location
-       (e.g., Claude Code returns "-Users-name-project" from
-       ~/.claude/projects/-Users-name-project/session.jsonl)
-    2. Falling back to encoding the current git root
-    3. Falling back to encoding the transcript's parent directory
+    The repo is determined by:
+    1. Asking plugins to get the project name from transcript location,
+       then finding the corresponding git repo (e.g., Claude Code returns
+       "-Users-name-project" which maps to a git root)
+    2. Using the current directory's git root
+    3. Falling back to path encoding for non-git directories
 
     Args:
         transcript_path: Path to the transcript file.
@@ -60,20 +88,33 @@ def get_default_output_dir(transcript_path: Path) -> Path:
 
     pm = get_configured_plugin_manager()
 
-    # Ask plugins to get the project name from transcript location
+    # Strategy 1: Ask plugins for project name, then find git repo
     project_name = pm.hook.agentgit_get_project_name(transcript_path=transcript_path)
+    if project_name:
+        # Project name might be path-encoded like "-Users-name-project"
+        # Try to decode it back to a path and check if it's a git repo
+        if project_name.startswith("-"):
+            # Convert "-Users-name-project" -> "/Users/name/project"
+            potential_path = Path(project_name.replace("-", "/", 1))
+            if potential_path.exists():
+                repo_id = get_repo_id(potential_path)
+                if repo_id:
+                    return Path.home() / ".agentgit" / "projects" / repo_id
 
-    if not project_name:
-        # Try to find git root from current directory
-        git_root = find_git_root()
-        if git_root:
-            project_name = encode_path_as_name(git_root)
+    # Strategy 2: Use current directory's git root
+    git_root = find_git_root()
+    if git_root:
+        repo_id = get_repo_id(git_root)
+        if repo_id:
+            return Path.home() / ".agentgit" / "projects" / repo_id
 
-    if not project_name:
-        # Fall back to transcript's parent directory
-        project_name = encode_path_as_name(transcript_path.resolve().parent)
+    # Strategy 3: Fall back to path encoding for non-git directories
+    if project_name:
+        return Path.home() / ".agentgit" / "projects" / project_name
 
-    return Path.home() / ".agentgit" / "projects" / project_name
+    # Last resort: encode the transcript's parent directory
+    fallback_name = encode_path_as_name(transcript_path.resolve().parent)
+    return Path.home() / ".agentgit" / "projects" / fallback_name
 
 
 def resolve_transcripts(transcript: Path | None) -> list[Path]:
@@ -124,20 +165,60 @@ def translate_paths_for_agentgit_repo(args: list[str], repo_path: Path) -> list[
     The agentgit repo uses normalized paths (common prefix stripped).
     This function finds matching files by filename.
     """
+    from agentgit import find_git_root
+
+    git_root = find_git_root()
     translated = []
+
     for arg in args:
-        # Skip options and things that don't look like paths
-        if arg.startswith("-") or "/" not in arg:
+        # Skip options
+        if arg.startswith("-"):
             translated.append(arg)
             continue
 
-        # Check if this looks like a local file path
+        # Try to resolve the path
         local_path = Path(arg)
+
+        # If path doesn't exist in cwd, try relative to git root
+        if not local_path.exists() and git_root:
+            potential_path = git_root / arg
+            if potential_path.exists():
+                local_path = potential_path
+
+        # If still doesn't exist, try to find by filename in agentgit repo
         if not local_path.exists():
+            # Search for the filename in agentgit repo
+            filename = Path(arg).name
+            matches = list(repo_path.rglob(filename))
+
+            if len(matches) == 1:
+                translated.append(str(matches[0].relative_to(repo_path)))
+                continue
+            elif len(matches) > 1:
+                # Multiple matches - try to find best match by path suffix
+                arg_parts = Path(arg).parts
+                best_match = None
+                best_score = 0
+                for match in matches:
+                    match_parts = match.relative_to(repo_path).parts
+                    score = 0
+                    for ap, mp in zip(reversed(arg_parts), reversed(match_parts)):
+                        if ap == mp:
+                            score += 1
+                        else:
+                            break
+                    if score > best_score:
+                        best_score = score
+                        best_match = match
+                if best_match:
+                    translated.append(str(best_match.relative_to(repo_path)))
+                    continue
+
+            # No matches found - keep original
             translated.append(arg)
             continue
 
-        # Try to find this file in the agentgit repo by filename
+        # Path exists - try to find it in the agentgit repo by filename
         filename = local_path.name
         matches = list(repo_path.rglob(filename))
 
@@ -306,6 +387,17 @@ def main() -> None:
     is_flag=True,
     help="Don't automatically open browser when starting GUI.",
 )
+@click.option(
+    "--enhancer",
+    default=None,
+    help="Enhancer plugin ('rules' for heuristics, 'claude_code' for AI). Saved per-project.",
+)
+@click.option(
+    "--llm-model",
+    "enhance_model",
+    default=None,
+    help="Model for LLM enhancer (e.g., 'haiku', 'sonnet'). Saved per-project.",
+)
 def process(
     transcript: Path | None,
     output: Path | None,
@@ -317,6 +409,8 @@ def process(
     gui: bool,
     port: int,
     no_open: bool,
+    enhancer: str | None,
+    enhance_model: str | None,
 ) -> None:
     """Process a transcript into a git repository.
 
@@ -325,6 +419,9 @@ def process(
 
     With --watch, monitors the transcript file and automatically commits
     new operations as they are added (only works with a single transcript).
+
+    Use --enhancer to generate better commit messages. The preference is saved
+    per-project and used automatically on future runs.
     """
     transcripts = resolve_transcripts(transcript)
 
@@ -337,9 +434,13 @@ def process(
         _run_watch_mode(
             transcripts[0], output, author, email, source_repo,
             gui=gui, port=port, open_browser=not no_open,
+            enhancer=enhancer, enhance_model=enhance_model,
         )
     else:
-        _run_process(transcripts, output, plugin_type, author, email, source_repo)
+        _run_process(
+            transcripts, output, plugin_type, author, email, source_repo,
+            enhancer=enhancer, enhance_model=enhance_model,
+        )
         # Start GUI after processing if requested
         if gui:
             if output is None:
@@ -354,13 +455,25 @@ def _run_process(
     author: str,
     email: str,
     source_repo: Path | None,
+    enhancer: str | None = None,
+    enhance_model: str | None = None,
 ) -> None:
     """Run processing of one or more transcripts."""
     from agentgit import build_repo, parse_transcripts
+    from agentgit.config import ProjectConfig, load_config, save_config
+    from agentgit.enhance import EnhanceConfig
 
     # Use default output directory if not specified
     if output is None:
         output = get_default_output_dir(transcripts[0])
+
+    # Load saved config and merge with CLI options
+    saved_config = load_config(output)
+    # Auto-set enhancer to 'llm' if --llm-model is provided
+    if enhance_model and not enhancer:
+        enhancer = "llm"
+    effective_enhancer = enhancer or saved_config.enhancer
+    effective_model = enhance_model or saved_config.enhance_model or "haiku"
 
     if len(transcripts) == 1:
         click.echo(f"Processing transcript: {transcripts[0]}")
@@ -371,13 +484,41 @@ def _run_process(
 
     parsed = parse_transcripts(transcripts, plugin_type=plugin_type)
 
-    repo, repo_path, _ = build_repo(
-        operations=parsed.operations,
-        output_dir=output,
-        author_name=author,
-        author_email=email,
-        source_repo=source_repo,
-    )
+    # Configure enhancement if an enhancer is set
+    enhance_config = None
+    if effective_enhancer:
+        enhance_config = EnhanceConfig(
+            enhancer=effective_enhancer, model=effective_model, enabled=True
+        )
+        click.echo(f"Enhancement: {effective_enhancer} (model: {effective_model})")
+
+    # Use grouped build when enhancement is enabled to support batch processing
+    if enhance_config:
+        from agentgit import build_repo_grouped
+        repo, repo_path, _ = build_repo_grouped(
+            prompt_responses=parsed.prompt_responses,
+            output_dir=output,
+            author_name=author,
+            author_email=email,
+            enhance_config=enhance_config,
+        )
+    else:
+        repo, repo_path, _ = build_repo(
+            operations=parsed.operations,
+            output_dir=output,
+            author_name=author,
+            author_email=email,
+            source_repo=source_repo,
+            enhance_config=None,
+        )
+
+    # Save new preferences if explicitly provided (after repo exists)
+    if enhancer is not None or enhance_model is not None:
+        new_config = ProjectConfig(
+            enhancer=enhancer or saved_config.enhancer,
+            enhance_model=enhance_model or saved_config.enhance_model,
+        )
+        save_config(output, new_config)
 
     click.echo(f"Created git repository at: {repo_path}")
     click.echo(f"  Prompts: {len(parsed.prompts)}")
@@ -394,13 +535,33 @@ def _run_watch_mode(
     gui: bool = False,
     port: int = 8080,
     open_browser: bool = True,
+    enhancer: str | None = None,
+    enhance_model: str | None = None,
 ) -> None:
     """Run in watch mode."""
+    from agentgit.config import ProjectConfig, load_config, save_config
+    from agentgit.enhance import EnhanceConfig
     from agentgit.watcher import TranscriptWatcher
 
     # Use default output directory if not specified
     if output is None:
         output = get_default_output_dir(transcript)
+
+    # Load saved config and merge with CLI options
+    saved_config = load_config(output)
+    # Auto-set enhancer to 'llm' if --llm-model is provided
+    if enhance_model and not enhancer:
+        enhancer = "llm"
+    effective_enhancer = enhancer or saved_config.enhancer
+    effective_model = enhance_model or saved_config.enhance_model or "haiku"
+
+    # Configure enhancement if an enhancer is set
+    enhance_config = None
+    if effective_enhancer:
+        enhance_config = EnhanceConfig(
+            enhancer=effective_enhancer, model=effective_model, enabled=True
+        )
+        click.echo(f"Enhancement: {effective_enhancer} (model: {effective_model})")
 
     click.echo(f"Watching transcript: {transcript}")
     click.echo(f"Output directory: {output}")
@@ -450,6 +611,7 @@ def _run_watch_mode(
         author_email=email,
         source_repo=source_repo,
         on_update=on_update,
+        enhance_config=enhance_config,
     )
 
     # Initial build status
@@ -457,6 +619,14 @@ def _run_watch_mode(
     from git.exc import InvalidGitRepositoryError
 
     watcher.start()
+
+    # Save new preferences if explicitly provided (after repo exists)
+    if enhancer is not None or enhance_model is not None:
+        new_config = ProjectConfig(
+            enhancer=enhancer or saved_config.enhancer,
+            enhance_model=enhance_model or saved_config.enhance_model,
+        )
+        save_config(output, new_config)
 
     try:
         repo = Repo(output)
@@ -543,38 +713,40 @@ def _run_gui(
 @click.option(
     "--project",
     type=click.Path(exists=True, path_type=Path),
-    help="Project path to discover transcripts for. Defaults to current git repo.",
+    help="Project path to find sessions for. Defaults to current git repo.",
 )
 @click.option(
     "--all",
     "all_projects",
     is_flag=True,
-    help="Show transcripts from all projects, not just the current one.",
+    help="Show sessions from all projects, not just the current one.",
 )
 @click.option(
     "--list",
     "list_only",
     is_flag=True,
-    help="List transcripts without interactive selection.",
+    help="List sessions without interactive selection.",
 )
 @click.option(
     "--type",
     "filter_type",
     type=str,
-    help="Filter by transcript type (e.g., claude_code, codex).",
+    help="Filter by session type (e.g., claude_code, codex, claude_code_web).",
 )
-def discover(
+def sessions(
     project: Path | None,
     all_projects: bool,
     list_only: bool,
     filter_type: str | None,
 ) -> None:
-    """Discover and process transcripts interactively.
+    """List and process AI coding sessions.
 
-    Shows all transcript files found for the current project in a tabular view.
-    Enter a number to process a transcript into a git repository.
+    Shows all available sessions for the current project in a tabular view.
+    This includes both local transcript files and web sessions (if credentials
+    are available). Sessions that have been processed into the git repo are
+    marked with [REPO]. Enter a number to process a session.
 
-    Use --all to show transcripts from all projects.
+    Use --all to show sessions from all projects.
     """
     from rich.console import Console
     from rich.panel import Panel
@@ -608,6 +780,7 @@ def discover(
     if filter_type:
         transcripts = [
             t for t in transcripts if filter_type.lower() in t.format_type.lower()
+            or filter_type.lower() in t.plugin_name.lower()
         ]
         if not transcripts:
             console.print(
@@ -617,26 +790,38 @@ def discover(
 
     # Display header
     console.print(
-        Panel(f"[bold]agentgit discover[/bold] - {header_path}", border_style="blue")
+        Panel(f"[bold]agentgit sessions[/bold] - {header_path}", border_style="blue")
     )
     console.print()
 
     # Build unified table
-    count_label = "transcript" if len(transcripts) == 1 else "transcripts"
+    count_label = "session" if len(transcripts) == 1 else "sessions"
     table = Table(title=f"{len(transcripts)} {count_label}")
     table.add_column("#", style="dim", width=4)
     table.add_column("Agent", style="magenta")
-    table.add_column("Path", style="cyan")
+    table.add_column("Name/Path", style="cyan")
     table.add_column("Modified", style="green")
     table.add_column("Size", style="yellow", justify="right")
+    table.add_column("Status", style="blue", width=6)
 
     for i, t in enumerate(transcripts, 1):
-        # Convert path to ~/... format
-        try:
-            rel_path = "~/" + str(t.path.relative_to(home))
-        except ValueError:
-            rel_path = str(t.path)
-        table.add_row(str(i), t.plugin_name, rel_path, t.mtime_formatted, t.size_human)
+        # Use display name if available, otherwise path
+        if t.display_name:
+            name = t.display_name
+        else:
+            # Convert path to ~/... format
+            try:
+                name = "~/" + str(t.path.relative_to(home))
+            except ValueError:
+                name = str(t.path)
+
+        # Check if this session has been processed into git repo
+        output_dir = get_default_output_dir(t.path)
+        status = ""
+        if output_dir.exists() and (output_dir / ".git").exists():
+            status = "REPO"
+
+        table.add_row(str(i), t.plugin_name, name, t.mtime_formatted, t.size_human, status)
 
     console.print(table)
     console.print()
@@ -674,7 +859,7 @@ def discover(
 
     # Process the selected transcript
     console.print()
-    console.print(f"[bold]Processing[/bold] {selected.path.name}...")
+    console.print(f"[bold]Processing[/bold] {selected.display_name or selected.path.name}...")
 
     output_dir = get_default_output_dir(selected.path)
     try:
@@ -713,6 +898,25 @@ def agents() -> None:
             name = info.get("name", "unknown")
             description = info.get("description", "No description")
             click.echo(f"  {name}: {description}")
+
+
+# Alias for backward compatibility
+@main.command(hidden=True)
+@click.option("--project", type=click.Path(exists=True, path_type=Path))
+@click.option("--all", "all_projects", is_flag=True)
+@click.option("--list", "list_only", is_flag=True)
+@click.option("--type", "filter_type", type=str)
+def discover(
+    project: Path | None,
+    all_projects: bool,
+    list_only: bool,
+    filter_type: str | None,
+) -> None:
+    """Alias for 'sessions' command (deprecated, use 'sessions' instead)."""
+    from click import get_current_context
+    ctx = get_current_context()
+    ctx.invoke(sessions, project=project, all_projects=all_projects,
+               list_only=list_only, filter_type=filter_type)
 
 
 @main.command()
@@ -793,6 +997,16 @@ def gui(
     default="agent@local",
     help="Author email for git commits.",
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Enable debug logging to inspect session data structure.",
+)
+@click.option(
+    "--dump-json",
+    type=click.Path(path_type=Path),
+    help="Dump raw session JSON to this file for inspection.",
+)
 def web(
     session_id: str | None,
     output: Path | None,
@@ -800,6 +1014,8 @@ def web(
     org_uuid: str | None,
     author: str,
     email: str,
+    debug: bool,
+    dump_json: Path | None,
 ) -> None:
     """Process a Claude Code web session.
 
@@ -816,7 +1032,19 @@ def web(
         agentgit web abc123             # Process specific session
 
         agentgit web --token=... --org-uuid=...  # Manual credentials
+
+        agentgit web --debug abc123     # Show all available session fields
     """
+    import logging
+
+    # Enable debug logging if requested
+    if debug:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(levelname)s [%(name)s] %(message)s'
+        )
+        click.echo("Debug logging enabled - will show session data structure\n")
+
     from agentgit.web_sessions import (
         WebSessionError,
         fetch_session_data,
@@ -895,6 +1123,15 @@ def web(
         session_data = fetch_session_data(resolved_token, resolved_org_uuid, session_id)
     except WebSessionError as e:
         raise click.ClickException(str(e)) from e
+
+    # Dump raw JSON if requested
+    if dump_json:
+        import json
+        with open(dump_json, 'w') as f:
+            json.dump(session_data, f, indent=2)
+        click.echo(f"Dumped raw session data to: {dump_json}")
+        click.echo(f"Top-level keys: {', '.join(sorted(session_data.keys()))}")
+        return
 
     # Convert to JSONL entries and process
     entries = session_to_jsonl_entries(session_data)

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pluggy
 
 if TYPE_CHECKING:
-    from agentgit.core import FileOperation, PromptResponse, Transcript
+    from agentgit.core import AssistantTurn, FileOperation, Prompt, PromptResponse, Transcript
 
 hookspec = pluggy.HookspecMarker("agentgit")
 hookimpl = pluggy.HookimplMarker("agentgit")
@@ -147,6 +147,77 @@ class AgentGitSpec:
             A display name string, or None if this plugin can't provide one.
         """
 
+    # Enhancement hooks
+    @hookspec
+    def agentgit_get_enhancer_info(self) -> dict[str, str] | None:
+        """Return enhancer plugin identification info.
+
+        Returns:
+            Dict with 'name' (short identifier like 'llm' or 'rules') and
+            'description' (human-readable description), or None.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_enhance_turn_summary(
+        self,
+        turn: AssistantTurn,
+        prompt: Prompt | None,
+        enhancer: str,
+        model: str | None,
+    ) -> str | None:
+        """Generate an enhanced summary for an assistant turn entry.
+
+        Args:
+            turn: The assistant turn containing grouped operations.
+            prompt: Optional user prompt that triggered this turn.
+            enhancer: The enhancer type to use (e.g., 'llm', 'rules').
+            model: Optional model override.
+
+        Returns:
+            Generated entry summary, or None if generation fails.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_enhance_prompt_summary(
+        self,
+        prompt: Prompt,
+        turns: list[AssistantTurn],
+        enhancer: str,
+        model: str | None,
+    ) -> str | None:
+        """Generate an enhanced summary for a user prompt entry.
+
+        Args:
+            prompt: The user prompt.
+            turns: All assistant turns that responded to the prompt.
+            enhancer: The enhancer type to use (e.g., 'llm', 'rules').
+            model: Optional model override.
+
+        Returns:
+            Generated entry summary, or None if generation fails.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_curate_turn_context(
+        self,
+        turn: AssistantTurn,
+        enhancer: str,
+        model: str | None,
+    ) -> str | None:
+        """Curate the context/reasoning to include in a turn commit body.
+
+        The enhancer can select and organize the most relevant parts of the
+        assistant's thinking to include in the commit message body.
+
+        Args:
+            turn: The assistant turn to curate context for.
+            enhancer: The enhancer type to use.
+            model: Optional model override.
+
+        Returns:
+            Curated context string to include in commit body, or None to use default.
+        """
+
 
 def get_plugin_manager() -> pluggy.PluginManager:
     """Create and configure the plugin manager."""
@@ -158,10 +229,21 @@ def get_plugin_manager() -> pluggy.PluginManager:
 def register_builtin_plugins(pm: pluggy.PluginManager) -> None:
     """Register the built-in format plugins."""
     from agentgit.formats.claude_code import ClaudeCodePlugin
+    from agentgit.formats.claude_code_web import ClaudeCodeWebPlugin
     from agentgit.formats.codex import CodexPlugin
 
     pm.register(ClaudeCodePlugin())
+    pm.register(ClaudeCodeWebPlugin())
     pm.register(CodexPlugin())
+
+
+def register_enhancer_plugins(pm: pluggy.PluginManager) -> None:
+    """Register the built-in AI enhancer plugins."""
+    from agentgit.enhancers.llm import LLMEnhancerPlugin
+    from agentgit.enhancers.rules import RulesEnhancerPlugin
+
+    pm.register(RulesEnhancerPlugin())
+    pm.register(LLMEnhancerPlugin())
 
 
 _configured_plugin_manager: pluggy.PluginManager | None = None
@@ -180,4 +262,5 @@ def get_configured_plugin_manager() -> pluggy.PluginManager:
     if _configured_plugin_manager is None:
         _configured_plugin_manager = get_plugin_manager()
         register_builtin_plugins(_configured_plugin_manager)
+        register_enhancer_plugins(_configured_plugin_manager)
     return _configured_plugin_manager

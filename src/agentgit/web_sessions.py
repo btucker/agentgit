@@ -9,9 +9,10 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -183,6 +184,9 @@ def fetch_session_data(token: str, org_uuid: str, session_id: str) -> dict[str, 
     Raises:
         WebSessionError: If API request fails
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     headers = get_api_headers(token, org_uuid)
     try:
         response = httpx.get(
@@ -191,7 +195,26 @@ def fetch_session_data(token: str, org_uuid: str, session_id: str) -> dict[str, 
             timeout=60.0,
         )
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+
+        # Debug logging to inspect available fields
+        logger.debug(f"Session {session_id} top-level keys: {sorted(data.keys())}")
+
+        # Log git-related fields if present
+        git_fields = ["repository_url", "github_url", "git_remote", "remote_url",
+                      "repo_url", "git_url", "project_url"]
+        found_git_fields = {k: data.get(k) for k in git_fields if k in data}
+        if found_git_fields:
+            logger.info(f"Found git-related fields in session {session_id}: {found_git_fields}")
+
+        # Check for git info in nested structures
+        if "project" in data and isinstance(data["project"], dict):
+            logger.debug(f"Session has 'project' dict with keys: {sorted(data['project'].keys())}")
+            project_git_fields = {k: data["project"].get(k) for k in git_fields if k in data["project"]}
+            if project_git_fields:
+                logger.info(f"Found git-related fields in project: {project_git_fields}")
+
+        return data
     except httpx.HTTPError as e:
         raise WebSessionError(f"Failed to fetch session {session_id}: {e}") from e
 
@@ -275,3 +298,122 @@ def session_to_jsonl_entries(session_data: dict[str, Any]) -> list[dict[str, Any
         entries.append(entry)
 
     return entries
+
+
+@dataclass
+class DiscoveredWebSession:
+    """A web session discovered via the API.
+
+    Similar to DiscoveredTranscript but for web sessions that don't have a local path.
+    """
+
+    session_id: str
+    title: str
+    created_at: str
+    project_path: Optional[str] = None
+    project_name: Optional[str] = None
+
+    @property
+    def created_at_formatted(self) -> str:
+        """Human-readable creation time."""
+        try:
+            dt = datetime.fromisoformat(self.created_at.replace("Z", "+00:00"))
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, AttributeError):
+            return self.created_at
+
+    @property
+    def display_name(self) -> str:
+        """Get display name for the session."""
+        if self.title:
+            # Truncate long titles
+            if len(self.title) > 50:
+                return self.title[:47] + "..."
+            return self.title
+        return f"session-{self.session_id[:8]}"
+
+    def matches_project(self, project_path: Path) -> bool:
+        """Check if this session is for the given project path."""
+        if not self.project_path:
+            return False
+        try:
+            session_path = Path(self.project_path).resolve()
+            check_path = project_path.resolve()
+            return session_path == check_path
+        except (ValueError, OSError):
+            return False
+
+
+def try_resolve_credentials() -> tuple[str, str] | None:
+    """Try to resolve credentials, returning None if not available.
+
+    This is a non-raising version of resolve_credentials for optional
+    web session discovery.
+
+    Returns:
+        Tuple of (token, org_uuid) if available, None otherwise.
+    """
+    try:
+        return resolve_credentials()
+    except WebSessionError:
+        return None
+
+
+def discover_web_sessions(
+    project_path: Path | None = None,
+    token: str | None = None,
+    org_uuid: str | None = None,
+) -> list[DiscoveredWebSession]:
+    """Discover web sessions, optionally filtered by project.
+
+    This function attempts to fetch web sessions from the API. If credentials
+    are not available or the request fails, it returns an empty list rather
+    than raising an error.
+
+    Args:
+        project_path: If provided, only return sessions matching this project.
+        token: API access token (optional, will auto-detect if possible)
+        org_uuid: Organization UUID (optional, will auto-detect if possible)
+
+    Returns:
+        List of DiscoveredWebSession objects, sorted by creation time (newest first).
+    """
+    # Try to get credentials
+    if token is None or org_uuid is None:
+        creds = try_resolve_credentials()
+        if creds is None:
+            return []
+        token, org_uuid = creds
+
+    # Fetch sessions from API
+    try:
+        sessions = fetch_sessions(token, org_uuid)
+    except WebSessionError:
+        return []
+
+    # Convert to DiscoveredWebSession and optionally filter
+    discovered = []
+    for session in sessions:
+        # Extract project name from path
+        project_name = None
+        if session.project_path:
+            project_name = Path(session.project_path).name
+
+        web_session = DiscoveredWebSession(
+            session_id=session.id,
+            title=session.title,
+            created_at=session.created_at,
+            project_path=session.project_path,
+            project_name=project_name,
+        )
+
+        # Filter by project if specified
+        if project_path is not None:
+            if not web_session.matches_project(project_path):
+                continue
+
+        discovered.append(web_session)
+
+    # Sort by creation time, newest first
+    discovered.sort(key=lambda s: s.created_at, reverse=True)
+    return discovered
