@@ -410,7 +410,7 @@ class TestBatchProcessing:
         # Track calls to _run_llm
         calls = []
 
-        def mock_run_llm(prompt, model="claude-cli-haiku"):
+        def mock_run_llm(prompt, model="claude-cli-haiku", schema=None):
             calls.append(prompt)
             # Return valid JSON for 25 items
             items = {}
@@ -462,7 +462,7 @@ class TestBatchProcessing:
 
         calls = []
 
-        def mock_run_llm(prompt, model="claude-cli-haiku"):
+        def mock_run_llm(prompt, model="claude-cli-haiku", schema=None):
             calls.append(prompt)
             # Return messages for both merge and turn items
             return '{"1": "Merge message", "2": "Turn message"}'
@@ -561,7 +561,7 @@ class TestBatchProcessing:
 
         llm_enhancer.clear_message_cache()
 
-        def mock_run_llm(prompt, model="claude-cli-haiku"):
+        def mock_run_llm(prompt, model="claude-cli-haiku", schema=None):
             return "not valid json at all"
 
         monkeypatch.setattr(llm_enhancer, "_run_llm", mock_run_llm)
@@ -593,7 +593,7 @@ class TestBatchProcessing:
 
         llm_enhancer.clear_message_cache()
 
-        def mock_run_llm(prompt, model="claude-cli-haiku"):
+        def mock_run_llm(prompt, model="claude-cli-haiku", schema=None):
             return '```json\n{"1": "Add feature", "2": "Fix bug"}\n```'
 
         monkeypatch.setattr(llm_enhancer, "_run_llm", mock_run_llm)
@@ -903,7 +903,7 @@ class TestMergeMessagePreservesPrompt:
         # Mock _run_llm to ensure it's NOT called
         calls = []
 
-        def mock_run_llm(prompt, model="claude-cli-haiku"):
+        def mock_run_llm(prompt, model="claude-cli-haiku", schema=None):
             calls.append(prompt)
             return "Should not be used"
 
@@ -941,7 +941,7 @@ class TestMergeMessagePreservesPrompt:
 
         llm_enhancer.clear_message_cache()
 
-        def mock_run_llm(prompt, model="claude-cli-haiku"):
+        def mock_run_llm(prompt, model="claude-cli-haiku", schema=None):
             return "Add JWT authentication"
 
         monkeypatch.setattr(llm_enhancer, "_run_llm", mock_run_llm)
