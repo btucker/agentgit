@@ -8,10 +8,16 @@ Agent plugins convert transcripts from AI coding assistants (like Claude Code, C
 
 ## Built-in Plugins
 
-agentgit ships with plugins for:
+agentgit ships with agent plugins for:
 
-- **claude_code** - Claude Code JSONL transcripts (`~/.claude/projects/`)
+- **claude_code** - Claude Code CLI JSONL transcripts (`~/.claude/projects/`)
+- **claude_code_web** - Claude Code web session transcripts (via API)
 - **codex** - Codex CLI JSONL transcripts (`~/.codex/sessions/`)
+
+And enhancer plugins for better commit messages:
+
+- **rules** - Heuristic-based commit message enhancement
+- **llm** - AI-powered commit message enhancement (requires `llm` package)
 
 List available plugins:
 
@@ -25,6 +31,8 @@ agentgit agents
 
 Plugins implement **hooks** - functions that agentgit calls at specific points in the processing pipeline. Each hook has a well-defined purpose:
 
+**Agent Plugin Hooks:**
+
 | Hook | Purpose | Returns |
 |------|---------|---------|
 | `agentgit_get_plugin_info` | Identify the plugin | `dict` with name/description |
@@ -36,6 +44,15 @@ Plugins implement **hooks** - functions that agentgit calls at specific points i
 | `agentgit_discover_transcripts` | Find transcripts for a project | `list[Path]` |
 | `agentgit_get_project_name` | Extract project identifier from path | `str` or `None` |
 | `agentgit_get_display_name` | Human-readable name for UI | `str` or `None` |
+
+**Enhancer Plugin Hooks:**
+
+| Hook | Purpose | Returns |
+|------|---------|---------|
+| `agentgit_get_enhancer_info` | Identify the enhancer | `dict` with name/description |
+| `agentgit_enhance_turn_summary` | Generate summary for assistant turn | `str` or `None` |
+| `agentgit_enhance_prompt_summary` | Generate summary for user prompt | `str` or `None` |
+| `agentgit_curate_turn_context` | Curate context for commit body | `str` or `None` |
 
 ### Data Flow
 
@@ -570,6 +587,79 @@ def agentgit_get_project_name(self, transcript_path: Path) -> str | None:
 @hookimpl
 def agentgit_get_display_name(self, transcript_path: Path) -> str | None:
     # Return display name
+    ...
+```
+
+## Enhancement Hooks
+
+These hooks allow plugins to enhance commit messages with better summaries. Built-in enhancers include `rules` (heuristic-based) and `llm` (AI-powered).
+
+### agentgit_get_enhancer_info
+
+**Required for enhancer plugins.** Return enhancer metadata.
+
+```python
+@hookimpl
+def agentgit_get_enhancer_info(self) -> dict[str, str]:
+    return {
+        "name": "my_enhancer",
+        "description": "My custom enhancer",
+    }
+```
+
+### agentgit_enhance_turn_summary
+
+**Optional.** Generate an enhanced summary for an assistant turn.
+
+```python
+@hookimpl
+def agentgit_enhance_turn_summary(
+    self,
+    turn: AssistantTurn,
+    prompt: Prompt | None,
+    enhancer: str,
+    model: str | None,
+) -> str | None:
+    if enhancer != "my_enhancer":
+        return None
+    # Generate and return summary
+    ...
+```
+
+### agentgit_enhance_prompt_summary
+
+**Optional.** Generate an enhanced summary for a user prompt.
+
+```python
+@hookimpl
+def agentgit_enhance_prompt_summary(
+    self,
+    prompt: Prompt,
+    turns: list[AssistantTurn],
+    enhancer: str,
+    model: str | None,
+) -> str | None:
+    if enhancer != "my_enhancer":
+        return None
+    # Generate and return summary
+    ...
+```
+
+### agentgit_curate_turn_context
+
+**Optional.** Curate the context/reasoning for commit message bodies.
+
+```python
+@hookimpl
+def agentgit_curate_turn_context(
+    self,
+    turn: AssistantTurn,
+    enhancer: str,
+    model: str | None,
+) -> str | None:
+    if enhancer != "my_enhancer":
+        return None
+    # Return curated context string
     ...
 ```
 
