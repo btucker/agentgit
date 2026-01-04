@@ -398,6 +398,7 @@ class GitRepoBuilder:
         output_dir: Path | None = None,
         enhance_config: Optional["EnhanceConfig"] = None,
         code_repo: Path | None = None,
+        session_branch_name: str | None = None,
     ):
         """Initialize the builder.
 
@@ -406,10 +407,13 @@ class GitRepoBuilder:
             enhance_config: Optional AI configuration for generating commit messages.
             code_repo: Path to the code repository. If provided, sets up git alternates
                 to share objects with the code repo. If None, auto-detects from cwd.
+            session_branch_name: Optional branch name for session-based workflow. If provided,
+                all commits go to this branch (never merged to main).
         """
         self.output_dir = output_dir
         self.enhance_config = enhance_config
         self.code_repo = code_repo
+        self.session_branch_name = session_branch_name
         self.repo: Repo | None = None
         self.path_mapping: dict[str, str] = {}
         self.file_states: dict[str, str] = {}
@@ -588,8 +592,8 @@ class GitRepoBuilder:
     ) -> tuple[Repo, Path, dict[str, str]]:
         """Build a git repository using merge-based structure.
 
-        Each prompt becomes a merge commit on main, with individual assistant
-        turns as commits on a feature branch.
+        If session_branch_name is set, all commits go to that branch (never merged).
+        Otherwise, each prompt becomes a merge commit on main with feature branches.
 
         Args:
             prompt_responses: List of PromptResponse objects.
@@ -618,9 +622,21 @@ class GitRepoBuilder:
         if not prompt_responses:
             return self.repo, self.output_dir, self.path_mapping
 
-        # Ensure we have an initial commit
+        # Ensure we have an initial commit on main
         if not self._has_commits():
             self._create_initial_commit()
+
+        # SESSION MODE: Create or checkout the session branch
+        if self.session_branch_name:
+            if self.session_branch_name in self.repo.heads:
+                # Branch exists, check it out
+                self.repo.heads[self.session_branch_name].checkout()
+            else:
+                # Create new session branch from main
+                main_ref = self.repo.head.commit
+                session_branch = self.repo.create_head(self.session_branch_name, main_ref)
+                session_branch.checkout()
+                logger.info("Created session branch: %s", self.session_branch_name)
 
         # Pre-process batch enhancement for AI enhancers (much more efficient)
         if self.enhance_config and self.enhance_config.enabled:
@@ -648,7 +664,11 @@ class GitRepoBuilder:
     def _process_prompt_response(
         self, pr: PromptResponse, incremental: bool
     ) -> None:
-        """Process a single prompt response, creating feature branch and merge."""
+        """Process a single prompt response.
+
+        If session_branch_name is set, all commits go directly to the session branch.
+        Otherwise, creates a temporary feature branch and merges to main.
+        """
         if not pr.turns:
             return
 
@@ -666,6 +686,17 @@ class GitRepoBuilder:
         if not turns_to_process:
             return
 
+        # SESSION MODE: All commits go directly to the session branch, no merging
+        if self.session_branch_name:
+            # Apply each turn as a commit on the session branch
+            for turn in turns_to_process:
+                self._apply_turn(turn)
+                # Mark all operations in this turn as processed
+                for op in turn.operations:
+                    self._processed_ops.add(self._get_operation_id(op))
+            return
+
+        # LEGACY MODE: Feature branches that merge to main
         # Remember the current main branch position
         main_ref = self.repo.head.commit
 

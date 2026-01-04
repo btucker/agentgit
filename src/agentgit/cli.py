@@ -434,7 +434,7 @@ def _run_process(
     enhance_model: str | None = None,
 ) -> None:
     """Run processing of one or more transcripts."""
-    from agentgit import build_repo, parse_transcripts
+    from agentgit import build_repo_grouped, parse_transcript
     from agentgit.config import ProjectConfig, load_config, save_config
     from agentgit.enhance import EnhanceConfig
 
@@ -450,15 +450,6 @@ def _run_process(
     effective_enhancer = enhancer or saved_config.enhancer
     effective_model = enhance_model or saved_config.enhance_model or "haiku"
 
-    if len(transcripts) == 1:
-        click.echo(f"Processing transcript: {transcripts[0]}")
-    else:
-        click.echo(f"Processing {len(transcripts)} transcripts:")
-        for t in transcripts:
-            click.echo(f"  - {t.name}")
-
-    parsed = parse_transcripts(transcripts, plugin_type=plugin_type)
-
     # Configure enhancement if an enhancer is set
     enhance_config = None
     if effective_enhancer:
@@ -467,25 +458,47 @@ def _run_process(
         )
         click.echo(f"Enhancement: {effective_enhancer} (model: {effective_model})")
 
-    # Use grouped build when enhancement is enabled to support batch processing
-    if enhance_config:
-        from agentgit import build_repo_grouped
+    if len(transcripts) == 1:
+        click.echo(f"Processing transcript: {transcripts[0]}")
+    else:
+        click.echo(f"Processing {len(transcripts)} transcripts:")
+        for t in transcripts:
+            click.echo(f"  - {t.name}")
+
+    # Process each transcript into its own session branch
+    repo = None
+    total_prompts = 0
+    total_operations = 0
+    for transcript_path in transcripts:
+        parsed = parse_transcript(transcript_path, plugin_type=plugin_type)
+
+        if not parsed.prompt_responses:
+            click.echo(f"  Skipping {transcript_path.name}: no operations found")
+            continue
+
+        # Extract agent name from format (e.g., "claude_code_jsonl" -> "claude-code")
+        agent_name = None
+        if parsed.source_format:
+            # Remove suffixes like "_jsonl", "_web"
+            agent_name = parsed.source_format.replace("_jsonl", "").replace("_web", "")
+
+        # Build into session branch
         repo, repo_path, _ = build_repo_grouped(
             prompt_responses=parsed.prompt_responses,
             output_dir=output,
             author_name=author,
             author_email=email,
             enhance_config=enhance_config,
+            session_id=parsed.session_id or transcript_path.stem,
+            agent_name=agent_name,
         )
-    else:
-        repo, repo_path, _ = build_repo(
-            operations=parsed.operations,
-            output_dir=output,
-            author_name=author,
-            author_email=email,
-            source_repo=source_repo,
-            enhance_config=None,
-        )
+
+        total_prompts += len(parsed.prompts)
+        total_operations += len(parsed.operations)
+
+    if repo is None:
+        click.echo("No operations found in any transcript")
+        return
 
     # Save new preferences if explicitly provided (after repo exists)
     if enhancer is not None or enhance_model is not None:
@@ -495,10 +508,14 @@ def _run_process(
         )
         save_config(output, new_config)
 
+    # Count branches (sessions)
+    session_branches = [b.name for b in repo.heads if b.name.startswith('session/')]
+
     click.echo(f"Created git repository at: {repo_path}")
-    click.echo(f"  Prompts: {len(parsed.prompts)}")
-    click.echo(f"  Operations: {len(parsed.operations)}")
-    click.echo(f"  Commits: {len(list(repo.iter_commits()))}")
+    click.echo(f"  Sessions (branches): {len(session_branches)}")
+    click.echo(f"  Total prompts: {total_prompts}")
+    click.echo(f"  Total operations: {total_operations}")
+    click.echo(f"  Total commits: {len(list(repo.iter_commits('--all')))}")
 
 
 def _run_watch_mode(
@@ -885,6 +902,127 @@ def discover(
     ctx = get_current_context()
     ctx.invoke(sessions, project=project, all_projects=all_projects,
                list_only=list_only, filter_type=filter_type)
+
+
+@main.command()
+@click.argument("file_path", type=str)
+@click.option(
+    "--lines",
+    "-L",
+    type=str,
+    help="Show blame for specific line range (e.g., '10,20' or '10,+5').",
+)
+@click.option(
+    "--no-context",
+    is_flag=True,
+    help="Disable showing agent context inline.",
+)
+def blame(file_path: str, lines: str | None, no_context: bool) -> None:
+    """Show git blame with agent context for each line.
+
+    Displays which commit and prompt modified each line, along with
+    the agent's reasoning/context from that turn.
+
+    Examples:
+
+        agentgit blame auth.py
+
+        agentgit blame src/utils.py -L 10,20
+    """
+    import re
+    from git import Repo
+
+    repo_path = get_agentgit_repo_path()
+    if not repo_path or not repo_path.exists():
+        raise click.ClickException(
+            "No agentgit repository found. Run 'agentgit' first to create one."
+        )
+
+    # Translate file path to agentgit repo path
+    translated = translate_paths_for_agentgit_repo([file_path], repo_path)
+    target_file = translated[0]
+
+    # Open repo and get blame
+    repo = Repo(repo_path)
+
+    try:
+        # Parse line range if provided
+        start_line = None
+        end_line = None
+        if lines:
+            parts = lines.split(',')
+            if len(parts) == 2:
+                start_line = int(parts[0]) - 1  # GitPython uses 0-based indexing
+                # Handle both "start,end" and "start,+count" formats
+                if parts[1].startswith('+'):
+                    end_line = start_line + int(parts[1])
+                else:
+                    end_line = int(parts[1]) - 1
+
+        # Get blame data
+        blame_data = repo.blame('HEAD', target_file)
+    except Exception as e:
+        raise click.ClickException(f"Failed to get blame data: {e}")
+
+    # Cache for commit contexts
+    commit_contexts = {}
+
+    def get_commit_context(commit) -> str | None:
+        """Extract context from commit message."""
+        sha = commit.hexsha
+        if sha in commit_contexts:
+            return commit_contexts[sha]
+
+        try:
+            message = commit.message
+
+            # Extract context section
+            context_match = re.search(
+                r'Context:\s*\n(.+?)(?:\n\n|\nPrompt-Id:|\nOperation:|\nTimestamp:|\Z)',
+                message,
+                re.DOTALL
+            )
+            if context_match:
+                context = context_match.group(1).strip()
+                # Truncate to first sentence or 80 chars
+                first_sentence = re.split(r'[.!?]\s', context)[0]
+                if len(first_sentence) > 80:
+                    first_sentence = first_sentence[:77] + "..."
+                commit_contexts[sha] = first_sentence
+                return first_sentence
+        except Exception:
+            pass
+
+        commit_contexts[sha] = None
+        return None
+
+    # Process and display blame output
+    line_num = 0
+    for commit, lines_list in blame_data:
+        for line_content in lines_list:
+            # Apply line range filter if specified
+            if start_line is not None and (line_num < start_line or line_num > end_line):
+                line_num += 1
+                continue
+
+            # Format blame line
+            short_sha = commit.hexsha[:7]
+            author = commit.author.name[:12]  # Truncate long names
+            date = commit.committed_datetime.strftime('%Y-%m-%d')
+
+            # Remove trailing newline from content
+            content = line_content.rstrip('\n')
+
+            blame_line = f"{short_sha} ({author:12} {date:10}) {content}"
+            click.echo(blame_line)
+
+            # Add context if available and not disabled
+            if not no_context:
+                context = get_commit_context(commit)
+                if context:
+                    click.echo(f"         → {context}")
+
+            line_num += 1
 
 
 @main.command()

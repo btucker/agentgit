@@ -588,3 +588,57 @@ Respond with ONLY the summary, nothing else."""
 
         # Fall back to truncated original
         return _truncate_text(raw_context, 500)
+
+    @hookimpl
+    def agentgit_generate_session_name(
+        self,
+        prompt_responses: list["PromptResponse"],
+        enhancer: str,
+        model: str | None,
+    ) -> str | None:
+        """Generate a descriptive name for a coding session."""
+        if enhancer != ENHANCER_NAME:
+            return None
+
+        model = model or DEFAULT_MODEL
+
+        # Build context from all prompts and operations
+        prompts_text = []
+        files_modified = set()
+
+        for pr in prompt_responses[:5]:  # Look at first 5 prompts max
+            prompts_text.append(_truncate_text(pr.prompt.text, 200))
+            for turn in pr.turns:
+                for op in turn.operations:
+                    files_modified.add(op.filename)
+
+        prompts_context = "\n\n".join(prompts_text)
+        files_context = ", ".join(list(files_modified)[:10])
+
+        ai_prompt = f"""Generate a short, descriptive name for this coding session (3-6 words max, kebab-case).
+
+User prompts:
+{prompts_context}
+
+Files modified: {files_context}
+
+Examples of good session names:
+- "add-user-authentication"
+- "fix-login-validation-bugs"
+- "refactor-database-layer"
+- "implement-oauth-flow"
+- "update-api-endpoints"
+
+Respond with ONLY the session name in kebab-case, nothing else."""
+
+        result = _run_llm(ai_prompt, model)
+        if result:
+            # Clean up the result
+            name = result.strip().strip('"').strip("'").lower()
+            # Ensure kebab-case
+            import re
+            name = re.sub(r'[^\w\-]', '-', name)
+            name = re.sub(r'-+', '-', name).strip('-')
+            return name
+
+        return None

@@ -134,6 +134,69 @@ def curate_turn_context(
     )
 
 
+def generate_session_branch_name(
+    prompt_responses: list["PromptResponse"],
+    session_id: str | None = None,
+    config: EnhanceConfig | None = None,
+    agent_name: str | None = None,
+) -> str:
+    """Generate a descriptive branch name for a coding session.
+
+    Args:
+        prompt_responses: All prompts and operations in the session.
+        session_id: Optional session identifier for fallback naming.
+        config: Optional configuration for enhancement.
+        agent_name: Optional agent/format name (e.g., 'claude-code', 'codex').
+
+    Returns:
+        A git-safe branch name like 'session/claude-code/add-user-authentication'
+    """
+    import re
+    import logging
+    logger = logging.getLogger(__name__)
+
+    if config is None:
+        config = EnhanceConfig()
+
+    # Sanitize agent name for branch path
+    if agent_name:
+        agent_part = re.sub(r'[^\w\-]', '-', agent_name.lower())
+        agent_part = re.sub(r'-+', '-', agent_part).strip('-')
+    else:
+        agent_part = "unknown"
+
+    # Try AI-generated name if configured
+    if config.enabled and config.enhancer == "llm":
+        pm = get_configured_plugin_manager()
+        result = pm.hook.agentgit_generate_session_name(
+            prompt_responses=prompt_responses,
+            enhancer=config.enhancer,
+            model=config.model,
+        )
+        if result:
+            # Sanitize for git branch name
+            safe_name = re.sub(r'[^\w\-/]', '-', result.lower())
+            safe_name = re.sub(r'-+', '-', safe_name).strip('-')
+            logger.info("Generated session name: %s", safe_name)
+            return f"session/{agent_part}/{safe_name}"
+
+    # Fallback: use first prompt as basis
+    if prompt_responses and prompt_responses[0].prompt:
+        first_prompt = prompt_responses[0].prompt.text
+        # Take first line, sanitize, truncate
+        first_line = first_prompt.split('\n')[0].strip()
+        safe_name = re.sub(r'[^\w\-]', '-', first_line.lower())
+        safe_name = re.sub(r'-+', '-', safe_name).strip('-')[:50]
+        return f"session/{agent_part}/{safe_name}"
+
+    # Last resort: use session ID or timestamp
+    if session_id:
+        return f"session/{agent_part}/{session_id[:12]}"
+
+    import time
+    return f"session/{agent_part}/{int(time.time())}"
+
+
 def preprocess_batch_enhancement(
     prompt_responses: list["PromptResponse"],
     config: EnhanceConfig | None = None,

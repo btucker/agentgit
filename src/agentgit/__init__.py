@@ -199,13 +199,13 @@ def build_repo_grouped(
     author_name: str = "Agent",
     author_email: str = "agent@local",
     enhance_config: "EnhanceConfig | None" = None,
+    session_id: str | None = None,
+    agent_name: str | None = None,
 ) -> tuple[Repo, Path, dict[str, str]]:
     """Build a git repository using merge-based structure.
 
-    Each prompt becomes a merge commit on main, with individual assistant
-    turns as commits on a feature branch. This creates a two-level view:
-    - `git log --first-parent` shows just the prompts
-    - `git log` shows all individual operations
+    If session_id is provided, creates a session branch for all commits (never merged).
+    Otherwise, each prompt becomes a merge commit on main with feature branches.
 
     Args:
         prompt_responses: List of PromptResponse objects from transcript.
@@ -213,11 +213,25 @@ def build_repo_grouped(
         author_name: Name for git commits.
         author_email: Email for git commits.
         enhance_config: Optional configuration for generating commit messages.
+        session_id: Optional session identifier. If provided, creates a session branch.
+        agent_name: Optional agent/format name for branch naming (e.g., 'claude-code').
 
     Returns:
         Tuple of (repo, repo_path, path_mapping).
     """
-    builder = GitRepoBuilder(output_dir=output_dir, enhance_config=enhance_config)
+    # Generate session branch name if session_id is provided
+    session_branch_name = None
+    if session_id:
+        from agentgit.enhance import generate_session_branch_name
+        session_branch_name = generate_session_branch_name(
+            prompt_responses, session_id, enhance_config, agent_name
+        )
+
+    builder = GitRepoBuilder(
+        output_dir=output_dir,
+        enhance_config=enhance_config,
+        session_branch_name=session_branch_name,
+    )
     return builder.build_from_prompt_responses(
         prompt_responses=prompt_responses,
         author_name=author_name,

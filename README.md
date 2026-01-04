@@ -4,13 +4,52 @@ See the context behind every line of code written by coding agents.
 
 After a session with Claude Code or Codex, you can diff to see *what* changed—but not *why*. Which prompt triggered that refactor? What was the agent thinking when it modified that line?
 
-agentgit transforms raw agent transcripts into a **structured transcript**—a separate git history that preserves the full story without touching your codebase. Each prompt becomes a merge commit, each response becomes commits with the agent's reasoning, and standard git tools reveal everything:
+agentgit transforms raw agent transcripts into a **structured transcript**—a separate git history that preserves the full story without touching your codebase.
+
+**Each coding session becomes its own branch.** Each user prompt becomes a merge commit, with the agent's individual turns (thinking + changes) as child commits:
 
 ```
-$ agentgit log --first-parent --oneline
-a1b2c3d Add user authentication
-x9y8z7w Fix database connection bug
-f3e4d5c Initial setup
+Your agentgit repo:
+
+  main
+   │
+   └─── session/claude-code/add-user-auth
+   │     │
+   │     ├─ [MERGE] Prompt: "Add user authentication"
+   │     │   ├─ Create auth.py with JWT utilities
+   │     │   │  Context: I'll implement JWT token generation...
+   │     │   ├─ Add authentication middleware
+   │     │   │  Context: Creating middleware to verify tokens...
+   │     │   └─ Update login component with auth flow
+   │     │      Context: Integrating the auth into the UI...
+   │     │
+   │     └─ [MERGE] Prompt: "Add password reset"
+   │         ├─ Create reset token generator
+   │         └─ Add reset email template
+   │
+   └─── session/claude-code/fix-database-bugs
+   │     │
+   │     └─ [MERGE] Prompt: "Fix connection timeout"
+   │         ├─ Debug connection pool settings
+   │         │  Context: Found the pool size was too small...
+   │         └─ Add retry logic with exponential backoff
+   │            Context: Implementing retries to handle transient failures...
+   │
+   └─── session/codex/refactor-api
+         │
+         └─ [MERGE] Prompt: "Refactor payment endpoints"
+             ├─ Extract payment handlers to separate module
+             ├─ Consolidate error handling
+             └─ Add request validation middleware
+```
+
+Each commit preserves the agent's reasoning and the full context:
+
+```
+$ agentgit log session/claude-code/add-user-auth --oneline
+a1b2c3d Update login component
+x9y8z7w Add middleware for protected routes
+f3e4d5c Implement JWT authentication
 
 $ agentgit show a1b2c3d
 commit a1b2c3d
@@ -22,7 +61,34 @@ Prompt: "Add user authentication"
     middleware to protect the API routes...
 ```
 
-Now `git blame` tells you not just what changed, but why.
+**Use `agentgit blame` to see the agent's reasoning inline:**
+
+```bash
+$ agentgit blame auth.py
+f3e4d5c (Agent        2024-01-15) def generate_jwt_token(user_id):
+         → I'll implement JWT token generation using HS256 algorithm
+f3e4d5c (Agent        2024-01-15)     payload = {"user_id": user_id, "exp": ...}
+         → I'll implement JWT token generation using HS256 algorithm
+f3e4d5c (Agent        2024-01-15)     return jwt.encode(payload, SECRET_KEY)
+         → I'll implement JWT token generation using HS256 algorithm
+x9y8z7w (Agent        2024-01-15) def verify_token(token):
+         → Creating middleware to verify tokens before allowing access
+
+# Show the full commit message with the original prompt
+$ agentgit show f3e4d5c
+commit f3e4d5c
+Prompt: "Add user authentication"
+
+    Create auth.py with JWT utilities
+
+    Context: I'll implement JWT token generation using HS256 algorithm.
+    The SECRET_KEY comes from environment variables for security...
+
+# Use -L to blame specific line ranges
+$ agentgit blame auth.py -L 10,20
+```
+
+Now `agentgit blame` shows not just *what* changed, but *why* the agent made that change and *what you asked for*—all inline, no extra commands needed. View all sessions with `agentgit branch`, compare approaches with `git diff session/A session/B`, or explore individual session histories.
 
 ## Installation
 

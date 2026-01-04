@@ -222,6 +222,26 @@ class AgentGitSpec:
             Curated context string to include in commit body, or None to use default.
         """
 
+    @hookspec(firstresult=True)
+    def agentgit_generate_session_name(
+        self,
+        prompt_responses: list[PromptResponse],
+        enhancer: str,
+        model: str | None,
+    ) -> str | None:
+        """Generate a descriptive name for a coding session.
+
+        Used to create meaningful git branch names for sessions.
+
+        Args:
+            prompt_responses: All prompts and responses in the session.
+            enhancer: The enhancer type to use.
+            model: Optional model override.
+
+        Returns:
+            A descriptive session name (will be sanitized for git), or None.
+        """
+
 
 def get_plugin_manager() -> pluggy.PluginManager:
     """Create and configure the plugin manager."""
