@@ -320,20 +320,23 @@ def normalize_file_paths(operations: list[FileOperation]) -> tuple[str, dict[str
     # Deduplicate paths while preserving order
     unique_paths = list(dict.fromkeys(paths))
 
+    # Normalize all paths to absolute to handle mix of absolute/relative
+    abs_paths = [str(Path(p).resolve()) for p in unique_paths]
+
     if len(unique_paths) == 1:
         # Single unique file - use its parent as prefix
-        common_prefix = str(Path(unique_paths[0]).parent)
+        common_prefix = str(Path(abs_paths[0]).parent)
     else:
-        common_prefix = os.path.commonpath(unique_paths)
+        common_prefix = os.path.commonpath(abs_paths)
         # If common_prefix is a file path (not a directory), use its parent
         # This happens when one path is a prefix of another
-        if not os.path.isdir(common_prefix) and common_prefix in unique_paths:
+        if not os.path.isdir(common_prefix) and common_prefix in abs_paths:
             common_prefix = str(Path(common_prefix).parent)
 
     path_mapping = {}
-    for path in unique_paths:
-        rel_path = os.path.relpath(path, common_prefix)
-        path_mapping[path] = rel_path
+    for orig_path, abs_path in zip(unique_paths, abs_paths):
+        rel_path = os.path.relpath(abs_path, common_prefix)
+        path_mapping[orig_path] = rel_path
 
     return common_prefix, path_mapping
 

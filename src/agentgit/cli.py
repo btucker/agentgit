@@ -917,33 +917,68 @@ def discover(
     is_flag=True,
     help="Disable showing agent context inline.",
 )
-def blame(file_path: str, lines: str | None, no_context: bool) -> None:
+@click.option(
+    "--session",
+    "-s",
+    type=str,
+    help="Specific session branch to blame (e.g., session/claude-code/add-auth).",
+)
+def blame(file_path: str, lines: str | None, no_context: bool, session: str | None) -> None:
     """Show git blame with agent context for each line.
 
-    Displays which commit and prompt modified each line, along with
-    the agent's reasoning/context from that turn.
+    By default, blames your code repo and maps commits to session branches.
+    Falls back to agentgit repo if not in a code repo.
 
     Examples:
 
         agentgit blame auth.py
-
         agentgit blame src/utils.py -L 10,20
+        agentgit blame auth.py --session session/claude-code/add-auth
     """
     import re
-    from git import Repo
+    from git import Repo, GitCommandError
+    from pathlib import Path
+    from agentgit import find_git_root
 
-    repo_path = get_agentgit_repo_path()
-    if not repo_path or not repo_path.exists():
+    agentgit_repo_path = get_agentgit_repo_path()
+    if not agentgit_repo_path or not agentgit_repo_path.exists():
         raise click.ClickException(
             "No agentgit repository found. Run 'agentgit' first to create one."
         )
 
-    # Translate file path to agentgit repo path
-    translated = translate_paths_for_agentgit_repo([file_path], repo_path)
-    target_file = translated[0]
+    # Check if we're in a code repo
+    code_repo = None
+    try:
+        code_repo_path = find_git_root(Path.cwd())
+        if code_repo_path and code_repo_path != agentgit_repo_path:
+            code_repo = Repo(code_repo_path)
+            click.echo(f"Using code repo: {code_repo_path}", err=True)
+    except Exception:
+        pass
 
-    # Open repo and get blame
-    repo = Repo(repo_path)
+    # Decide which repo to blame
+    if session:
+        # Explicit session specified - use agentgit repo
+        repo = Repo(agentgit_repo_path)
+        translated = translate_paths_for_agentgit_repo([file_path], agentgit_repo_path)
+        target_file = translated[0]
+        blame_ref = session
+        use_session_mapping = False
+        click.echo(f"Blaming session: {session}", err=True)
+    elif code_repo:
+        # Use code repo and map to sessions
+        repo = code_repo
+        target_file = file_path
+        blame_ref = 'HEAD'
+        use_session_mapping = True
+    else:
+        # Fall back to agentgit repo
+        repo = Repo(agentgit_repo_path)
+        translated = translate_paths_for_agentgit_repo([file_path], agentgit_repo_path)
+        target_file = translated[0]
+        blame_ref = 'HEAD'
+        use_session_mapping = False
+        click.echo("No code repo found, using agentgit repo", err=True)
 
     try:
         # Parse line range if provided
@@ -960,19 +995,42 @@ def blame(file_path: str, lines: str | None, no_context: bool) -> None:
                     end_line = int(parts[1]) - 1
 
         # Get blame data
-        blame_data = repo.blame('HEAD', target_file)
+        blame_data = repo.blame(blame_ref, target_file)
     except Exception as e:
         raise click.ClickException(f"Failed to get blame data: {e}")
 
-    # Cache for commit contexts
-    commit_contexts = {}
+    # Set up session mapping if needed
+    agentgit_repo = None
+    blob_to_session_cache = {}  # Cache blob SHA → session mapping
+
+    if use_session_mapping:
+        agentgit_repo = Repo(agentgit_repo_path)
+        # Build index of blob SHAs to sessions
+        click.echo("Indexing sessions...", err=True)
+        blob_to_session_cache = _build_blob_to_session_index(agentgit_repo, agentgit_repo_path)
+
+    def find_session_for_commit(commit, file_path_in_commit) -> tuple[str | None, str | None]:
+        """Find which session branch wrote this blob.
+
+        Returns: (session_name, context)
+        """
+        if not use_session_mapping:
+            return None, None
+
+        try:
+            # Get the blob SHA for this file in this commit
+            blob_sha = commit.tree[file_path_in_commit].hexsha
+
+            # Look up in cache
+            if blob_sha in blob_to_session_cache:
+                return blob_to_session_cache[blob_sha]
+        except (KeyError, AttributeError):
+            pass
+
+        return None, None
 
     def get_commit_context(commit) -> str | None:
         """Extract context from commit message."""
-        sha = commit.hexsha
-        if sha in commit_contexts:
-            return commit_contexts[sha]
-
         try:
             message = commit.message
 
@@ -988,12 +1046,10 @@ def blame(file_path: str, lines: str | None, no_context: bool) -> None:
                 first_sentence = re.split(r'[.!?]\s', context)[0]
                 if len(first_sentence) > 80:
                     first_sentence = first_sentence[:77] + "..."
-                commit_contexts[sha] = first_sentence
                 return first_sentence
         except Exception:
             pass
 
-        commit_contexts[sha] = None
         return None
 
     # Process and display blame output
@@ -1013,16 +1069,139 @@ def blame(file_path: str, lines: str | None, no_context: bool) -> None:
             # Remove trailing newline from content
             content = line_content.rstrip('\n')
 
-            blame_line = f"{short_sha} ({author:12} {date:10}) {content}"
+            # Find session if in mapping mode
+            session_name, session_context = find_session_for_commit(commit, target_file)
+
+            if session_name:
+                # Format session name compactly: session/claude_code/foo -> cc/foo
+                blame_line = _format_blame_line_with_session(
+                    short_sha, session_name, session_context, content, no_context
+                )
+            else:
+                # Standard blame format
+                blame_line = f"{short_sha} ({author:12} {date:10}) {content}"
+
             click.echo(blame_line)
 
-            # Add context if available and not disabled
-            if not no_context:
-                context = get_commit_context(commit)
-                if context:
-                    click.echo(f"         → {context}")
-
             line_num += 1
+
+
+def _format_blame_line_with_session(
+    sha: str,
+    session_name: str,
+    context: str | None,
+    code: str,
+    no_context: bool,
+) -> str:
+    """Format a blame line with session information.
+
+    Format: {sha} {agent}/{branch}...: {context...}   {code}
+
+    Terminal-width aware - wider terminals show more detail.
+    """
+    import shutil
+
+    # Get terminal width, default to 80 if not available
+    term_width = shutil.get_terminal_size((80, 24)).columns
+
+    # Abbreviate session name: session/claude_code/foo -> cc/foo
+    parts = session_name.split('/')
+    if len(parts) >= 3 and parts[0] == 'session':
+        agent = parts[1]
+        # Abbreviate agent name to 2-3 chars
+        if agent == 'claude_code':
+            agent_abbrev = 'cc'
+        elif agent == 'codex':
+            agent_abbrev = 'cx'
+        else:
+            # Use first 2 chars for unknown agents
+            agent_abbrev = agent[:2]
+
+        branch = '/'.join(parts[2:])
+        session_short = f"{agent_abbrev}/{branch}"
+    else:
+        session_short = session_name
+
+    # Calculate available space for session+context
+    # Format: "{sha} {session}: {context}   {code}"
+    # Fixed parts: sha(7) + space(1) + ": " (2) + "   " (3) = 13
+    fixed_space = 7 + 1 + 2 + 3
+    code_space = len(code)
+    available = term_width - fixed_space - code_space
+
+    # If we have context and it's not disabled, include it
+    if context and not no_context:
+        # Reserve space for session (min 10 chars for "cc/branch")
+        min_session = 10
+        session_max = min(len(session_short), max(min_session, available // 3))
+        context_max = available - session_max - 2  # -2 for ": "
+
+        if context_max > 10:  # Only show context if we have reasonable space
+            session_display = session_short[:session_max]
+            if len(session_short) > session_max:
+                session_display = session_display[:-2] + '..'
+
+            context_display = context[:context_max]
+            if len(context) > context_max:
+                context_display = context_display[:-3] + '...'
+
+            return f"{sha} {session_display}: {context_display}   {code}"
+
+    # No context or not enough space - just show session
+    session_max = max(10, available)
+    session_display = session_short[:session_max]
+    if len(session_short) > session_max:
+        session_display = session_display[:-2] + '..'
+
+    return f"{sha} {session_display}:   {code}"
+
+
+def _build_blob_to_session_index(agentgit_repo: "Repo", agentgit_repo_path) -> dict[str, tuple[str, str]]:
+    """Build an index mapping blob SHAs to sessions.
+
+    Returns: {blob_sha: (session_name, context)}
+    """
+    import re
+    from pathlib import Path
+
+    blob_index = {}
+
+    # Get path mapping to know how to look up files
+    from agentgit.git_builder import normalize_file_paths
+
+    # Find all session branches
+    for branch in agentgit_repo.heads:
+        if not branch.name.startswith('session/'):
+            continue
+
+        # Iterate through commits in this session
+        for commit in agentgit_repo.iter_commits(branch.name):
+            # Extract context from commit message
+            context_match = re.search(
+                r'Context:\s*\n(.+?)(?:\n\n|\nPrompt-Id:|\nOperation:|\nTimestamp:|\Z)',
+                commit.message,
+                re.DOTALL
+            )
+            context = None
+            if context_match:
+                context = context_match.group(1).strip()
+                first_sentence = re.split(r'[.!?]\s', context)[0]
+                if len(first_sentence) > 80:
+                    first_sentence = first_sentence[:77] + "..."
+                context = first_sentence
+
+            # Index all blobs in this commit's tree
+            try:
+                for item in commit.tree.traverse():
+                    if item.type == 'blob':
+                        blob_sha = item.hexsha
+                        # Store first session that wrote this blob (could be overwritten)
+                        if blob_sha not in blob_index:
+                            blob_index[blob_sha] = (branch.name, context)
+            except Exception:
+                continue
+
+    return blob_index
 
 
 @main.command()
