@@ -61,34 +61,34 @@ Prompt: "Add user authentication"
     middleware to protect the API routes...
 ```
 
-**Use `agentgit blame` to see the agent's reasoning inline:**
+**Use `agentgit blame` to see which session and why:**
+
+`agentgit blame` automatically detects if you're in your code repo and maps each line to its session:
 
 ```bash
+$ cd ~/myproject  # Your actual code repo
 $ agentgit blame auth.py
-f3e4d5c (Agent        2024-01-15) def generate_jwt_token(user_id):
-         → I'll implement JWT token generation using HS256 algorithm
-f3e4d5c (Agent        2024-01-15)     payload = {"user_id": user_id, "exp": ...}
-         → I'll implement JWT token generation using HS256 algorithm
-f3e4d5c (Agent        2024-01-15)     return jwt.encode(payload, SECRET_KEY)
-         → I'll implement JWT token generation using HS256 algorithm
-x9y8z7w (Agent        2024-01-15) def verify_token(token):
-         → Creating middleware to verify tokens before allowing access
+Using code repo: /Users/you/myproject
 
-# Show the full commit message with the original prompt
-$ agentgit show f3e4d5c
-commit f3e4d5c
-Prompt: "Add user authentication"
+a1b2c3d session/claude-code/add-user-auth            def generate_jwt_token(user_id):
+         → I'll implement JWT token generation using HS256 algorithm
+a1b2c3d session/claude-code/add-user-auth                payload = {"user_id": user_id, ...}
+         → I'll implement JWT token generation using HS256 algorithm
+x9y8z7w session/claude-code/fix-auth-bugs                # Fixed expiration bug
+         → The expiration was set to seconds instead of timestamp
+a1b2c3d session/claude-code/add-user-auth                return jwt.encode(payload, SECRET_KEY)
+         → Using SECRET_KEY from environment variables
 
-    Create auth.py with JWT utilities
-
-    Context: I'll implement JWT token generation using HS256 algorithm.
-    The SECRET_KEY comes from environment variables for security...
+# Blame a specific session branch
+$ agentgit blame auth.py --session session/claude-code/add-user-auth
 
 # Use -L to blame specific line ranges
 $ agentgit blame auth.py -L 10,20
 ```
 
-Now `agentgit blame` shows not just *what* changed, but *why* the agent made that change and *what you asked for*—all inline, no extra commands needed. View all sessions with `agentgit branch`, compare approaches with `git diff session/A session/B`, or explore individual session histories.
+**How it works:** agentgit blames your actual code repo, then maps each line to its session branch using blob SHA matching. Since both repos share git's object store via alternates, identical file content produces identical blob SHAs. agentgit builds an index of all blob SHAs in session branches, then looks up each blamed line's blob SHA to find the matching session and agent context—all inline, no extra commands needed.
+
+View all sessions with `agentgit branch`, compare approaches with `git diff session/A session/B`, or explore individual session histories.
 
 ## Installation
 
@@ -170,7 +170,19 @@ It creates a **separate repository** that shares content with your code repo:
 └── refs/heads/session/...
 ```
 
-The repos share git's object store. Same content = same blob SHA = automatic correlation between your code and its history.
+The repos share git's object store via git alternates. **Same content = same blob SHA = automatic correlation between your code and its history.**
+
+### Blob SHA Linking
+
+When you run `agentgit blame` on a file in your code repo, agentgit:
+
+1. Runs `git blame` on your code repo to identify which commit introduced each line
+2. Extracts the blob SHA for each line from the commit's tree
+3. Looks up each blob SHA in an index built from all session branches
+4. Matches blobs to find which session (and commit within that session) contains the same content
+5. Displays the session name and agent's reasoning inline with each line
+
+Since git uses content-addressable storage, the same file content always produces the same blob SHA—whether it's in your code repo or the agentgit repo. No metadata or trailers needed; the shared object store makes the correlation automatic and reliable.
 
 **Source transcripts** are read from standard locations:
 - Claude Code: `~/.claude/projects/`
