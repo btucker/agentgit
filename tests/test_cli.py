@@ -134,6 +134,10 @@ class TestCLI:
         repo_path = tmp_path / "myproject"
         repo_path.mkdir()
         repo = Repo.init(repo_path)
+        with repo.config_writer() as config:
+            config.set_value("user", "name", "Test")
+            config.set_value("user", "email", "test@test.com")
+            config.set_value("commit", "gpgsign", "false")
 
         # Create a file and commit it (required for hash-based naming)
         (repo_path / "README.md").write_text("# Test")
@@ -454,6 +458,10 @@ class TestBlameHelpers:
         repo_path = tmp_path / "agentgit_repo"
         repo_path.mkdir()
         repo = Repo.init(repo_path)
+        with repo.config_writer() as config:
+            config.set_value("user", "name", "Test")
+            config.set_value("user", "email", "test@test.com")
+            config.set_value("commit", "gpgsign", "false")
 
         # Create initial commit on main
         (repo_path / "README.md").write_text("# Test\n")
@@ -512,7 +520,11 @@ class TestBlameHelpers:
 
         repo_path = tmp_path / "agentgit_repo"
         repo_path.mkdir()
-        repo = Repo.init(repo_path)
+        repo = Repo.init(repo_path, initial_branch="main")
+        with repo.config_writer() as config:
+            config.set_value("user", "name", "Test")
+            config.set_value("user", "email", "test@test.com")
+            config.set_value("commit", "gpgsign", "false")
 
         # Initial commit
         (repo_path / "README.md").write_text("# Test\n")
@@ -575,6 +587,10 @@ class TestBlameHelpers:
         repo_path = tmp_path / "agentgit_repo"
         repo_path.mkdir()
         repo = Repo.init(repo_path)
+        with repo.config_writer() as config:
+            config.set_value("user", "name", "Test")
+            config.set_value("user", "email", "test@test.com")
+            config.set_value("commit", "gpgsign", "false")
 
         (repo_path / "README.md").write_text("# Test\n")
         repo.index.add(["README.md"])
