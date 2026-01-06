@@ -401,9 +401,9 @@ def main() -> None:
     help="Model for LLM enhancer (e.g., 'haiku', 'sonnet'). Saved per-project.",
 )
 @click.option(
-    "--force",
+    "--reprocess",
     is_flag=True,
-    help="Force rebuild from scratch, discarding incremental state.",
+    help="Rebuild from scratch, discarding existing branches and state.",
 )
 def process(
     transcript: Path | None,
@@ -415,7 +415,7 @@ def process(
     watch: bool,
     enhancer: str | None,
     enhance_model: str | None,
-    force: bool,
+    reprocess: bool,
 ) -> None:
     """Process a transcript into a git repository.
 
@@ -428,7 +428,7 @@ def process(
     Use --enhancer to generate better commit messages. The preference is saved
     per-project and used automatically on future runs.
 
-    Use --force to rebuild the repository from scratch, discarding all
+    Use --reprocess to rebuild the repository from scratch, discarding all
     existing branches and state. Useful after updating agentgit to apply
     new features like updated branch naming.
     """
@@ -459,7 +459,7 @@ def process(
             source_repo,
             enhancer=enhancer,
             enhance_model=enhance_model,
-            force=force,
+            reprocess=reprocess,
         )
 
 
@@ -539,12 +539,12 @@ def _run_process(
     source_repo: Path | None,
     enhancer: str | None = None,
     enhance_model: str | None = None,
-    force: bool = False,
+    reprocess: bool = False,
 ) -> None:
     """Run processing of one or more transcripts.
 
     Args:
-        force: If True, rebuild from scratch instead of incremental.
+        reprocess: If True, rebuild from scratch instead of incremental.
     """
     from agentgit import build_repo_grouped, parse_transcript
     from agentgit.config import ProjectConfig, save_config
@@ -553,10 +553,10 @@ def _run_process(
     if output is None:
         output = get_default_output_dir(transcripts[0])
 
-    # Handle force rebuild
-    if force and output.exists() and (output / ".git").exists():
+    # Handle reprocess - rebuild from scratch
+    if reprocess and output.exists() and (output / ".git").exists():
         import shutil
-        click.echo(f"Force rebuild: removing existing repo at {output}")
+        click.echo(f"Reprocessing: removing existing repo at {output}")
         shutil.rmtree(output)
 
     # Resolve enhancement configuration
@@ -597,7 +597,7 @@ def _run_process(
             enhance_config=enhance_config,
             session_id=parsed.session_id or transcript_path.stem,
             agent_name=agent_name,
-            incremental=not force,
+            incremental=not reprocess,
         )
 
         total_prompts += len(parsed.prompts)
