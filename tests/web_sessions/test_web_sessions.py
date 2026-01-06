@@ -1,4 +1,4 @@
-"""Tests for agentgit.web_sessions module."""
+"""Tests for web session functionality (formats.claude_code_web module)."""
 
 import json
 from pathlib import Path

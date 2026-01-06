@@ -1046,3 +1046,127 @@ class TestBuildFromPromptResponses:
         if latest_commit.parents:
             diffs = latest_commit.diff(latest_commit.parents[0])
             assert len(diffs) == 0
+
+
+class TestEnsureInitialStateForEdit:
+    """Tests for _ensure_initial_state_for_edit helper function."""
+
+    def test_ensure_initial_state_file_exists(self, tmp_path):
+        """Should return content from existing file."""
+        from git import Repo
+
+        from agentgit.core import FileOperation, OperationType
+        from agentgit.git_builder import GitRepoBuilder
+
+        # Create repo
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        repo = Repo.init(repo_path)
+
+        # Create a file
+        test_file = repo_path / "test.py"
+        test_file.write_text("existing content")
+
+        # Create builder
+        operation = FileOperation(
+            file_path="/test.py",
+            operation_type=OperationType.EDIT,
+            timestamp="2025-01-01T10:00:00.000Z",
+            old_string="existing",
+            new_string="modified",
+        )
+
+        builder = GitRepoBuilder(output_dir=repo_path)
+        builder.path_mapping = {"/test.py": "test.py"}
+
+        content = builder._ensure_initial_state_for_edit(operation)
+        assert content == "existing content"
+
+    def test_ensure_initial_state_from_file_states(self, tmp_path):
+        """Should return content from file states when file doesn't exist."""
+        from git import Repo
+
+        from agentgit.core import FileOperation, OperationType
+        from agentgit.git_builder import GitRepoBuilder
+
+        # Create repo
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        Repo.init(repo_path)
+
+        operation = FileOperation(
+            file_path="/test.py",
+            operation_type=OperationType.EDIT,
+            timestamp="2025-01-01T10:00:00.000Z",
+            old_string="state",
+            new_string="modified",
+        )
+
+        builder = GitRepoBuilder(output_dir=repo_path)
+        builder.path_mapping = {"/test.py": "test.py"}
+        builder.file_states["/test.py"] = "state content"
+
+        content = builder._ensure_initial_state_for_edit(operation)
+        assert content == "state content"
+
+    def test_ensure_initial_state_from_original_content(self, tmp_path):
+        """Should create initial commit with original content."""
+        from git import Repo
+
+        from agentgit.core import FileOperation, OperationType
+        from agentgit.git_builder import GitRepoBuilder
+
+        # Create repo
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        repo = Repo.init(repo_path)
+
+        operation = FileOperation(
+            file_path="/test.py",
+            operation_type=OperationType.EDIT,
+            timestamp="2025-01-01T10:00:00.000Z",
+            old_string="original",
+            new_string="modified",
+            original_content="original content",
+        )
+
+        builder = GitRepoBuilder(output_dir=repo_path)
+        builder.repo = repo  # Set the repo attribute
+        builder.path_mapping = {"/test.py": "test.py"}
+
+        content = builder._ensure_initial_state_for_edit(operation)
+
+        assert content == "original content"
+        # Verify file was created
+        assert (repo_path / "test.py").exists()
+        assert (repo_path / "test.py").read_text() == "original content"
+        # Verify commit was created
+        commits = list(repo.iter_commits())
+        assert len(commits) == 1
+        assert "Initial state" in commits[0].message
+
+    def test_ensure_initial_state_returns_none_when_no_content(self, tmp_path):
+        """Should return None when no content available."""
+        from git import Repo
+
+        from agentgit.core import FileOperation, OperationType
+        from agentgit.git_builder import GitRepoBuilder
+
+        # Create repo
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        Repo.init(repo_path)
+
+        operation = FileOperation(
+            file_path="/test.py",
+            operation_type=OperationType.EDIT,
+            timestamp="2025-01-01T10:00:00.000Z",
+            old_string="something",
+            new_string="else",
+        )
+
+        builder = GitRepoBuilder(output_dir=repo_path)
+        builder.path_mapping = {"/test.py": "test.py"}
+
+        content = builder._ensure_initial_state_for_edit(operation)
+        assert content is None

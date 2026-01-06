@@ -130,10 +130,15 @@ class TestCLI:
         """Should list discovered sessions in table format."""
         from git import Repo
 
-        # Create a git repo
+        # Create a git repo with at least one commit
         repo_path = tmp_path / "myproject"
         repo_path.mkdir()
-        Repo.init(repo_path)
+        repo = Repo.init(repo_path)
+
+        # Create a file and commit it (required for hash-based naming)
+        (repo_path / "README.md").write_text("# Test")
+        repo.index.add(["README.md"])
+        repo.index.commit("Initial commit")
 
         # Create .claude/projects with matching directory
         encoded_path = str(repo_path.resolve()).replace("/", "-")
@@ -649,3 +654,315 @@ class TestBlameHelpers:
         result = _lookup_line_with_grep(repo, "src/test.py", line_hash)
 
         assert result is None
+
+
+class TestPathHelpers:
+    """Tests for path helper functions created during refactoring."""
+
+    def test_find_best_match_by_suffix(self, tmp_path):
+        """Should find best match by comparing path suffixes."""
+        from agentgit.cli import _find_best_match_by_suffix
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+
+        # Create files with similar names
+        (repo_path / "src").mkdir()
+        (repo_path / "src" / "utils.py").touch()
+        (repo_path / "tests").mkdir()
+        (repo_path / "tests" / "utils.py").touch()
+
+        matches = [
+            repo_path / "src" / "utils.py",
+            repo_path / "tests" / "utils.py",
+        ]
+
+        # Should match src/utils.py better
+        result = _find_best_match_by_suffix(
+            ("src", "utils.py"), matches, repo_path
+        )
+        assert result == repo_path / "src" / "utils.py"
+
+        # Should match tests/utils.py better
+        result = _find_best_match_by_suffix(
+            ("tests", "utils.py"), matches, repo_path
+        )
+        assert result == repo_path / "tests" / "utils.py"
+
+    def test_find_best_match_by_suffix_no_match(self, tmp_path):
+        """Should return None if no matches."""
+        from agentgit.cli import _find_best_match_by_suffix
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+
+        result = _find_best_match_by_suffix(
+            ("src", "utils.py"), [], repo_path
+        )
+        assert result is None
+
+    def test_translate_single_path_option(self, tmp_path):
+        """Should pass through options unchanged."""
+        from agentgit.cli import _translate_single_path
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+
+        result = _translate_single_path("--oneline", repo_path, None)
+        assert result == "--oneline"
+
+    def test_translate_single_path_no_match(self, tmp_path):
+        """Should return original if no match found."""
+        from agentgit.cli import _translate_single_path
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+
+        result = _translate_single_path("nonexistent.py", repo_path, None)
+        assert result == "nonexistent.py"
+
+    def test_translate_single_path_single_match(self, tmp_path):
+        """Should translate when single match found."""
+        from agentgit.cli import _translate_single_path
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        (repo_path / "cli.py").write_text("# code")
+
+        # Create local file
+        local_dir = tmp_path / "project" / "src"
+        local_dir.mkdir(parents=True)
+        local_file = local_dir / "cli.py"
+        local_file.write_text("# code")
+
+        result = _translate_single_path(str(local_file), repo_path, None)
+        assert result == "cli.py"
+
+
+class TestEnhanceConfigHelper:
+    """Tests for enhancement config resolution helper."""
+
+    def test_resolve_enhance_config_no_args(self, tmp_path):
+        """Should return None when no enhancer configured."""
+        from agentgit.cli import _resolve_enhance_config
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        enhancer, model, config = _resolve_enhance_config(output_dir)
+
+        assert enhancer is None
+        assert model == "haiku"  # Default model
+        assert config is None
+
+    def test_resolve_enhance_config_with_enhancer(self, tmp_path):
+        """Should create config when enhancer provided."""
+        from agentgit.cli import _resolve_enhance_config
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        enhancer, model, config = _resolve_enhance_config(
+            output_dir, enhancer="rules"
+        )
+
+        assert enhancer == "rules"
+        assert model == "haiku"
+        assert config is not None
+        assert config.enhancer == "rules"
+        assert config.model == "haiku"
+        assert config.enabled is True
+
+    def test_resolve_enhance_config_auto_set_llm(self, tmp_path):
+        """Should auto-set enhancer to llm when model provided."""
+        from agentgit.cli import _resolve_enhance_config
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        enhancer, model, config = _resolve_enhance_config(
+            output_dir, enhance_model="sonnet"
+        )
+
+        assert enhancer == "llm"
+        assert model == "sonnet"
+        assert config is not None
+        assert config.enhancer == "llm"
+        assert config.model == "sonnet"
+
+    def test_resolve_enhance_config_from_saved(self, tmp_path):
+        """Should use saved config when available."""
+        from git import Repo
+
+        from agentgit.cli import _resolve_enhance_config
+        from agentgit.config import ProjectConfig, save_config
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        # Initialize git repo (required for config storage)
+        Repo.init(output_dir)
+
+        # Save a config
+        saved = ProjectConfig(enhancer="rules", enhance_model="opus")
+        save_config(output_dir, saved)
+
+        # Should use saved config
+        enhancer, model, config = _resolve_enhance_config(output_dir)
+
+        assert enhancer == "rules"
+        assert model == "opus"
+        assert config is not None
+        assert config.enhancer == "rules"
+        assert config.model == "opus"
+
+    def test_resolve_enhance_config_cli_overrides_saved(self, tmp_path):
+        """Should prefer CLI args over saved config."""
+        from git import Repo
+
+        from agentgit.cli import _resolve_enhance_config
+        from agentgit.config import ProjectConfig, save_config
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        # Initialize git repo (required for config storage)
+        Repo.init(output_dir)
+
+        # Save a config
+        saved = ProjectConfig(enhancer="rules", enhance_model="opus")
+        save_config(output_dir, saved)
+
+        # CLI args should override
+        enhancer, model, config = _resolve_enhance_config(
+            output_dir, enhancer="llm", enhance_model="haiku"
+        )
+
+        assert enhancer == "llm"
+        assert model == "haiku"
+        assert config.enhancer == "llm"
+        assert config.model == "haiku"
+
+
+class TestUtilityFunctions:
+    """Tests for CLI utility functions."""
+
+    def test_encode_path_as_name(self):
+        """Should encode path by replacing slashes with dashes."""
+        from pathlib import Path
+
+        from agentgit.cli import encode_path_as_name
+
+        path = Path("/Users/name/project")
+        result = encode_path_as_name(path)
+        assert result.startswith("-Users-name-project")
+
+    def test_get_repo_id_valid_repo(self, tmp_path):
+        """Should return first 12 chars of root commit SHA."""
+        from git import Repo
+
+        from agentgit.cli import get_repo_id
+
+        # Create repo with commit
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        repo = Repo.init(repo_path)
+
+        (repo_path / "README.md").write_text("# Test")
+        repo.index.add(["README.md"])
+        commit = repo.index.commit("Initial commit")
+
+        repo_id = get_repo_id(repo_path)
+        assert repo_id == commit.hexsha[:12]
+
+    def test_get_repo_id_no_commits(self, tmp_path):
+        """Should return None for repo with no commits."""
+        from git import Repo
+
+        from agentgit.cli import get_repo_id
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        Repo.init(repo_path)
+
+        repo_id = get_repo_id(repo_path)
+        assert repo_id is None
+
+    def test_get_repo_id_not_a_repo(self, tmp_path):
+        """Should return None for non-git directory."""
+        from agentgit.cli import get_repo_id
+
+        repo_id = get_repo_id(tmp_path)
+        assert repo_id is None
+
+    def test_get_default_output_dir_with_hash(self, tmp_path, monkeypatch):
+        """Should use hash-based naming for output directory."""
+        from git import Repo
+
+        from agentgit.cli import get_default_output_dir
+
+        # Create a git repo
+        repo_path = tmp_path / "myproject"
+        repo_path.mkdir()
+        repo = Repo.init(repo_path)
+
+        (repo_path / "README.md").write_text("# Test")
+        repo.index.add(["README.md"])
+        commit = repo.index.commit("Initial commit")
+        expected_id = commit.hexsha[:12]
+
+        # Create matching .claude/projects directory
+        encoded = str(repo_path.resolve()).replace("/", "-")
+        claude_dir = tmp_path / ".claude" / "projects" / encoded
+        claude_dir.mkdir(parents=True)
+        transcript = claude_dir / "session.jsonl"
+        transcript.write_text('{"type": "user"}\n')
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.chdir(repo_path)
+
+        output = get_default_output_dir(transcript)
+        assert expected_id in str(output)
+        assert ".agentgit/projects" in str(output)
+
+    def test_get_agentgit_repo_path_no_transcripts(self, tmp_path, monkeypatch):
+        """Should return None when no transcripts found."""
+        from git import Repo
+
+        from agentgit.cli import get_agentgit_repo_path
+
+        repo_path = tmp_path / "project"
+        repo_path.mkdir()
+        Repo.init(repo_path)
+
+        monkeypatch.chdir(repo_path)
+
+        result = get_agentgit_repo_path()
+        assert result is None
+
+    def test_get_agentgit_repo_path_with_transcript(self, tmp_path, monkeypatch):
+        """Should return agentgit repo path when transcript exists."""
+        from git import Repo
+
+        from agentgit.cli import get_agentgit_repo_path
+
+        # Create project repo with commit
+        repo_path = tmp_path / "project"
+        repo_path.mkdir()
+        repo = Repo.init(repo_path)
+        (repo_path / "README.md").write_text("# Test")
+        repo.index.add(["README.md"])
+        commit = repo.index.commit("Initial commit")
+
+        # Create matching transcript
+        encoded = str(repo_path.resolve()).replace("/", "-")
+        claude_dir = tmp_path / ".claude" / "projects" / encoded
+        claude_dir.mkdir(parents=True)
+        (claude_dir / "session.jsonl").write_text('{"type": "user"}\n')
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.chdir(repo_path)
+
+        result = get_agentgit_repo_path()
+        assert result is not None
+        assert commit.hexsha[:12] in str(result)

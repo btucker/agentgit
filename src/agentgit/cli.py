@@ -8,19 +8,6 @@ from typing import Any
 import click
 
 
-def get_available_types() -> list[str]:
-    """Get list of available plugin types."""
-    from agentgit.plugins import get_configured_plugin_manager
-
-    pm = get_configured_plugin_manager()
-
-    types = []
-    for info in pm.hook.agentgit_get_plugin_info():
-        if info and "name" in info:
-            types.append(info["name"])
-    return types
-
-
 def encode_path_as_name(path: Path) -> str:
     """Encode a path for use as a project name in directory names.
 
@@ -159,6 +146,83 @@ def get_agentgit_repo_path() -> Path | None:
     return get_default_output_dir(transcripts[0])
 
 
+def _find_best_match_by_suffix(
+    path_parts: tuple[str, ...], matches: list[Path], repo_path: Path
+) -> Path | None:
+    """Find the best matching file by comparing path suffixes.
+
+    Args:
+        path_parts: Parts of the path to match (from Path.parts).
+        matches: List of candidate paths in the repo.
+        repo_path: Root path of the repo (for computing relative paths).
+
+    Returns:
+        Best matching path, or None if no good match found.
+    """
+    best_match = None
+    best_score = 0
+
+    for match in matches:
+        match_parts = match.relative_to(repo_path).parts
+        # Count matching path components from the end
+        score = 0
+        for path_part, match_part in zip(reversed(path_parts), reversed(match_parts)):
+            if path_part == match_part:
+                score += 1
+            else:
+                break
+        if score > best_score:
+            best_score = score
+            best_match = match
+
+    return best_match
+
+
+def _translate_single_path(arg: str, repo_path: Path, git_root: Path | None) -> str:
+    """Translate a single path argument to its equivalent in the agentgit repo.
+
+    Args:
+        arg: The argument to translate (could be a path or other argument).
+        repo_path: Path to the agentgit repository.
+        git_root: Path to the git root of the current project (or None).
+
+    Returns:
+        Translated path, or original argument if not translatable.
+    """
+    # Skip options
+    if arg.startswith("-"):
+        return arg
+
+    # Try to resolve the path
+    local_path = Path(arg)
+
+    # If path doesn't exist in cwd, try relative to git root
+    if not local_path.exists() and git_root:
+        potential_path = git_root / arg
+        if potential_path.exists():
+            local_path = potential_path
+
+    # Search for the filename in agentgit repo
+    filename = Path(arg).name
+    matches = list(repo_path.rglob(filename))
+
+    if not matches:
+        # No matches found - keep original
+        return arg
+    elif len(matches) == 1:
+        # Single match - use it
+        return str(matches[0].relative_to(repo_path))
+    else:
+        # Multiple matches - find best match by path suffix
+        # Use local_path if it exists, otherwise use arg
+        path_parts = local_path.parts if local_path.exists() else Path(arg).parts
+        best_match = _find_best_match_by_suffix(path_parts, matches, repo_path)
+        if best_match:
+            return str(best_match.relative_to(repo_path))
+        else:
+            return arg
+
+
 def translate_paths_for_agentgit_repo(args: list[str], repo_path: Path) -> list[str]:
     """Translate local file paths to their equivalents in the agentgit repo.
 
@@ -168,89 +232,7 @@ def translate_paths_for_agentgit_repo(args: list[str], repo_path: Path) -> list[
     from agentgit import find_git_root
 
     git_root = find_git_root()
-    translated = []
-
-    for arg in args:
-        # Skip options
-        if arg.startswith("-"):
-            translated.append(arg)
-            continue
-
-        # Try to resolve the path
-        local_path = Path(arg)
-
-        # If path doesn't exist in cwd, try relative to git root
-        if not local_path.exists() and git_root:
-            potential_path = git_root / arg
-            if potential_path.exists():
-                local_path = potential_path
-
-        # If still doesn't exist, try to find by filename in agentgit repo
-        if not local_path.exists():
-            # Search for the filename in agentgit repo
-            filename = Path(arg).name
-            matches = list(repo_path.rglob(filename))
-
-            if len(matches) == 1:
-                translated.append(str(matches[0].relative_to(repo_path)))
-                continue
-            elif len(matches) > 1:
-                # Multiple matches - try to find best match by path suffix
-                arg_parts = Path(arg).parts
-                best_match = None
-                best_score = 0
-                for match in matches:
-                    match_parts = match.relative_to(repo_path).parts
-                    score = 0
-                    for ap, mp in zip(reversed(arg_parts), reversed(match_parts)):
-                        if ap == mp:
-                            score += 1
-                        else:
-                            break
-                    if score > best_score:
-                        best_score = score
-                        best_match = match
-                if best_match:
-                    translated.append(str(best_match.relative_to(repo_path)))
-                    continue
-
-            # No matches found - keep original
-            translated.append(arg)
-            continue
-
-        # Path exists - try to find it in the agentgit repo by filename
-        filename = local_path.name
-        matches = list(repo_path.rglob(filename))
-
-        if len(matches) == 1:
-            # Found exactly one match - use the relative path
-            translated.append(str(matches[0].relative_to(repo_path)))
-        elif len(matches) > 1:
-            # Multiple matches - try to find best match by path suffix
-            local_parts = local_path.parts
-            best_match = None
-            best_score = 0
-            for match in matches:
-                match_parts = match.relative_to(repo_path).parts
-                # Count matching path components from the end
-                score = 0
-                for lp, mp in zip(reversed(local_parts), reversed(match_parts)):
-                    if lp == mp:
-                        score += 1
-                    else:
-                        break
-                if score > best_score:
-                    best_score = score
-                    best_match = match
-            if best_match:
-                translated.append(str(best_match.relative_to(repo_path)))
-            else:
-                translated.append(arg)
-        else:
-            # No matches found - keep original
-            translated.append(arg)
-
-    return translated
+    return [_translate_single_path(arg, repo_path, git_root) for arg in args]
 
 
 def run_git_passthrough(args: list[str]) -> None:
@@ -266,10 +248,10 @@ def run_git_passthrough(args: list[str]) -> None:
 
     # Smart path translation: only translate arguments that are actual file paths
     # This avoids translating branch names, refs, etc.
-    translated_args = []
     from agentgit import find_git_root
 
     git_root = find_git_root()
+    translated_args = []
 
     for arg in args:
         # Skip options (start with -)
@@ -280,22 +262,17 @@ def run_git_passthrough(args: list[str]) -> None:
         # Check if this looks like a file path that exists
         local_path = Path(arg)
 
-        # Try relative to cwd
+        # Try relative to cwd or git root
         if local_path.exists() and local_path.is_file():
             # This is an actual file - translate it
-            translated = translate_paths_for_agentgit_repo([arg], repo_path)
-            translated_args.append(translated[0])
-            continue
-
-        # Try relative to git root
-        if git_root and (git_root / arg).exists():
-            translated = translate_paths_for_agentgit_repo([arg], repo_path)
-            translated_args.append(translated[0])
-            continue
-
-        # Not a file path - pass through unchanged
-        # This handles branch names, commit SHAs, refs, etc.
-        translated_args.append(arg)
+            translated_args.append(_translate_single_path(arg, repo_path, git_root))
+        elif git_root and (git_root / arg).exists():
+            # Exists relative to git root - translate it
+            translated_args.append(_translate_single_path(arg, repo_path, git_root))
+        else:
+            # Not a file path - pass through unchanged
+            # This handles branch names, commit SHAs, refs, etc.
+            translated_args.append(arg)
 
     # Set up Rich markdown pager for prettier git output
     # The agentgit-pager renders markdown with Rich then pipes to less -RFX
@@ -475,6 +452,45 @@ def process(
         )
 
 
+def _resolve_enhance_config(
+    output_dir: Path,
+    enhancer: str | None = None,
+    enhance_model: str | None = None,
+) -> tuple[str | None, str | None, "EnhanceConfig | None"]:
+    """Resolve enhancement configuration from CLI args and saved config.
+
+    Args:
+        output_dir: Output directory where config is stored.
+        enhancer: CLI-provided enhancer name (if any).
+        enhance_model: CLI-provided model name (if any).
+
+    Returns:
+        Tuple of (effective_enhancer, effective_model, enhance_config).
+    """
+    from agentgit.config import load_config
+    from agentgit.enhance import EnhanceConfig
+
+    # Load saved config and merge with CLI options
+    saved_config = load_config(output_dir)
+
+    # Auto-set enhancer to 'llm' if --llm-model is provided
+    if enhance_model and not enhancer:
+        enhancer = "llm"
+
+    effective_enhancer = enhancer or saved_config.enhancer
+    effective_model = enhance_model or saved_config.enhance_model or "haiku"
+
+    # Configure enhancement if an enhancer is set
+    enhance_config = None
+    if effective_enhancer:
+        enhance_config = EnhanceConfig(
+            enhancer=effective_enhancer, model=effective_model, enabled=True
+        )
+        click.echo(f"Enhancement: {effective_enhancer} (model: {effective_model})")
+
+    return effective_enhancer, effective_model, enhance_config
+
+
 def _run_process(
     transcripts: list[Path],
     output: Path | None,
@@ -487,28 +503,16 @@ def _run_process(
 ) -> None:
     """Run processing of one or more transcripts."""
     from agentgit import build_repo_grouped, parse_transcript
-    from agentgit.config import ProjectConfig, load_config, save_config
-    from agentgit.enhance import EnhanceConfig
+    from agentgit.config import ProjectConfig, save_config
 
     # Use default output directory if not specified
     if output is None:
         output = get_default_output_dir(transcripts[0])
 
-    # Load saved config and merge with CLI options
-    saved_config = load_config(output)
-    # Auto-set enhancer to 'llm' if --llm-model is provided
-    if enhance_model and not enhancer:
-        enhancer = "llm"
-    effective_enhancer = enhancer or saved_config.enhancer
-    effective_model = enhance_model or saved_config.enhance_model or "haiku"
-
-    # Configure enhancement if an enhancer is set
-    enhance_config = None
-    if effective_enhancer:
-        enhance_config = EnhanceConfig(
-            enhancer=effective_enhancer, model=effective_model, enabled=True
-        )
-        click.echo(f"Enhancement: {effective_enhancer} (model: {effective_model})")
+    # Resolve enhancement configuration
+    effective_enhancer, effective_model, enhance_config = _resolve_enhance_config(
+        output, enhancer, enhance_model
+    )
 
     if len(transcripts) == 1:
         click.echo(f"Processing transcript: {transcripts[0]}")
@@ -580,29 +584,17 @@ def _run_watch_mode(
     enhance_model: str | None = None,
 ) -> None:
     """Run in watch mode."""
-    from agentgit.config import ProjectConfig, load_config, save_config
-    from agentgit.enhance import EnhanceConfig
+    from agentgit.config import ProjectConfig, save_config
     from agentgit.watcher import TranscriptWatcher
 
     # Use default output directory if not specified
     if output is None:
         output = get_default_output_dir(transcript)
 
-    # Load saved config and merge with CLI options
-    saved_config = load_config(output)
-    # Auto-set enhancer to 'llm' if --llm-model is provided
-    if enhance_model and not enhancer:
-        enhancer = "llm"
-    effective_enhancer = enhancer or saved_config.enhancer
-    effective_model = enhance_model or saved_config.enhance_model or "haiku"
-
-    # Configure enhancement if an enhancer is set
-    enhance_config = None
-    if effective_enhancer:
-        enhance_config = EnhanceConfig(
-            enhancer=effective_enhancer, model=effective_model, enabled=True
-        )
-        click.echo(f"Enhancement: {effective_enhancer} (model: {effective_model})")
+    # Resolve enhancement configuration
+    effective_enhancer, effective_model, enhance_config = _resolve_enhance_config(
+        output, enhancer, enhance_model
+    )
 
     click.echo(f"Watching transcript: {transcript}")
     click.echo(f"Output directory: {output}")

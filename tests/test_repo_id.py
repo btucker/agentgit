@@ -133,8 +133,9 @@ def test_get_default_output_dir_uses_repo_id_for_git_repo(tmp_path, monkeypatch)
     assert "test-repo" not in str(output_dir)  # Should not use path encoding
 
 
-def test_get_default_output_dir_falls_back_to_path_encoding_for_non_git(tmp_path):
-    """Test that non-git directories fall back to path encoding."""
+def test_get_default_output_dir_fails_for_non_git(tmp_path):
+    """Test that non-git directories raise an error (no fallback)."""
+    from click import ClickException
 
     def mock_find_git_root():
         return None
@@ -143,9 +144,6 @@ def test_get_default_output_dir_falls_back_to_path_encoding_for_non_git(tmp_path
         transcript_path = tmp_path / "transcript.jsonl"
         transcript_path.touch()
 
-        output_dir = get_default_output_dir(transcript_path)
-
-        # Should use path encoding as fallback
-        assert ".agentgit/projects" in str(output_dir)
-        # Will contain encoded path since no git root found
-        assert len(output_dir.name) > 12  # Path encoding is longer than 12 chars
+        # Should raise an exception when no git repo found
+        with pytest.raises(ClickException, match="Could not determine git repository"):
+            get_default_output_dir(transcript_path)
