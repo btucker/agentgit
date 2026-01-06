@@ -8,19 +8,6 @@ from typing import Any
 import click
 
 
-def get_available_types() -> list[str]:
-    """Get list of available plugin types."""
-    from agentgit.plugins import get_configured_plugin_manager
-
-    pm = get_configured_plugin_manager()
-
-    types = []
-    for info in pm.hook.agentgit_get_plugin_info():
-        if info and "name" in info:
-            types.append(info["name"])
-    return types
-
-
 def encode_path_as_name(path: Path) -> str:
     """Encode a path for use as a project name in directory names.
 
