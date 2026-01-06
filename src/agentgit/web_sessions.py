@@ -56,27 +56,10 @@ def get_api_headers(token: str, org_uuid: str) -> dict[str, str]:
 
 
 def get_access_token_from_keychain() -> str | None:
-    """Get access token from Claude Code credentials.
+    """Get access token from macOS keychain.
 
-    Checks two locations:
-    1. ~/.claude/.credentials.json (current Claude Code format)
-    2. macOS keychain (legacy format)
-
-    Returns None if credentials not found.
+    Returns None if not on macOS or if credentials not found.
     """
-    # First, try the credentials file (current format)
-    creds_file = Path.home() / ".claude" / ".credentials.json"
-    if creds_file.exists():
-        try:
-            with open(creds_file) as f:
-                creds = json.load(f)
-            token = creds.get("claudeAiOauth", {}).get("accessToken")
-            if token:
-                return token
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    # Fall back to macOS keychain (legacy format)
     if sys.platform != "darwin":
         return None
 

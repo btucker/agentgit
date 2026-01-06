@@ -231,6 +231,7 @@ def build_repo_grouped(
         output_dir=output_dir,
         enhance_config=enhance_config,
         session_branch_name=session_branch_name,
+        session_id=session_id,
     )
     return builder.build_from_prompt_responses(
         prompt_responses=prompt_responses,
@@ -270,11 +271,21 @@ def transcript_to_repo(
 
     # Use grouped build if we have prompt_responses and it's enabled
     if use_grouped and transcript.prompt_responses:
+        # Extract agent name from format (e.g., "claude_code_jsonl" -> "claude-code")
+        agent_name = None
+        if transcript.source_format:
+            agent_name = transcript.source_format.replace("_jsonl", "").replace("_web", "")
+
+        # Use session_id from transcript, or filename as fallback
+        session_id = transcript.session_id or Path(transcript_path).stem
+
         repo, repo_path, _ = build_repo_grouped(
             prompt_responses=transcript.prompt_responses,
             output_dir=output_dir,
             author_name=author_name,
             author_email=author_email,
+            session_id=session_id,
+            agent_name=agent_name,
         )
     else:
         # Fall back to flat structure

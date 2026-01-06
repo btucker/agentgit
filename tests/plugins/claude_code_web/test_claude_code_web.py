@@ -9,6 +9,9 @@ import pytest
 from agentgit.formats.claude_code_web import (
     WEB_SESSION_CACHE_DIR,
     ClaudeCodeWebPlugin,
+    DiscoveredWebSession,
+    WebSession,
+    WebSessionError,
     cache_session_metadata,
     cache_web_session,
     clear_web_session_cache,
@@ -18,7 +21,6 @@ from agentgit.formats.claude_code_web import (
     load_session_metadata,
     refresh_web_session,
 )
-from agentgit.web_sessions import DiscoveredWebSession, WebSession, WebSessionError
 
 
 @pytest.fixture

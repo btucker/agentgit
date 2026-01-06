@@ -270,8 +270,8 @@ class TestWebCommand:
         from unittest.mock import patch
 
         with patch(
-            "agentgit.web_sessions.resolve_credentials", return_value=("token", "org")
-        ), patch("agentgit.web_sessions.fetch_sessions", return_value=[]):
+            "agentgit.formats.claude_code_web.resolve_credentials", return_value=("token", "org")
+        ), patch("agentgit.formats.claude_code_web.fetch_sessions", return_value=[]):
             result = runner.invoke(main, ["web"])
             assert result.exit_code != 0
             assert "No web sessions found" in result.output
@@ -313,9 +313,9 @@ class TestWebCommand:
         }
 
         with patch(
-            "agentgit.web_sessions.resolve_credentials", return_value=("token", "org")
+            "agentgit.formats.claude_code_web.resolve_credentials", return_value=("token", "org")
         ), patch(
-            "agentgit.web_sessions.fetch_session_data", return_value=mock_session_data
+            "agentgit.formats.claude_code_web.fetch_session_data", return_value=mock_session_data
         ):
             output_dir = tmp_path / "output"
             result = runner.invoke(
@@ -329,7 +329,7 @@ class TestWebCommand:
         """Should display sessions for interactive selection."""
         from unittest.mock import patch
 
-        from agentgit.web_sessions import WebSession
+        from agentgit.formats.claude_code_web import WebSession
 
         sessions = [
             WebSession(
@@ -346,8 +346,8 @@ class TestWebCommand:
         ]
 
         with patch(
-            "agentgit.web_sessions.resolve_credentials", return_value=("token", "org")
-        ), patch("agentgit.web_sessions.fetch_sessions", return_value=sessions):
+            "agentgit.formats.claude_code_web.resolve_credentials", return_value=("token", "org")
+        ), patch("agentgit.formats.claude_code_web.fetch_sessions", return_value=sessions):
             # Abort the prompt to exit cleanly
             result = runner.invoke(main, ["web"], input="\x03")  # Ctrl+C
 

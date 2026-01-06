@@ -180,6 +180,7 @@ def format_commit_message(operation: FileOperation) -> str:
 def format_turn_commit_message(
     turn: AssistantTurn,
     enhance_config: Optional["EnhanceConfig"] = None,
+    prompt: Optional[Prompt] = None,
 ) -> str:
     """Format a commit message for an assistant turn (grouped operations).
 
@@ -195,17 +196,18 @@ def format_turn_commit_message(
     Args:
         turn: The assistant turn to format.
         enhance_config: Optional AI config for generating smarter commit messages.
+        prompt: The prompt that triggered this turn (for including in empty commits).
     """
     # Try AI-generated subject if configured
     subject = None
     if enhance_config and enhance_config.enabled:
         from agentgit.enhance import generate_turn_summary
 
-        # Get the prompt from the first operation if available
-        prompt = None
+        # Get the prompt from the first operation if available, or use the provided prompt
+        prompt_for_summary = prompt
         if turn.operations and turn.operations[0].prompt:
-            prompt = turn.operations[0].prompt
-        subject = generate_turn_summary(turn, prompt, enhance_config)
+            prompt_for_summary = turn.operations[0].prompt
+        subject = generate_turn_summary(turn, prompt_for_summary, enhance_config)
 
     # Fall back to default format
     if not subject:
@@ -242,8 +244,16 @@ def format_turn_commit_message(
 
     # Trailers
     trailers = []
+    # Get prompt from first operation or use the provided prompt
+    prompt_for_trailer = None
     if turn.operations and turn.operations[0].prompt:
-        trailers.append(f"Prompt-Id: {turn.operations[0].prompt.prompt_id}")
+        prompt_for_trailer = turn.operations[0].prompt
+    elif prompt:
+        prompt_for_trailer = prompt
+
+    if prompt_for_trailer:
+        trailers.append(f"Prompt-Id: {prompt_for_trailer.prompt_id}")
+
     trailers.append(f"Timestamp: {turn.timestamp}")
     for op in turn.operations:
         if op.tool_id:
@@ -402,6 +412,7 @@ class GitRepoBuilder:
         enhance_config: Optional["EnhanceConfig"] = None,
         code_repo: Path | None = None,
         session_branch_name: str | None = None,
+        session_id: str | None = None,
     ):
         """Initialize the builder.
 
@@ -412,11 +423,13 @@ class GitRepoBuilder:
                 to share objects with the code repo. If None, auto-detects from cwd.
             session_branch_name: Optional branch name for session-based workflow. If provided,
                 all commits go to this branch (never merged to main).
+            session_id: Optional session identifier to include in commit trailers.
         """
         self.output_dir = output_dir
         self.enhance_config = enhance_config
         self.code_repo = code_repo
         self.session_branch_name = session_branch_name
+        self.session_id = session_id
         self.repo: Repo | None = None
         self.path_mapping: dict[str, str] = {}
         self.file_states: dict[str, str] = {}
@@ -650,6 +663,15 @@ class GitRepoBuilder:
         for pr in prompt_responses:
             self._process_prompt_response(pr, incremental)
 
+        # Create a session ref if session_id is provided
+        # This creates a symbolic ref pointing to the session branch
+        if self.session_id and self.session_branch_name:
+            session_ref_path = self.output_dir / ".git" / "refs" / "sessions" / self.session_id
+            session_ref_path.parent.mkdir(parents=True, exist_ok=True)
+            # Write a symbolic ref pointing to the branch
+            session_ref_path.write_text(f"ref: refs/heads/{self.session_branch_name}\n")
+            logger.info("Created session ref: %s -> %s", f"refs/sessions/{self.session_id}", self.session_branch_name)
+
         return self.repo, self.output_dir, self.path_mapping
 
     def _has_commits(self) -> bool:
@@ -675,16 +697,22 @@ class GitRepoBuilder:
         if not pr.turns:
             return
 
-        # Filter turns to only those with unprocessed operations
+        # Filter turns to only those with unprocessed operations OR no operations at all
+        # (we want to preserve conversational turns that don't modify files)
         turns_to_process = []
         for turn in pr.turns:
-            has_unprocessed = False
-            for op in turn.operations:
-                if not self._is_operation_processed(op):
-                    has_unprocessed = True
-                    break
-            if has_unprocessed:
+            if not turn.operations:
+                # Turn with no operations - preserve it as an empty commit
                 turns_to_process.append(turn)
+            else:
+                # Turn with operations - check if any are unprocessed
+                has_unprocessed = False
+                for op in turn.operations:
+                    if not self._is_operation_processed(op):
+                        has_unprocessed = True
+                        break
+                if has_unprocessed:
+                    turns_to_process.append(turn)
 
         if not turns_to_process:
             return
@@ -693,7 +721,7 @@ class GitRepoBuilder:
         if self.session_branch_name:
             # Apply each turn as a commit on the session branch
             for turn in turns_to_process:
-                self._apply_turn(turn)
+                self._apply_turn(turn, pr.prompt)
                 # Mark all operations in this turn as processed
                 for op in turn.operations:
                     self._processed_ops.add(self._get_operation_id(op))
@@ -710,7 +738,7 @@ class GitRepoBuilder:
 
         # Apply each turn as a commit on the feature branch
         for turn in turns_to_process:
-            self._apply_turn(turn)
+            self._apply_turn(turn, pr.prompt)
             # Mark all operations in this turn as processed
             for op in turn.operations:
                 self._processed_ops.add(self._get_operation_id(op))
@@ -736,14 +764,17 @@ class GitRepoBuilder:
         except GitCommandError:
             pass
 
-    def _apply_turn(self, turn: AssistantTurn) -> None:
-        """Apply all operations in a turn and create a single commit."""
-        if not turn.operations:
-            return
+    def _apply_turn(self, turn: AssistantTurn, prompt: Optional[Prompt] = None) -> None:
+        """Apply all operations in a turn and create a single commit.
 
+        Args:
+            turn: The assistant turn to apply.
+            prompt: The prompt that triggered this turn (for empty commits).
+        """
         files_changed = []
         files_deleted = []
 
+        # Apply all file operations if there are any
         for operation in turn.operations:
             changed = self._apply_operation_no_commit(operation)
             if changed:
@@ -753,6 +784,9 @@ class GitRepoBuilder:
                 else:
                     files_changed.append(rel_path)
 
+        # Create commit message
+        commit_msg = format_turn_commit_message(turn, self.enhance_config, prompt)
+
         if files_changed or files_deleted:
             # Add changed files (not deleted ones)
             for rel_path in files_changed:
@@ -761,11 +795,17 @@ class GitRepoBuilder:
                 except GitCommandError:
                     pass
 
-            commit_msg = format_turn_commit_message(turn, self.enhance_config)
+            # Create regular commit with file changes
             try:
                 self.repo.index.commit(commit_msg)
             except GitCommandError as e:
                 logger.warning("Failed to commit turn: %s", e)
+        else:
+            # No file changes - create an empty commit to preserve the conversation
+            try:
+                self.repo.git.commit("--allow-empty", "-m", commit_msg)
+            except GitCommandError as e:
+                logger.warning("Failed to create empty commit for turn: %s", e)
 
     def _apply_operation_no_commit(self, operation: FileOperation) -> bool:
         """Apply a single operation without creating a commit.

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from agentgit.web_sessions import (
+from agentgit.formats.claude_code_web import (
     API_BASE_URL,
     DiscoveredWebSession,
     WebSession,
@@ -22,6 +22,172 @@ from agentgit.web_sessions import (
     session_to_jsonl_entries,
     try_resolve_credentials,
 )
+from agentgit.utils import get_git_remotes, normalize_git_url
+
+
+class TestNormalizeGitUrl:
+    """Tests for normalize_git_url function."""
+
+    def test_https_url_basic(self):
+        """Should normalize HTTPS URLs correctly."""
+        url = "https://github.com/user/repo"
+        assert normalize_git_url(url) == "github.com/user/repo"
+
+    def test_https_url_with_git_suffix(self):
+        """Should remove .git suffix from HTTPS URLs."""
+        url = "https://github.com/user/repo.git"
+        assert normalize_git_url(url) == "github.com/user/repo"
+
+    def test_http_url(self):
+        """Should normalize HTTP URLs correctly."""
+        url = "http://github.com/user/repo"
+        assert normalize_git_url(url) == "github.com/user/repo"
+
+    def test_https_url_with_trailing_slash(self):
+        """Should remove trailing slashes."""
+        url = "https://github.com/user/repo/"
+        assert normalize_git_url(url) == "github.com/user/repo"
+
+    def test_https_url_with_trailing_slash_and_git(self):
+        """Should remove trailing slash and .git suffix."""
+        url = "https://github.com/user/repo.git/"
+        assert normalize_git_url(url) == "github.com/user/repo"
+
+    def test_ssh_url_with_user(self):
+        """Should normalize SSH URLs with user@ prefix."""
+        url = "git@github.com:user/repo.git"
+        assert normalize_git_url(url) == "github.com/user/repo"
+
+    def test_ssh_url_without_user(self):
+        """Should normalize SSH URLs without user@ prefix."""
+        url = "github.com:user/repo.git"
+        assert normalize_git_url(url) == "github.com/user/repo"
+
+    def test_ssh_url_without_git_suffix(self):
+        """Should normalize SSH URLs without .git suffix."""
+        url = "git@github.com:user/repo"
+        assert normalize_git_url(url) == "github.com/user/repo"
+
+    def test_ssh_url_with_different_user(self):
+        """Should handle SSH URLs with different usernames."""
+        url = "myuser@gitlab.com:user/repo.git"
+        assert normalize_git_url(url) == "gitlab.com/user/repo"
+
+    def test_ssh_url_with_nested_path(self):
+        """Should handle SSH URLs with nested paths."""
+        url = "git@github.com:org/team/repo.git"
+        assert normalize_git_url(url) == "github.com/org/team/repo"
+
+    def test_https_url_with_nested_path(self):
+        """Should handle HTTPS URLs with nested paths."""
+        url = "https://github.com/org/team/repo"
+        assert normalize_git_url(url) == "github.com/org/team/repo"
+
+    def test_different_hosts(self):
+        """Should work with different Git hosting services."""
+        urls = [
+            ("https://gitlab.com/user/repo", "gitlab.com/user/repo"),
+            ("git@gitlab.com:user/repo.git", "gitlab.com/user/repo"),
+            ("https://bitbucket.org/user/repo", "bitbucket.org/user/repo"),
+            ("git@bitbucket.org:user/repo.git", "bitbucket.org/user/repo"),
+        ]
+        for url, expected in urls:
+            assert normalize_git_url(url) == expected
+
+    def test_ssh_vs_https_equivalence(self):
+        """SSH and HTTPS URLs for same repo should normalize to same value."""
+        ssh_url = "git@github.com:btucker/agentgit.git"
+        https_url = "https://github.com/btucker/agentgit"
+
+        assert normalize_git_url(ssh_url) == normalize_git_url(https_url)
+        assert normalize_git_url(ssh_url) == "github.com/btucker/agentgit"
+
+    def test_unknown_format_returns_as_is(self):
+        """Should return URL as-is if format not recognized."""
+        url = "/local/path/to/repo"
+        assert normalize_git_url(url) == "/local/path/to/repo"
+
+
+class TestGetGitRemotes:
+    """Tests for get_git_remotes function."""
+
+    def test_returns_empty_list_for_non_git_directory(self, tmp_path):
+        """Should return empty list for non-git directories."""
+        project = tmp_path / "not-a-git-repo"
+        project.mkdir()
+
+        remotes = get_git_remotes(project)
+        assert remotes == []
+
+    def test_returns_remotes_for_git_repository(self, tmp_path):
+        """Should return list of remote URLs for a git repository."""
+        import subprocess
+
+        # Create a git repo with remotes
+        repo = tmp_path / "test-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/repo.git"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+        remotes = get_git_remotes(repo)
+        assert len(remotes) == 1
+        assert "git@github.com:user/repo.git" in remotes
+
+    def test_returns_multiple_remotes(self, tmp_path):
+        """Should return all unique remote URLs."""
+        import subprocess
+
+        repo = tmp_path / "test-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/repo.git"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "remote", "add", "upstream", "https://github.com/upstream/repo"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+        remotes = get_git_remotes(repo)
+        assert len(remotes) == 2
+        assert "git@github.com:user/repo.git" in remotes
+        assert "https://github.com/upstream/repo" in remotes
+
+    def test_deduplicates_same_remote(self, tmp_path):
+        """Should not duplicate the same remote URL."""
+        import subprocess
+
+        repo = tmp_path / "test-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/repo.git"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+        # git remote -v shows each remote twice (fetch and push)
+        remotes = get_git_remotes(repo)
+        assert remotes.count("git@github.com:user/repo.git") == 1
+
+    def test_handles_subprocess_errors_gracefully(self, tmp_path):
+        """Should return empty list if git command fails."""
+        # Use a path that will cause git to fail
+        nonexistent = tmp_path / "does-not-exist"
+
+        remotes = get_git_remotes(nonexistent)
+        assert remotes == []
 
 
 class TestWebSession:
@@ -66,6 +232,172 @@ class TestWebSession:
         )
 
         assert session.matches_project(tmp_path) is False
+
+    def test_matches_project_by_git_url_ssh(self, tmp_path):
+        """Should match project by git URL (SSH format)."""
+        import subprocess
+
+        # Create a git repo with a remote
+        repo = tmp_path / "test-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/repo.git"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+        # Session with HTTPS URL for same repo
+        session = WebSession(
+            id="test-123",
+            title="Test Session",
+            created_at="2025-01-01T00:00:00Z",
+            git_url="https://github.com/user/repo",
+        )
+
+        assert session.matches_project(repo) is True
+
+    def test_matches_project_by_git_url_https(self, tmp_path):
+        """Should match project by git URL (HTTPS format)."""
+        import subprocess
+
+        # Create a git repo with HTTPS remote
+        repo = tmp_path / "test-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/user/repo.git"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+        # Session with SSH URL for same repo
+        session = WebSession(
+            id="test-123",
+            title="Test Session",
+            created_at="2025-01-01T00:00:00Z",
+            git_url="git@github.com:user/repo.git",
+        )
+
+        assert session.matches_project(repo) is True
+
+    def test_matches_project_checks_all_remotes(self, tmp_path):
+        """Should check all git remotes for a match."""
+        import subprocess
+
+        # Create a git repo with multiple remotes
+        repo = tmp_path / "test-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/repo1.git"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "remote", "add", "upstream", "git@github.com:user/repo2.git"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+        # Session matches the upstream remote
+        session = WebSession(
+            id="test-123",
+            title="Test Session",
+            created_at="2025-01-01T00:00:00Z",
+            git_url="https://github.com/user/repo2",
+        )
+
+        assert session.matches_project(repo) is True
+
+    def test_matches_project_git_url_no_match(self, tmp_path):
+        """Should return False when git URLs don't match."""
+        import subprocess
+
+        # Create a git repo with a remote
+        repo = tmp_path / "test-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/repo1.git"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+        # Session with different repo URL
+        session = WebSession(
+            id="test-123",
+            title="Test Session",
+            created_at="2025-01-01T00:00:00Z",
+            git_url="https://github.com/user/repo2",
+        )
+
+        assert session.matches_project(repo) is False
+
+    def test_matches_project_git_url_fallback_to_path(self, tmp_path):
+        """Should fall back to path matching if git URL doesn't match."""
+        import subprocess
+
+        # Create a git repo with a remote
+        repo = tmp_path / "test-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/repo1.git"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+        # Session with different git URL but matching path
+        session = WebSession(
+            id="test-123",
+            title="Test Session",
+            created_at="2025-01-01T00:00:00Z",
+            git_url="https://github.com/user/repo2",
+            project_path=str(repo),
+        )
+
+        # Should match by path even though git URL doesn't match
+        assert session.matches_project(repo) is True
+
+    def test_matches_project_git_url_and_path_fallback(self, tmp_path):
+        """Should try git URL first but fall back to path if git URL doesn't match."""
+        import subprocess
+
+        # Create two repos
+        repo1 = tmp_path / "repo1"
+        repo2 = tmp_path / "repo2"
+        repo1.mkdir()
+        repo2.mkdir()
+
+        # repo1 has the matching git URL
+        subprocess.run(["git", "init"], cwd=repo1, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/myrepo.git"],
+            cwd=repo1,
+            check=True,
+            capture_output=True,
+        )
+
+        # Session has git_url matching repo1 but project_path pointing to repo2
+        session = WebSession(
+            id="test-123",
+            title="Test Session",
+            created_at="2025-01-01T00:00:00Z",
+            git_url="https://github.com/user/myrepo",
+            project_path=str(repo2),
+        )
+
+        # Should match repo1 by git URL
+        assert session.matches_project(repo1) is True
+        # Should also match repo2 by path (fallback when git URL doesn't match)
+        assert session.matches_project(repo2) is True
 
 
 class TestGetApiHeaders:
@@ -176,6 +508,88 @@ class TestFetchSessions:
             assert sessions[0].title == "First Session"
             assert sessions[0].project_path == "/path/to/project"
             assert sessions[1].project_path is None
+
+    def test_extracts_git_url_from_session_context(self):
+        """Should extract git URL from session_context.sources."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [
+                {
+                    "id": "session-1",
+                    "title": "Test Session",
+                    "created_at": "2025-01-01T00:00:00Z",
+                    "session_context": {
+                        "sources": [
+                            {
+                                "type": "git_repository",
+                                "url": "https://github.com/user/repo",
+                            }
+                        ]
+                    },
+                },
+                {
+                    "id": "session-2",
+                    "title": "No Git Session",
+                    "created_at": "2025-01-02T00:00:00Z",
+                    "session_context": {
+                        "sources": []
+                    },
+                },
+            ]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("httpx.get", return_value=mock_response):
+            sessions = fetch_sessions("token", "org")
+
+            assert len(sessions) == 2
+            assert sessions[0].git_url == "https://github.com/user/repo"
+            assert sessions[1].git_url is None
+
+    def test_extracts_git_url_from_multiple_sources(self):
+        """Should extract git_repository URL from multiple sources."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [
+                {
+                    "id": "session-1",
+                    "title": "Test Session",
+                    "created_at": "2025-01-01T00:00:00Z",
+                    "session_context": {
+                        "sources": [
+                            {"type": "local_file", "path": "/some/file"},
+                            {"type": "git_repository", "url": "git@github.com:user/repo.git"},
+                            {"type": "other", "value": "something"},
+                        ]
+                    },
+                },
+            ]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("httpx.get", return_value=mock_response):
+            sessions = fetch_sessions("token", "org")
+
+            assert sessions[0].git_url == "git@github.com:user/repo.git"
+
+    def test_handles_missing_session_context(self):
+        """Should handle sessions without session_context."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [
+                {
+                    "id": "session-1",
+                    "title": "Test Session",
+                    "created_at": "2025-01-01T00:00:00Z",
+                },
+            ]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("httpx.get", return_value=mock_response):
+            sessions = fetch_sessions("token", "org")
+
+            assert sessions[0].git_url is None
 
     def test_raises_on_http_error(self):
         """Should raise WebSessionError on HTTP failure."""
@@ -448,9 +862,11 @@ class TestDiscoveredWebSession:
 class TestTryResolveCredentials:
     """Tests for try_resolve_credentials function."""
 
-    def test_returns_none_on_failure(self, monkeypatch):
+    def test_returns_none_on_failure(self, tmp_path, monkeypatch):
         """Should return None when credentials not available."""
+        # Mock both platform and home directory to prevent reading actual credentials
         monkeypatch.setattr("sys.platform", "linux")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         result = try_resolve_credentials()
 
@@ -459,7 +875,7 @@ class TestTryResolveCredentials:
     def test_returns_credentials_when_available(self, monkeypatch):
         """Should return credentials when available."""
         with patch(
-            "agentgit.web_sessions.resolve_credentials",
+            "agentgit.formats.claude_code_web.resolve_credentials",
             return_value=("token-123", "org-456"),
         ):
             result = try_resolve_credentials()
@@ -470,9 +886,11 @@ class TestTryResolveCredentials:
 class TestDiscoverWebSessions:
     """Tests for discover_web_sessions function."""
 
-    def test_returns_empty_when_no_credentials(self, monkeypatch):
+    def test_returns_empty_when_no_credentials(self, tmp_path, monkeypatch):
         """Should return empty list when credentials not available."""
+        # Mock both platform and home directory to prevent reading actual credentials
         monkeypatch.setattr("sys.platform", "linux")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         result = discover_web_sessions()
 
@@ -481,11 +899,11 @@ class TestDiscoverWebSessions:
     def test_returns_empty_on_api_error(self):
         """Should return empty list when API fails."""
         with patch(
-            "agentgit.web_sessions.try_resolve_credentials",
+            "agentgit.formats.claude_code_web.try_resolve_credentials",
             return_value=("token", "org"),
         ):
             with patch(
-                "agentgit.web_sessions.fetch_sessions",
+                "agentgit.formats.claude_code_web.fetch_sessions",
                 side_effect=WebSessionError("API Error"),
             ):
                 result = discover_web_sessions()
@@ -509,11 +927,11 @@ class TestDiscoverWebSessions:
         ]
 
         with patch(
-            "agentgit.web_sessions.try_resolve_credentials",
+            "agentgit.formats.claude_code_web.try_resolve_credentials",
             return_value=("token", "org"),
         ):
             with patch(
-                "agentgit.web_sessions.fetch_sessions",
+                "agentgit.formats.claude_code_web.fetch_sessions",
                 return_value=mock_sessions,
             ):
                 result = discover_web_sessions()
@@ -545,17 +963,125 @@ class TestDiscoverWebSessions:
         ]
 
         with patch(
-            "agentgit.web_sessions.try_resolve_credentials",
+            "agentgit.formats.claude_code_web.try_resolve_credentials",
             return_value=("token", "org"),
         ):
             with patch(
-                "agentgit.web_sessions.fetch_sessions",
+                "agentgit.formats.claude_code_web.fetch_sessions",
                 return_value=mock_sessions,
             ):
                 result = discover_web_sessions(project_path=project)
 
                 assert len(result) == 1
                 assert result[0].session_id == "session-1"
+
+    def test_filters_by_git_url(self, tmp_path):
+        """Should filter sessions by git URL matching."""
+        import subprocess
+
+        # Create a git repo with a remote
+        project = tmp_path / "myproject"
+        project.mkdir()
+        subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/myrepo.git"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+
+        mock_sessions = [
+            WebSession(
+                id="session-1",
+                title="Matching by git URL",
+                created_at="2025-01-15T10:00:00Z",
+                git_url="https://github.com/user/myrepo",  # Matches via git URL
+            ),
+            WebSession(
+                id="session-2",
+                title="Non-matching",
+                created_at="2025-01-15T11:00:00Z",
+                git_url="https://github.com/user/otherrepo",
+            ),
+            WebSession(
+                id="session-3",
+                title="No git URL",
+                created_at="2025-01-15T12:00:00Z",
+            ),
+        ]
+
+        with patch(
+            "agentgit.formats.claude_code_web.try_resolve_credentials",
+            return_value=("token", "org"),
+        ):
+            with patch(
+                "agentgit.formats.claude_code_web.fetch_sessions",
+                return_value=mock_sessions,
+            ):
+                result = discover_web_sessions(project_path=project)
+
+                assert len(result) == 1
+                assert result[0].session_id == "session-1"
+                assert result[0].title == "Matching by git URL"
+
+    def test_filters_by_any_git_remote(self, tmp_path):
+        """Should match if session git URL matches any local remote."""
+        import subprocess
+
+        # Create a git repo with multiple remotes
+        project = tmp_path / "myproject"
+        project.mkdir()
+        subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/repo1.git"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "remote", "add", "upstream", "git@github.com:user/repo2.git"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+
+        mock_sessions = [
+            WebSession(
+                id="session-1",
+                title="Matches origin",
+                created_at="2025-01-15T10:00:00Z",
+                git_url="https://github.com/user/repo1",
+            ),
+            WebSession(
+                id="session-2",
+                title="Matches upstream",
+                created_at="2025-01-15T11:00:00Z",
+                git_url="https://github.com/user/repo2",
+            ),
+            WebSession(
+                id="session-3",
+                title="Matches neither",
+                created_at="2025-01-15T12:00:00Z",
+                git_url="https://github.com/user/repo3",
+            ),
+        ]
+
+        with patch(
+            "agentgit.formats.claude_code_web.try_resolve_credentials",
+            return_value=("token", "org"),
+        ):
+            with patch(
+                "agentgit.formats.claude_code_web.fetch_sessions",
+                return_value=mock_sessions,
+            ):
+                result = discover_web_sessions(project_path=project)
+
+                assert len(result) == 2
+                session_ids = [s.session_id for s in result]
+                # Should be sorted by created_at (newest first)
+                assert "session-2" in session_ids
+                assert "session-1" in session_ids
+                assert "session-3" not in session_ids
 
     def test_uses_provided_credentials(self):
         """Should use explicitly provided credentials."""
@@ -568,7 +1094,7 @@ class TestDiscoverWebSessions:
         ]
 
         with patch(
-            "agentgit.web_sessions.fetch_sessions",
+            "agentgit.formats.claude_code_web.fetch_sessions",
             return_value=mock_sessions,
         ) as mock_fetch:
             result = discover_web_sessions(

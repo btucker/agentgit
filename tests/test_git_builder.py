@@ -1012,3 +1012,37 @@ class TestBuildFromPromptResponses:
 
         # File should be deleted
         assert not (tmp_path / "temp.py").exists()
+
+    def test_creates_empty_commit_for_prompt_without_file_operations(self, tmp_path):
+        """Should create empty commit for prompts that don't modify files."""
+        prompt = Prompt(
+            text="Explain how this code works",
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        turn = AssistantTurn(
+            operations=[],  # No file operations
+            timestamp="2025-01-01T00:00:00Z",
+            context=AssistantContext(
+                text="This code implements a simple function that..."
+            ),
+        )
+        pr = PromptResponse(prompt=prompt, turns=[turn])
+
+        builder = GitRepoBuilder(output_dir=tmp_path, session_branch_name="session")
+        repo, _, _ = builder.build_from_prompt_responses([pr])
+
+        # Should have at least 2 commits (initial + empty commit for the prompt)
+        commits = list(repo.iter_commits())
+        assert len(commits) >= 2
+
+        # The most recent commit should be the empty commit
+        latest_commit = commits[0]
+        # Should include the Prompt-Id trailer
+        assert "Prompt-Id:" in latest_commit.message
+        # Should include the context text
+        assert "This code implements a simple function" in latest_commit.message
+
+        # Should have zero file changes in the commit (empty commit)
+        if latest_commit.parents:
+            diffs = latest_commit.diff(latest_commit.parents[0])
+            assert len(diffs) == 0

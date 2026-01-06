@@ -418,7 +418,7 @@ class ClaudeCodePlugin:
     def agentgit_get_display_name(self, transcript_path: Path) -> str | None:
         """Get display name for a Claude Code transcript.
 
-        Returns the filename with UUIDs truncated for readability.
+        Returns the filename as-is without truncation.
         """
         transcript_abs = transcript_path.resolve()
         claude_projects_dir = Path.home() / ".claude" / "projects"
@@ -429,13 +429,7 @@ class ClaudeCodePlugin:
         except ValueError:
             return None
 
-        filename = transcript_path.name
-
-        # Truncate UUIDs (8-4-4-4-12 pattern) to first 8 chars
-        uuid_pattern = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-        filename = re.sub(uuid_pattern, lambda m: m.group()[:8] + "…", filename)
-
-        return filename
+        return transcript_path.name
 
     @hookimpl
     def agentgit_build_prompt_responses(

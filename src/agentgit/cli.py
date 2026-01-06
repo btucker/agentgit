@@ -75,13 +75,15 @@ def get_default_output_dir(transcript_path: Path) -> Path:
        then finding the corresponding git repo (e.g., Claude Code returns
        "-Users-name-project" which maps to a git root)
     2. Using the current directory's git root
-    3. Falling back to path encoding for non-git directories
 
     Args:
         transcript_path: Path to the transcript file.
 
     Returns:
         Path to the default output directory.
+
+    Raises:
+        click.ClickException: If no git repository can be found.
     """
     from agentgit import find_git_root
     from agentgit.plugins import get_configured_plugin_manager
@@ -108,13 +110,11 @@ def get_default_output_dir(transcript_path: Path) -> Path:
         if repo_id:
             return Path.home() / ".agentgit" / "projects" / repo_id
 
-    # Strategy 3: Fall back to path encoding for non-git directories
-    if project_name:
-        return Path.home() / ".agentgit" / "projects" / project_name
-
-    # Last resort: encode the transcript's parent directory
-    fallback_name = encode_path_as_name(transcript_path.resolve().parent)
-    return Path.home() / ".agentgit" / "projects" / fallback_name
+    # No git repository found
+    raise click.ClickException(
+        f"Could not determine git repository for transcript: {transcript_path}\n"
+        "Make sure you're running this command from within a git repository."
+    )
 
 
 def resolve_transcripts(transcript: Path | None) -> list[Path]:
@@ -255,6 +255,7 @@ def translate_paths_for_agentgit_repo(args: list[str], repo_path: Path) -> list[
 
 def run_git_passthrough(args: list[str]) -> None:
     """Run a git command on the agentgit repo."""
+    import os
     import subprocess
 
     repo_path = get_agentgit_repo_path()
@@ -267,6 +268,7 @@ def run_git_passthrough(args: list[str]) -> None:
     # This avoids translating branch names, refs, etc.
     translated_args = []
     from agentgit import find_git_root
+
     git_root = find_git_root()
 
     for arg in args:
@@ -295,10 +297,19 @@ def run_git_passthrough(args: list[str]) -> None:
         # This handles branch names, commit SHAs, refs, etc.
         translated_args.append(arg)
 
+    # Set up less with ANSI color support as the pager
+    # -R: interpret ANSI color codes
+    # -F: quit if output fits on one screen
+    # -X: don't clear screen on exit
+    env = os.environ.copy()
+    env["GIT_PAGER"] = "less -RFX"
+
     # Run git with -C to specify the agentgit repo directory
+    # Use --paginate to enable paging for commands that support it
+    # Explicitly inherit stdin/stdout/stderr to ensure terminal interaction works
     result = subprocess.run(
-        ["git", "-C", str(repo_path)] + translated_args,
-        capture_output=False,
+        ["git", "--paginate", "-C", str(repo_path)] + translated_args,
+        env=env,
     )
     raise SystemExit(result.returncode)
 
@@ -309,6 +320,7 @@ class DefaultGroup(click.Group):
     def __init__(self, *args: Any, default_cmd: str | None = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.default_cmd = default_cmd
+
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         """Insert default command if no subcommand given."""
@@ -367,7 +379,9 @@ def main() -> None:
 
 
 @main.command()
-@click.argument("transcript", type=click.Path(exists=True, path_type=Path), required=False)
+@click.argument(
+    "transcript", type=click.Path(exists=True, path_type=Path), required=False
+)
 @click.option(
     "-o",
     "--output",
@@ -442,13 +456,24 @@ def process(
                 "Please specify a transcript file explicitly."
             )
         _run_watch_mode(
-            transcripts[0], output, author, email, source_repo,
-            enhancer=enhancer, enhance_model=enhance_model
+            transcripts[0],
+            output,
+            author,
+            email,
+            source_repo,
+            enhancer=enhancer,
+            enhance_model=enhance_model,
         )
     else:
         _run_process(
-            transcripts, output, plugin_type, author, email, source_repo,
-            enhancer=enhancer, enhance_model=enhance_model
+            transcripts,
+            output,
+            plugin_type,
+            author,
+            email,
+            source_repo,
+            enhancer=enhancer,
+            enhance_model=enhance_model,
         )
 
 
@@ -538,7 +563,7 @@ def _run_process(
         save_config(output, new_config)
 
     # Count branches (sessions)
-    session_branches = [b.name for b in repo.heads if b.name.startswith('session/')]
+    session_branches = [b.name for b in repo.heads if b.name.startswith("session/")]
 
     click.echo(f"Created git repository at: {repo_path}")
     click.echo(f"  Sessions (branches): {len(session_branches)}")
@@ -695,14 +720,20 @@ def sessions(
         header_path = str(project)
 
     if not transcripts:
-        msg = "No transcripts found." if all_projects else "No transcripts found for this project."
+        msg = (
+            "No transcripts found."
+            if all_projects
+            else "No transcripts found for this project."
+        )
         console.print(f"[yellow]{msg}[/yellow]")
         return
 
     # Filter by type if specified
     if filter_type:
         transcripts = [
-            t for t in transcripts if filter_type.lower() in t.format_type.lower()
+            t
+            for t in transcripts
+            if filter_type.lower() in t.format_type.lower()
             or filter_type.lower() in t.plugin_name.lower()
         ]
         if not transcripts:
@@ -722,10 +753,10 @@ def sessions(
     table = Table(title=f"{len(transcripts)} {count_label}")
     table.add_column("#", style="dim", width=4)
     table.add_column("Agent", style="magenta")
-    table.add_column("Name/Path", style="cyan")
+    table.add_column("Name/Path", style="cyan", no_wrap=True, overflow="fold")
     table.add_column("Modified", style="green")
     table.add_column("Size", style="yellow", justify="right")
-    table.add_column("Status", style="blue", width=6)
+    table.add_column("Status", style="blue", no_wrap=True)
 
     for i, t in enumerate(transcripts, 1):
         # Use display name if available, otherwise path
@@ -742,9 +773,26 @@ def sessions(
         output_dir = get_default_output_dir(t.path)
         status = ""
         if output_dir.exists() and (output_dir / ".git").exists():
-            status = "REPO"
+            # Find the branch for this transcript by reading its session ref
+            try:
+                # Get the transcript's session ID from the filename
+                transcript_id = t.path.stem  # Filename without extension
 
-        table.add_row(str(i), t.plugin_name, name, t.mtime_formatted, t.size_human, status)
+                # Check if a session ref file exists
+                session_ref_path = (
+                    output_dir / ".git" / "refs" / "sessions" / transcript_id
+                )
+                if session_ref_path.exists():
+                    # Read the symbolic ref and extract the branch name
+                    ref_content = session_ref_path.read_text().strip()
+                    if ref_content.startswith("ref: refs/heads/"):
+                        status = ref_content[len("ref: refs/heads/") :]
+            except (OSError, IOError):
+                status = "REPO"
+
+        table.add_row(
+            str(i), t.plugin_name, name, t.mtime_formatted, t.size_human, status
+        )
 
     console.print(table)
     console.print()
@@ -782,7 +830,9 @@ def sessions(
 
     # Process the selected transcript
     console.print()
-    console.print(f"[bold]Processing[/bold] {selected.display_name or selected.path.name}...")
+    console.print(
+        f"[bold]Processing[/bold] {selected.display_name or selected.path.name}..."
+    )
 
     output_dir = get_default_output_dir(selected.path)
     try:
@@ -928,9 +978,15 @@ def discover(
 ) -> None:
     """Alias for 'sessions' command (deprecated, use 'sessions' instead)."""
     from click import get_current_context
+
     ctx = get_current_context()
-    ctx.invoke(sessions, project=project, all_projects=all_projects,
-               list_only=list_only, filter_type=filter_type)
+    ctx.invoke(
+        sessions,
+        project=project,
+        all_projects=all_projects,
+        list_only=list_only,
+        filter_type=filter_type,
+    )
 
 
 @main.command()
@@ -952,7 +1008,9 @@ def discover(
     type=str,
     help="Specific session branch to blame (e.g., session/claude-code/add-auth).",
 )
-def blame(file_path: str, lines: str | None, no_context: bool, session: str | None) -> None:
+def blame(
+    file_path: str, lines: str | None, no_context: bool, session: str | None
+) -> None:
     """Show git blame with agent context for each line.
 
     By default, blames your code repo and maps commits to session branches.
@@ -1045,12 +1103,11 @@ def web(
     # Enable debug logging if requested
     if debug:
         logging.basicConfig(
-            level=logging.DEBUG,
-            format='%(levelname)s [%(name)s] %(message)s'
+            level=logging.DEBUG, format="%(levelname)s [%(name)s] %(message)s"
         )
         click.echo("Debug logging enabled - will show session data structure\n")
 
-    from agentgit.web_sessions import (
+    from agentgit.formats.claude_code_web import (
         WebSessionError,
         fetch_session_data,
         fetch_sessions,
@@ -1132,7 +1189,8 @@ def web(
     # Dump raw JSON if requested
     if dump_json:
         import json
-        with open(dump_json, 'w') as f:
+
+        with open(dump_json, "w") as f:
             json.dump(session_data, f, indent=2)
         click.echo(f"Dumped raw session data to: {dump_json}")
         click.echo(f"Top-level keys: {', '.join(sorted(session_data.keys()))}")
@@ -1163,8 +1221,11 @@ def web(
             # Check for local project match
             project_path = session_data.get("project_path")
             if project_path:
-                output = Path.home() / ".agentgit" / "projects" / encode_path_as_name(
-                    Path(project_path)
+                output = (
+                    Path.home()
+                    / ".agentgit"
+                    / "projects"
+                    / encode_path_as_name(Path(project_path))
                 )
                 local_project = Path(project_path)
                 if local_project.exists():
@@ -1185,6 +1246,235 @@ def web(
     finally:
         # Clean up temp file
         temp_path.unlink(missing_ok=True)
+
+
+@main.command()
+def repo() -> None:
+    """Print the path to the agentgit repository for the current project.
+
+    This command finds the git root of the current directory and prints
+    the path to the corresponding agentgit repository using the repo ID
+    (first 12 chars of the root commit hash).
+
+    Example:
+
+        cd /path/to/my/project
+        agentgit repo
+        # Outputs: /Users/username/.agentgit/projects/a12e842947dd
+    """
+    from agentgit import find_git_root
+
+    git_root = find_git_root()
+    if not git_root:
+        raise click.ClickException(
+            "Not in a git repository. Please run this command from within a git repository."
+        )
+
+    # Get repo ID from the first commit
+    repo_id = get_repo_id(git_root)
+    if not repo_id:
+        raise click.ClickException(
+            f"Could not determine repository ID for: {git_root}\n"
+            "Make sure the repository has at least one commit."
+        )
+
+    agentgit_repo = Path.home() / ".agentgit" / "projects" / repo_id
+
+    if not agentgit_repo.exists():
+        raise click.ClickException(
+            f"No agentgit repository found for this project.\n"
+            f"Expected location: {agentgit_repo}\n"
+            f"Repository ID: {repo_id}\n"
+            f"Run 'agentgit process' first to create the repository."
+        )
+
+    click.echo(str(agentgit_repo))
+
+
+@main.command()
+@click.argument("shell", type=click.Choice(["bash", "zsh"], case_sensitive=False))
+def completion(shell: str) -> None:
+    """Output shell completion script for agentgit.
+
+    This outputs a completion script that delegates to git's native completion
+    for git passthrough commands.
+
+    Examples:
+
+        # Install for current session
+        source <(agentgit completion bash)
+
+        # Install permanently (bash)
+        agentgit completion bash >> ~/.bashrc
+
+        # Install permanently (zsh)
+        agentgit completion zsh >> ~/.zshrc
+    """
+    if shell == "bash":
+        script = '''# Bash completion for agentgit
+# This delegates to git's existing completion for git passthrough commands
+
+# Wrapper function that sets up git context for agentgit repo
+_agentgit_git_wrapper() {
+    # Find the agentgit repo path
+    local agentgit_repo=""
+    local project_name=""
+    local git_root=$(git rev-parse --show-toplevel 2>/dev/null)
+
+    if [ -n "$git_root" ]; then
+        # Get repo ID (first 12 chars of root commit)
+        local repo_id=$(git -C "$git_root" rev-list --max-parents=0 HEAD 2>/dev/null | head -1 | cut -c1-12)
+        if [ -n "$repo_id" ]; then
+            agentgit_repo="$HOME/.agentgit/projects/$repo_id"
+        fi
+    fi
+
+    # If agentgit repo exists, provide completions
+    if [ -d "$agentgit_repo/.git" ]; then
+        # Check if git completion is available
+        if declare -f __git_main &>/dev/null; then
+            # Use git's native completion
+            local saved_pwd="$PWD"
+            local saved_git_dir="$__git_dir"
+
+            cd "$agentgit_repo" 2>/dev/null
+            __git_dir="$agentgit_repo/.git"
+
+            __git_main
+
+            __git_dir="$saved_git_dir"
+            cd "$saved_pwd" 2>/dev/null
+        else
+            # Fallback: provide basic branch/ref completion
+            local git_cmd="${words[1]}"
+            case "$git_cmd" in
+                log|show|diff|checkout|switch|rebase|merge|cherry-pick)
+                    # Complete with branches and refs
+                    local refs=$(git -C "$agentgit_repo" for-each-ref --format='%(refname:short)' refs/heads/ refs/remotes/ refs/tags/ 2>/dev/null)
+                    COMPREPLY=( $(compgen -W "$refs" -- "$cur") )
+                    ;;
+                branch)
+                    local branches=$(git -C "$agentgit_repo" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
+                    COMPREPLY=( $(compgen -W "$branches" -- "$cur") )
+                    ;;
+                *)
+                    # Default to file completion
+                    _filedir
+                    ;;
+            esac
+        fi
+    fi
+}
+
+_agentgit() {
+    local cur prev words cword
+    _init_completion || return
+
+    # Known agentgit commands
+    local agentgit_commands="process sessions discover repo completion"
+
+    # If we're completing the first argument
+    if [ $cword -eq 1 ]; then
+        # Offer both agentgit commands and git commands
+        local git_commands=$(git help -a 2>/dev/null | awk '/^  [a-z]/ {print $1}')
+        COMPREPLY=( $(compgen -W "$agentgit_commands $git_commands" -- "$cur") )
+        return 0
+    fi
+
+    # If the first argument is an agentgit command, use default completion
+    case "${words[1]}" in
+        process|sessions|discover)
+            # Use default file completion
+            _filedir
+            return 0
+            ;;
+        repo)
+            # No arguments for repo command
+            return 0
+            ;;
+        completion)
+            # Complete shell types
+            COMPREPLY=( $(compgen -W "bash zsh" -- "$cur") )
+            return 0
+            ;;
+        *)
+            # For git passthrough commands, use wrapper that sets git context
+            # Replace command name with git in the completion arrays
+            local saved_word0="${words[0]}"
+            local saved_comp_word0="${COMP_WORDS[0]}"
+
+            words[0]="git"
+            COMP_WORDS[0]="git"
+
+            # Call our wrapper that handles the agentgit repo context
+            _agentgit_git_wrapper
+
+            # Restore command name
+            COMP_WORDS[0]="$saved_comp_word0"
+            words[0]="$saved_word0"
+            return 0
+            ;;
+    esac
+}
+
+complete -F _agentgit agentgit
+complete -F _agentgit agit
+'''
+    else:  # zsh
+        script = '''#compdef agentgit agit
+
+# Zsh completion for agentgit and agit
+# This delegates to git's existing completion for git passthrough commands
+
+_agentgit() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    # If we're at the first argument position, show agentgit + git commands
+    if (( CURRENT == 2 )); then
+        local agentgit_commands=(
+            'process:Process agent transcripts into git repositories'
+            'sessions:Manage and list web sessions'
+            'discover:Discover transcripts for the current project'
+            'repo:Print path to agentgit repository'
+            'completion:Output shell completion script'
+        )
+        local git_commands
+        git_commands=(${(f)"$(git help -a 2>/dev/null | awk '/^  [a-z]/ {print $1}')"})
+
+        _describe -t agentgit-commands 'agentgit commands' agentgit_commands
+        _describe -t git-commands 'git commands' git_commands
+        return 0
+    fi
+
+    # For positions after the first argument, provide git-aware completions
+    # Find the agentgit repo path using repo ID
+    local agentgit_repo=""
+    local git_root=$(git rev-parse --show-toplevel 2>/dev/null)
+
+    if [[ -n "$git_root" ]]; then
+        local repo_id=$(git -C "$git_root" rev-list --max-parents=0 HEAD 2>/dev/null | head -1 | cut -c1-12)
+        if [[ -n "$repo_id" ]]; then
+            agentgit_repo="$HOME/.agentgit/projects/$repo_id"
+        fi
+    fi
+
+    # If repo exists, provide git-aware completions
+    if [[ -d "$agentgit_repo/.git" ]]; then
+        local -a branches
+        branches=(${(f)"$(git -C "$agentgit_repo" for-each-ref --format='%(refname:short)' refs/heads/ refs/remotes/ refs/tags/ 2>/dev/null)"})
+        _describe -t branches 'git branches' branches
+    else
+        _files
+    fi
+}
+
+# Manually register the completion (needed when sourcing via process substitution)
+compdef _agentgit agit
+compdef _agentgit agentgit
+'''
+
+    click.echo(script)
 
 
 if __name__ == "__main__":
