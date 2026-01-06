@@ -126,6 +126,104 @@ class TestCLI:
         assert result.exit_code == 0
         assert "claude_code" in result.output
 
+    def test_config_show_command(self, runner, tmp_path, sample_jsonl):
+        """Should show configuration for a repository."""
+        from git import Repo
+
+        from agentgit.config import ProjectConfig, save_config
+
+        # Process a transcript to create agentgit repo
+        output_dir = tmp_path / "output"
+        result = runner.invoke(main, ["process", str(sample_jsonl), "-o", str(output_dir)])
+        assert result.exit_code == 0
+
+        # Save some config
+        config = ProjectConfig(enhancer="llm", enhance_model="sonnet")
+        save_config(output_dir, config)
+
+        # Get repo ID for directory lookup
+        repo = Repo(output_dir)
+        repo_id = repo.git.rev_list("--max-parents=0", "HEAD")[:12]
+
+        # Test config show from within the repo
+        result = runner.invoke(main, ["config", "show", "-r", str(output_dir)])
+        assert result.exit_code == 0
+        assert "Enhancer: llm" in result.output
+        assert "Model: sonnet" in result.output
+        assert repo_id in result.output
+
+    def test_config_show_no_config(self, runner, tmp_path, sample_jsonl):
+        """Should show defaults when no config is set."""
+        # Process a transcript to create agentgit repo
+        output_dir = tmp_path / "output"
+        result = runner.invoke(main, ["process", str(sample_jsonl), "-o", str(output_dir)])
+        assert result.exit_code == 0
+
+        # Test config show without any config set
+        result = runner.invoke(main, ["config", "show", "-r", str(output_dir)])
+        assert result.exit_code == 0
+        assert "(not set - will use default)" in result.output
+
+    def test_config_set_enhancer(self, runner, tmp_path, sample_jsonl):
+        """Should set enhancer configuration."""
+        from agentgit.config import load_config
+
+        # Process a transcript to create agentgit repo
+        output_dir = tmp_path / "output"
+        result = runner.invoke(main, ["process", str(sample_jsonl), "-o", str(output_dir)])
+        assert result.exit_code == 0
+
+        # Set enhancer
+        result = runner.invoke(main, ["config", "set", "enhancer", "llm", "-r", str(output_dir)])
+        assert result.exit_code == 0
+        assert "Set enhancer to 'llm'" in result.output
+
+        # Verify it was saved
+        config = load_config(output_dir)
+        assert config.enhancer == "llm"
+
+    def test_config_set_model(self, runner, tmp_path, sample_jsonl):
+        """Should set model configuration."""
+        from agentgit.config import load_config
+
+        # Process a transcript to create agentgit repo
+        output_dir = tmp_path / "output"
+        result = runner.invoke(main, ["process", str(sample_jsonl), "-o", str(output_dir)])
+        assert result.exit_code == 0
+
+        # Set model
+        result = runner.invoke(
+            main, ["config", "set", "model", "claude-cli-haiku", "-r", str(output_dir)]
+        )
+        assert result.exit_code == 0
+        assert "Set model to 'claude-cli-haiku'" in result.output
+
+        # Verify it was saved
+        config = load_config(output_dir)
+        assert config.enhance_model == "claude-cli-haiku"
+
+    def test_config_set_preserves_other_values(self, runner, tmp_path, sample_jsonl):
+        """Should preserve other config values when setting one."""
+        from agentgit.config import ProjectConfig, load_config, save_config
+
+        # Process a transcript to create agentgit repo
+        output_dir = tmp_path / "output"
+        result = runner.invoke(main, ["process", str(sample_jsonl), "-o", str(output_dir)])
+        assert result.exit_code == 0
+
+        # Set initial config
+        initial_config = ProjectConfig(enhancer="rules", enhance_model="opus")
+        save_config(output_dir, initial_config)
+
+        # Set only enhancer
+        result = runner.invoke(main, ["config", "set", "enhancer", "llm", "-r", str(output_dir)])
+        assert result.exit_code == 0
+
+        # Verify model is preserved
+        config = load_config(output_dir)
+        assert config.enhancer == "llm"
+        assert config.enhance_model == "opus"
+
     def test_discover_command(self, runner, tmp_path, monkeypatch):
         """Should list discovered sessions in table format."""
         from git import Repo

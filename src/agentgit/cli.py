@@ -984,6 +984,152 @@ def agents_remove(package: str) -> None:
         raise click.ClickException(message)
 
 
+@config.command("show")
+@click.option(
+    "--repo",
+    "-r",
+    type=click.Path(exists=True, path_type=Path),
+    help="Agentgit repository path (defaults to current directory's agentgit repo)",
+)
+def config_show(repo: Path | None) -> None:
+    """Show current configuration for an agentgit repository.
+
+    Pass the path to an agentgit repository (the output directory from 'agentgit process').
+
+    Examples:
+
+    \b
+      agentgit config show                                    # Autodetect from current dir
+      agentgit config show -r ~/.agentgit/projects/abc123    # Specific agentgit repo
+      agentgit config show -r /path/to/output                # Direct agentgit repo path
+    """
+    from git import Repo as GitRepo
+    from git.exc import InvalidGitRepositoryError
+
+    from agentgit import find_git_root
+    from agentgit.config import load_config
+
+    # Determine agentgit repo path
+    agentgit_repo = repo
+    if agentgit_repo is None:
+        # Try to find from current directory
+        git_root = find_git_root()
+        if not git_root:
+            raise click.ClickException(
+                "Not in a git repository. Use -r to specify an agentgit repository."
+            )
+
+        # Get repo ID and find agentgit repo
+        repo_id = get_repo_id(Path(git_root))
+        if not repo_id:
+            raise click.ClickException(
+                f"Could not determine repository ID for: {git_root}\n"
+                "Make sure the repository has at least one commit."
+            )
+
+        agentgit_repo = Path.home() / ".agentgit" / "projects" / repo_id
+
+        if not agentgit_repo.exists():
+            raise click.ClickException(
+                f"No agentgit repository found for this project.\n"
+                f"Expected location: {agentgit_repo}\n"
+                f"Run 'agentgit process <transcript>' first."
+            )
+
+    # Verify it's a git repo
+    try:
+        git_repo = GitRepo(agentgit_repo)
+    except InvalidGitRepositoryError:
+        raise click.ClickException(f"Not a git repository: {agentgit_repo}")
+
+    # Get repo ID for display
+    repo_id = get_repo_id(agentgit_repo)
+
+    # Load config
+    config = load_config(agentgit_repo)
+
+    click.echo(f"Configuration for {agentgit_repo.name} (repo ID: {repo_id}):\n")
+    click.echo(f"  Enhancer: {config.enhancer or '(not set - will use default)'}")
+    click.echo(f"  Model: {config.enhance_model or '(not set - will use default)'}")
+    click.echo(f"\nAgentgit repo: {agentgit_repo}")
+
+
+@config.command("set")
+@click.argument("key", type=click.Choice(["enhancer", "model"]))
+@click.argument("value", type=str)
+@click.option(
+    "--repo",
+    "-r",
+    type=click.Path(exists=True, path_type=Path),
+    help="Agentgit repository path (defaults to current directory's agentgit repo)",
+)
+def config_set(key: str, value: str, repo: Path | None) -> None:
+    """Set a configuration value for an agentgit repository.
+
+    Pass the path to an agentgit repository (the output directory from 'agentgit process').
+
+    Examples:
+
+    \b
+      agentgit config set enhancer llm                              # Enable AI enhancer
+      agentgit config set model claude-cli-haiku                    # Set model to haiku
+      agentgit config set enhancer rules -r /path/to/agentgit/repo  # Specific repo
+    """
+    from git import Repo as GitRepo
+    from git.exc import InvalidGitRepositoryError
+
+    from agentgit import find_git_root
+    from agentgit.config import ProjectConfig, load_config, save_config
+
+    # Determine agentgit repo path
+    agentgit_repo = repo
+    if agentgit_repo is None:
+        # Try to find from current directory
+        git_root = find_git_root()
+        if not git_root:
+            raise click.ClickException(
+                "Not in a git repository. Use -r to specify an agentgit repository."
+            )
+
+        # Get repo ID and find agentgit repo
+        repo_id = get_repo_id(Path(git_root))
+        if not repo_id:
+            raise click.ClickException(
+                f"Could not determine repository ID for: {git_root}\n"
+                "Make sure the repository has at least one commit."
+            )
+
+        agentgit_repo = Path.home() / ".agentgit" / "projects" / repo_id
+
+        if not agentgit_repo.exists():
+            raise click.ClickException(
+                f"No agentgit repository found for this project.\n"
+                f"Expected location: {agentgit_repo}\n"
+                f"Run 'agentgit process <transcript>' first."
+            )
+
+    # Verify it's a git repo
+    try:
+        git_repo = GitRepo(agentgit_repo)
+    except InvalidGitRepositoryError:
+        raise click.ClickException(f"Not a git repository: {agentgit_repo}")
+
+    # Load existing config
+    config = load_config(agentgit_repo)
+
+    # Update the requested setting
+    if key == "enhancer":
+        config = ProjectConfig(enhancer=value, enhance_model=config.enhance_model)
+        click.echo(f"Set enhancer to '{value}' for {agentgit_repo.name}")
+    elif key == "model":
+        config = ProjectConfig(enhancer=config.enhancer, enhance_model=value)
+        click.echo(f"Set model to '{value}' for {agentgit_repo.name}")
+
+    # Save config
+    save_config(agentgit_repo, config)
+    click.echo(f"Configuration saved to {agentgit_repo}")
+
+
 # Alias for backward compatibility
 @main.command(hidden=True)
 @click.option("--project", type=click.Path(exists=True, path_type=Path))
