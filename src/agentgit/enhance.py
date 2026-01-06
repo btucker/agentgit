@@ -184,6 +184,7 @@ def generate_session_branch_name(
             prompt_responses=prompt_responses,
             enhancer=config.enhancer,
             model=config.model,
+            session_id=session_id,
         )
         if result:
             # Sanitize for git branch name

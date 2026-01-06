@@ -538,6 +538,40 @@ def _resolve_enhance_config(
     return effective_enhancer, effective_model, enhance_config
 
 
+def _batch_enhance_all_sessions(
+    parsed_sessions: list[dict],
+    enhance_config: "EnhanceConfig",
+    console: "Console",
+) -> None:
+    """Batch generate names and commit messages for all sessions at once.
+
+    Args:
+        parsed_sessions: List of session dicts with parsed transcripts
+        enhance_config: Enhancement configuration
+        console: Rich console for output
+    """
+    from agentgit.enhancers.llm import batch_generate_session_names
+    from agentgit.enhance import preprocess_batch_enhancement
+
+    # Batch generate session names
+    console.print("[bold blue]Generating session names...[/bold blue]")
+    sessions_for_batch = [
+        (s["session_id"], s["parsed"].prompt_responses)
+        for s in parsed_sessions
+    ]
+    batch_generate_session_names(sessions_for_batch, enhance_config.model)
+    console.print(f"[green]✓[/green] Generated {len(parsed_sessions)} session names")
+
+    # Batch enhance all prompt responses from all sessions together
+    console.print("[bold blue]Generating commit messages...[/bold blue]")
+    all_prompt_responses = []
+    for session in parsed_sessions:
+        all_prompt_responses.extend(session["parsed"].prompt_responses)
+
+    preprocess_batch_enhancement(all_prompt_responses, enhance_config)
+    console.print(f"[green]✓[/green] Generated {len(all_prompt_responses)} commit messages")
+
+
 def _run_process(
     transcripts: list[Path],
     output: Path | None,
@@ -572,44 +606,109 @@ def _run_process(
         output, enhancer, enhance_model, transcripts
     )
 
-    if len(transcripts) == 1:
-        click.echo(f"Processing transcript: {transcripts[0]}")
-    else:
-        click.echo(f"Processing {len(transcripts)} transcripts:")
-        for t in transcripts:
-            click.echo(f"  - {t.name}")
+    from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
-    # Process each transcript into its own session branch
+    console = Console()
+
+    # Parse all transcripts first
+    parsed_sessions = []
+    parse_errors = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        console=console,
+    ) as progress:
+        parse_task = progress.add_task("Parsing transcripts...", total=None)
+
+        for transcript_path in transcripts:
+            try:
+                parsed = parse_transcript(transcript_path, plugin_type=plugin_type)
+
+                if not parsed.prompt_responses:
+                    continue
+
+                # Extract agent name from format (e.g., "claude_code_jsonl" -> "claude-code")
+                agent_name = None
+                if parsed.source_format:
+                    # Remove suffixes like "_jsonl", "_web"
+                    agent_name = parsed.source_format.replace("_jsonl", "").replace("_web", "")
+
+                session_id = parsed.session_id or transcript_path.stem
+                parsed_sessions.append({
+                    "transcript_path": transcript_path,
+                    "parsed": parsed,
+                    "agent_name": agent_name,
+                    "session_id": session_id,
+                })
+            except (ValueError, Exception) as e:
+                parse_errors.append((transcript_path, str(e)))
+                continue
+
+    # Report any parse errors
+    if parse_errors:
+        console.print(f"[yellow]Warning: Skipped {len(parse_errors)} transcript(s) due to errors[/yellow]")
+        for path, error in parse_errors[:3]:  # Show first 3 errors
+            console.print(f"  [dim]{path.name}: {error}[/dim]")
+
+    # Batch enhance all sessions at once (if using LLM enhancer)
+    # This populates caches so individual builds are fast
+    if parsed_sessions and enhance_config and enhance_config.enhancer == "llm":
+        _batch_enhance_all_sessions(parsed_sessions, enhance_config, console)
+
+    # Build each session's git branch
     repo = None
     total_prompts = 0
     total_operations = 0
-    for transcript_path in transcripts:
-        parsed = parse_transcript(transcript_path, plugin_type=plugin_type)
 
-        if not parsed.prompt_responses:
-            click.echo(f"  Skipping {transcript_path.name}: no operations found")
-            continue
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
 
-        # Extract agent name from format (e.g., "claude_code_jsonl" -> "claude-code")
-        agent_name = None
-        if parsed.source_format:
-            # Remove suffixes like "_jsonl", "_web"
-            agent_name = parsed.source_format.replace("_jsonl", "").replace("_web", "")
+        if len(parsed_sessions) == 1:
+            task = progress.add_task(
+                f"Building {parsed_sessions[0]['transcript_path'].name}...",
+                total=None  # Indeterminate for single transcript
+            )
+        else:
+            task = progress.add_task(
+                f"Building {len(parsed_sessions)} sessions...",
+                total=len(parsed_sessions)
+            )
 
-        # Build into session branch
-        repo, repo_path, _ = build_repo_grouped(
-            prompt_responses=parsed.prompt_responses,
-            output_dir=output,
-            author_name=author,
-            author_email=email,
-            enhance_config=enhance_config,
-            session_id=parsed.session_id or transcript_path.stem,
-            agent_name=agent_name,
-            incremental=not reprocess,
-        )
+        for i, session in enumerate(parsed_sessions):
+            # Update task description for current transcript
+            if len(parsed_sessions) > 1:
+                progress.update(
+                    task,
+                    description=f"Building {session['transcript_path'].name}...",
+                    completed=i
+                )
 
-        total_prompts += len(parsed.prompts)
-        total_operations += len(parsed.operations)
+            # Build into session branch
+            repo, repo_path, _ = build_repo_grouped(
+                prompt_responses=session["parsed"].prompt_responses,
+                output_dir=output,
+                author_name=author,
+                author_email=email,
+                enhance_config=enhance_config,
+                session_id=session["session_id"],
+                agent_name=session["agent_name"],
+                incremental=not reprocess,
+            )
+
+            total_prompts += len(session["parsed"].prompts)
+            total_operations += len(session["parsed"].operations)
+
+        # Mark as complete
+        if len(parsed_sessions) > 1:
+            progress.update(task, completed=len(parsed_sessions))
+        else:
+            progress.update(task, description="✓ Building complete")
 
     if repo is None:
         click.echo("No operations found in any transcript")
@@ -618,8 +717,8 @@ def _run_process(
     # Save new preferences if explicitly provided (after repo exists)
     if enhancer is not None or enhance_model is not None:
         new_config = ProjectConfig(
-            enhancer=enhancer or saved_config.enhancer,
-            enhance_model=enhance_model or saved_config.enhance_model,
+            enhancer=effective_enhancer,
+            enhance_model=effective_model,
         )
         save_config(output, new_config)
 
@@ -681,8 +780,8 @@ def _run_watch_mode(
     # Save new preferences if explicitly provided (after repo exists)
     if enhancer is not None or enhance_model is not None:
         new_config = ProjectConfig(
-            enhancer=enhancer or saved_config.enhancer,
-            enhance_model=enhance_model or saved_config.enhance_model,
+            enhancer=effective_enhancer,
+            enhance_model=effective_model,
         )
         save_config(output, new_config)
 

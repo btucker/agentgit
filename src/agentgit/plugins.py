@@ -228,6 +228,7 @@ class AgentGitSpec:
         prompt_responses: list[PromptResponse],
         enhancer: str,
         model: str | None,
+        session_id: str | None = None,
     ) -> str | None:
         """Generate a descriptive name for a coding session.
 
@@ -237,6 +238,7 @@ class AgentGitSpec:
             prompt_responses: All prompts and responses in the session.
             enhancer: The enhancer type to use.
             model: Optional model override.
+            session_id: Optional session identifier for caching.
 
         Returns:
             A descriptive session name (will be sanitized for git), or None.

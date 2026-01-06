@@ -595,10 +595,22 @@ Respond with ONLY the summary, nothing else."""
         prompt_responses: list["PromptResponse"],
         enhancer: str,
         model: str | None,
+        session_id: str | None = None,
     ) -> str | None:
-        """Generate a descriptive name for a coding session."""
+        """Generate a descriptive name for a coding session.
+
+        If session_id is provided and a name was previously generated via
+        batch_generate_session_names, returns the cached name.
+        """
+        global _session_name_cache
+
         if enhancer != ENHANCER_NAME:
             return None
+
+        # Check cache first (for batch-generated names)
+        if session_id and session_id in _session_name_cache:
+            logger.debug("Using cached session name for %s", session_id)
+            return _session_name_cache[session_id]
 
         model = model or DEFAULT_MODEL
 
@@ -656,3 +668,139 @@ Respond with ONLY the session name in kebab-case, nothing else."""
             return name
 
         return None
+
+
+# Session name cache for batch generation
+_session_name_cache: dict[str, str] = {}
+
+
+def batch_generate_session_names(
+    sessions: list[tuple[str, list["PromptResponse"]]],
+    model: str = DEFAULT_MODEL,
+    batch_size: int = 20,
+) -> dict[str, str]:
+    """Batch generate names for multiple sessions in chunks.
+
+    Processes sessions in batches to avoid overwhelming the LLM and handle
+    large numbers of sessions efficiently.
+
+    Args:
+        sessions: List of (session_id, prompt_responses) tuples.
+        model: The model ID to use.
+        batch_size: Number of sessions to process per LLM call (default 20).
+
+    Returns:
+        Dictionary mapping session_id to generated name.
+    """
+    global _session_name_cache
+
+    if not sessions:
+        return {}
+
+    all_results = {}
+
+    # Process in chunks
+    for chunk_start in range(0, len(sessions), batch_size):
+        chunk = sessions[chunk_start:chunk_start + batch_size]
+        logger.info("Processing session name batch %d-%d of %d",
+                   chunk_start + 1, min(chunk_start + batch_size, len(sessions)), len(sessions))
+
+        # Build batch request with sessions in this chunk
+        sessions_context = []
+        session_ids = []
+
+        for session_id, prompt_responses in chunk:
+            # Build context from first few prompts
+            prompts_text = []
+            files_modified = set()
+
+            for pr in prompt_responses[:3]:  # Look at first 3 prompts max for batch
+                prompts_text.append(_truncate_text(pr.prompt.text, 150))
+                for turn in pr.turns:
+                    for op in turn.operations:
+                        files_modified.add(op.filename)
+
+            prompts_context = " | ".join(prompts_text)
+            files_context = ", ".join(list(files_modified)[:8])
+
+            sessions_context.append({
+                "id": len(session_ids) + 1,
+                "prompts": prompts_context,
+                "files": files_context
+            })
+            session_ids.append(session_id)
+
+        # Build the batch prompt
+        sessions_json = "\n".join([
+            f"{s['id']}. Prompts: {s['prompts']}\n   Files: {s['files']}"
+            for s in sessions_context
+        ])
+
+        ai_prompt = f"""Generate concise, descriptive names for these coding sessions.
+
+Sessions:
+{sessions_json}
+
+Requirements:
+- Use 3-6 words maximum per name
+- Keep each name under 50 characters
+- Use kebab-case (lowercase with hyphens)
+- Focus on the main purpose or feature
+
+Examples of good session names:
+- "add-user-authentication"
+- "fix-login-validation-bugs"
+- "implement-oauth-flow"
+- "add-rich-markdown-rendering"
+
+Respond with JSON array containing ONLY the session names in order, nothing else.
+Example: ["add-auth", "fix-bugs", "implement-feature"]"""
+
+        result = _run_llm(ai_prompt, model)
+        if not result:
+            continue
+
+        # Parse JSON response
+        import json
+        import re
+
+        try:
+            # Extract JSON array from response
+            result = result.strip()
+            # Handle markdown code blocks
+            if result.startswith("```"):
+                result = re.sub(r'^```(?:json)?\s*', '', result)
+                result = re.sub(r'\s*```$', '', result)
+
+            names = json.loads(result)
+
+            if not isinstance(names, list):
+                logger.warning("Expected list from LLM, got: %s", type(names))
+                continue
+
+            # Build result dict and cache
+            for session_id, name in zip(session_ids, names):
+                # Clean and validate name
+                if isinstance(name, str):
+                    clean_name = name.strip().strip('"').strip("'").lower()
+                    # Ensure kebab-case
+                    clean_name = re.sub(r'[^\w\-]', '-', clean_name)
+                    clean_name = re.sub(r'-+', '-', clean_name).strip('-')
+
+                    # Enforce 50 character limit
+                    if len(clean_name) > 50:
+                        clean_name = clean_name[:50]
+                        if '-' in clean_name:
+                            clean_name = clean_name.rsplit('-', 1)[0]
+
+                    all_results[session_id] = clean_name
+                    _session_name_cache[session_id] = clean_name
+
+            logger.info("Batch generated %d session names in this chunk", len(session_ids))
+
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning("Failed to parse session names from LLM response: %s", e)
+            logger.debug("LLM response was: %s", result)
+
+    logger.info("Total batch generated %d session names", len(all_results))
+    return all_results

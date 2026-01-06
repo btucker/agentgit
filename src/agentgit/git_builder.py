@@ -655,6 +655,7 @@ class GitRepoBuilder:
                 logger.info("Created session branch: %s", self.session_branch_name)
 
         # Pre-process batch enhancement for AI enhancers (much more efficient)
+        # Note: If already done globally, the cache will be hit and this is fast
         if self.enhance_config and self.enhance_config.enabled:
             from agentgit.enhance import preprocess_batch_enhancement
 
