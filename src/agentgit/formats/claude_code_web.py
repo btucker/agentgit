@@ -143,14 +143,19 @@ class ClaudeCodeWebPlugin:
         Fetches available web sessions from the API and caches them locally.
         Returns paths to the cached session files.
 
+        Note: Currently returns ALL web sessions regardless of project_path,
+        since the Claude API doesn't provide project information in the
+        sessions list endpoint.
+
         Args:
-            project_path: Path to the project. If None, returns all sessions.
+            project_path: Path to the project (currently ignored).
 
         Returns:
             List of paths to cached web session files.
         """
-        # Discover web sessions (silently returns empty if no credentials)
-        sessions = discover_web_sessions(project_path=project_path)
+        # Discover all web sessions (API doesn't provide project filtering)
+        # TODO: Extract project from session loglines and cache for filtering
+        sessions = discover_web_sessions(project_path=None)
 
         if not sessions:
             return []
