@@ -832,22 +832,41 @@ class GitRepoBuilder:
         self.file_states[operation.file_path] = operation.content or ""
         return True
 
-    def _apply_edit_no_commit(self, operation: FileOperation) -> bool:
-        """Apply an edit operation without committing."""
+    def _ensure_initial_state_for_edit(self, operation: FileOperation) -> str | None:
+        """Ensure file exists and return its content for editing.
+
+        Args:
+            operation: The edit operation.
+
+        Returns:
+            File content if available, None if file cannot be prepared.
+        """
         rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
         full_path = self.output_dir / rel_path
 
         if full_path.exists():
-            content = full_path.read_text()
+            return full_path.read_text()
         elif operation.file_path in self.file_states:
-            content = self.file_states[operation.file_path]
+            return self.file_states[operation.file_path]
         elif operation.original_content:
+            # Create initial state commit with the original content
             content = operation.original_content
             full_path.parent.mkdir(parents=True, exist_ok=True)
             full_path.write_text(content)
             self.repo.index.add([rel_path])
             self.repo.index.commit("Initial state (pre-session)")
+            return content
         else:
+            return None
+
+    def _apply_edit_no_commit(self, operation: FileOperation) -> bool:
+        """Apply an edit operation without committing."""
+        rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
+        full_path = self.output_dir / rel_path
+
+        # Get or create initial content
+        content = self._ensure_initial_state_for_edit(operation)
+        if content is None:
             return False
 
         old_str = operation.old_string or ""
@@ -928,87 +947,41 @@ class GitRepoBuilder:
 
     def _apply_write(self, operation: FileOperation) -> None:
         """Apply a write operation."""
+        # Delegate to no_commit version for file operations
+        if not self._apply_write_no_commit(operation):
+            return
+
+        # Stage and commit the changes
         rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
-        full_path = self.output_dir / rel_path
-
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(operation.content or "")
-
-        self.file_states[operation.file_path] = operation.content or ""
-
         self.repo.index.add([rel_path])
         commit_msg = format_commit_message(operation)
         self.repo.index.commit(commit_msg)
 
     def _apply_edit(self, operation: FileOperation) -> None:
         """Apply an edit operation."""
-        rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
-        full_path = self.output_dir / rel_path
-
-        if full_path.exists():
-            content = full_path.read_text()
-        elif operation.file_path in self.file_states:
-            content = self.file_states[operation.file_path]
-        elif operation.original_content:
-            content = operation.original_content
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(content)
-            self.repo.index.add([rel_path])
-            self.repo.index.commit("Initial state (pre-session)")
-        else:
+        # Delegate to no_commit version for file operations
+        if not self._apply_edit_no_commit(operation):
             return
 
-        old_str = operation.old_string or ""
-        new_str = operation.new_string or ""
-
-        if old_str in content:
-            if operation.replace_all:
-                content = content.replace(old_str, new_str)
-            else:
-                content = content.replace(old_str, new_str, 1)
-
-            full_path.write_text(content)
-            self.file_states[operation.file_path] = content
-
-            self.repo.index.add([rel_path])
-            commit_msg = format_commit_message(operation)
-            self.repo.index.commit(commit_msg)
+        # Stage and commit the changes
+        rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
+        self.repo.index.add([rel_path])
+        commit_msg = format_commit_message(operation)
+        self.repo.index.commit(commit_msg)
 
     def _apply_delete(self, operation: FileOperation) -> None:
         """Apply a delete operation."""
-        delete_path = operation.file_path
+        # Delegate to no_commit version for file operations
+        if not self._apply_delete_no_commit(operation):
+            return
 
-        files_to_remove = []
-
-        if operation.recursive:
-            delete_prefix = delete_path.rstrip("/") + "/"
-            for orig_path, rel_path in self.path_mapping.items():
-                if orig_path.startswith(delete_prefix) or orig_path == delete_path:
-                    file_abs = self.output_dir / rel_path
-                    if file_abs.exists():
-                        files_to_remove.append((file_abs, rel_path))
-        else:
-            if delete_path in self.path_mapping:
-                rel_path = self.path_mapping[delete_path]
-                file_abs = self.output_dir / rel_path
-                if file_abs.exists():
-                    files_to_remove.append((file_abs, rel_path))
-
-        if files_to_remove:
-            for file_abs, rel_path in files_to_remove:
-                file_abs.unlink()
-                try:
-                    self.repo.index.remove([rel_path])
-                except GitCommandError:
-                    # File may not be tracked in git
-                    logger.debug("Could not remove %s from index (may not be tracked)", rel_path)
-
-            commit_msg = format_commit_message(operation)
-            try:
-                self.repo.index.commit(commit_msg)
-            except GitCommandError as e:
-                # May fail if nothing to commit
-                logger.debug("Could not commit delete operation: %s", e)
+        # Create commit for the deletion
+        commit_msg = format_commit_message(operation)
+        try:
+            self.repo.index.commit(commit_msg)
+        except GitCommandError as e:
+            # May fail if nothing to commit
+            logger.debug("Could not commit delete operation: %s", e)
 
     def _apply_source_commit(
         self,
