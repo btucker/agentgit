@@ -454,10 +454,30 @@ def process(
         )
 
 
+def _has_claude_code_transcripts(transcript_paths: list[Path]) -> bool:
+    """Check if any of the transcript paths are Claude Code format.
+
+    Args:
+        transcript_paths: List of transcript paths to check.
+
+    Returns:
+        True if any transcript is Claude Code format.
+    """
+    from agentgit.plugins import get_configured_plugin_manager
+
+    pm = get_configured_plugin_manager()
+    for path in transcript_paths:
+        detected_format = pm.hook.agentgit_detect_format(path=path)
+        if detected_format and "claude_code" in detected_format:
+            return True
+    return False
+
+
 def _resolve_enhance_config(
     output_dir: Path,
     enhancer: str | None = None,
     enhance_model: str | None = None,
+    transcript_paths: list[Path] | None = None,
 ) -> tuple[str | None, str | None, "EnhanceConfig | None"]:
     """Resolve enhancement configuration from CLI args and saved config.
 
@@ -465,6 +485,7 @@ def _resolve_enhance_config(
         output_dir: Output directory where config is stored.
         enhancer: CLI-provided enhancer name (if any).
         enhance_model: CLI-provided model name (if any).
+        transcript_paths: Optional transcript paths for auto-detection.
 
     Returns:
         Tuple of (effective_enhancer, effective_model, enhance_config).
@@ -478,6 +499,13 @@ def _resolve_enhance_config(
     # Auto-set enhancer to 'llm' if --llm-model is provided
     if enhance_model and not enhancer:
         enhancer = "llm"
+
+    # Auto-detect Claude Code and default to llm/claude-cli-haiku
+    if not enhancer and not saved_config.enhancer and transcript_paths:
+        if _has_claude_code_transcripts(transcript_paths):
+            enhancer = "llm"
+            if not enhance_model and not saved_config.enhance_model:
+                enhance_model = "claude-cli-haiku"
 
     effective_enhancer = enhancer or saved_config.enhancer
     effective_model = enhance_model or saved_config.enhance_model or "haiku"
@@ -513,7 +541,7 @@ def _run_process(
 
     # Resolve enhancement configuration
     effective_enhancer, effective_model, enhance_config = _resolve_enhance_config(
-        output, enhancer, enhance_model
+        output, enhancer, enhance_model, transcripts
     )
 
     if len(transcripts) == 1:
@@ -595,7 +623,7 @@ def _run_watch_mode(
 
     # Resolve enhancement configuration
     effective_enhancer, effective_model, enhance_config = _resolve_enhance_config(
-        output, enhancer, enhance_model
+        output, enhancer, enhance_model, [transcript]
     )
 
     click.echo(f"Watching transcript: {transcript}")
