@@ -32,7 +32,7 @@ def blame_command(
 
         agentgit blame auth.py
         agentgit blame src/utils.py -L 10,20
-        agentgit blame auth.py --session session/claude-code/add-auth
+        agentgit blame auth.py --session sessions/claude-code/add-auth
 
     Args:
         file_path: Path to the file to blame
@@ -199,7 +199,7 @@ def blame_command(
         )
 
         if session_name:
-            # Format session name compactly: session/claude_code/foo -> cc/foo
+            # Format session name compactly: sessions/claude_code/foo -> cc/foo
             # Use agentgit commit SHA instead of code repo commit SHA
             # Note: agentgit_commit_sha is already the short SHA (7 chars)
             agentgit_short_sha = agentgit_commit_sha if agentgit_commit_sha else short_sha
@@ -230,7 +230,7 @@ def format_blame_line_with_session(
 
     Args:
         sha: Commit SHA (short form)
-        session_name: Full session name like "session/claude_code/feature"
+        session_name: Full session name like "sessions/claude_code/feature"
         context: Optional context from commit message
         code: The line of code
         no_context: If True, don't show context
@@ -243,9 +243,9 @@ def format_blame_line_with_session(
     # Get terminal width, default to 80 if not available
     term_width = shutil.get_terminal_size((80, 24)).columns
 
-    # Abbreviate session name: session/claude_code/foo -> cc/foo
+    # Abbreviate session name: sessions/claude_code/foo -> cc/foo
     parts = session_name.split('/')
-    if len(parts) >= 3 and parts[0] == 'session':
+    if len(parts) >= 3 and parts[0] == 'sessions':
         agent = parts[1]
         # Abbreviate agent name to 2-3 chars
         if agent == 'claude_code':
@@ -381,7 +381,7 @@ def build_line_grep_index(agentgit_repo: "Repo", agentgit_repo_path: Path) -> No
 
     # Traverse all session branches
     for branch in agentgit_repo.heads:
-        if not branch.name.startswith('session/'):
+        if not branch.name.startswith('sessions/'):
             continue
 
         # Checkout the branch to run git blame
@@ -548,7 +548,7 @@ def lookup_line_with_grep(agentgit_repo: "Repo", file_path: str, line_hash: str)
         )
 
         # Parse result
-        # Format: "refs/heads/agentgit-index:.agentgit/lines/src_agentgit_cli.py:abc123|session/cc/add-auth|xyz|Adding JWT..."
+        # Format: "refs/heads/agentgit-index:.agentgit/lines/src_agentgit_cli.py:abc123|sessions/cc/add-auth|xyz|Adding JWT..."
         if result:
             # Git grep may return multiple lines if there are multiple matches
             # Take the first match

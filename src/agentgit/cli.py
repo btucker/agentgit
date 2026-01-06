@@ -595,7 +595,7 @@ def _run_process(
         save_config(output, new_config)
 
     # Count branches (sessions)
-    session_branches = [b.name for b in repo.heads if b.name.startswith("session/")]
+    session_branches = [b.name for b in repo.heads if b.name.startswith("sessions/")]
 
     click.echo(f"Created git repository at: {repo_path}")
     click.echo(f"  Sessions (branches): {len(session_branches)}")
@@ -1172,7 +1172,7 @@ def discover(
     "--session",
     "-s",
     type=str,
-    help="Specific session branch to blame (e.g., session/claude-code/add-auth).",
+    help="Specific session branch to blame (e.g., sessions/claude-code/add-auth).",
 )
 def blame(
     file_path: str, lines: str | None, no_context: bool, session: str | None
@@ -1186,7 +1186,7 @@ def blame(
 
         agentgit blame auth.py
         agentgit blame src/utils.py -L 10,20
-        agentgit blame auth.py --session session/claude-code/add-auth
+        agentgit blame auth.py --session sessions/claude-code/add-auth
     """
     from agentgit.cmd.blame import blame_command
 

@@ -149,10 +149,11 @@ def generate_session_branch_name(
         agent_name: Optional agent/format name (e.g., 'claude-code', 'codex').
 
     Returns:
-        A git-safe branch name like 'session/claude-code/add-user-authentication'
+        A git-safe branch name like 'sessions/claude-code/260106-add-user-authentication'
     """
     import re
     import logging
+    from datetime import datetime
     logger = logging.getLogger(__name__)
 
     if config is None:
@@ -164,6 +165,17 @@ def generate_session_branch_name(
         agent_part = re.sub(r'-+', '-', agent_part).strip('-')
     else:
         agent_part = "unknown"
+
+    # Extract creation date from first prompt
+    date_prefix = ""
+    if prompt_responses and prompt_responses[0].prompt:
+        try:
+            # Parse ISO timestamp and format as YYMMDD
+            timestamp_str = prompt_responses[0].prompt.timestamp
+            dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            date_prefix = dt.strftime('%y%m%d')
+        except Exception as e:
+            logger.warning("Failed to parse timestamp: %s", e)
 
     # Try AI-generated name if configured
     if config.enabled and config.enhancer == "llm":
@@ -178,7 +190,9 @@ def generate_session_branch_name(
             safe_name = re.sub(r'[^\w\-/]', '-', result.lower())
             safe_name = re.sub(r'-+', '-', safe_name).strip('-')
             logger.info("Generated session name: %s", safe_name)
-            return f"session/{agent_part}/{safe_name}"
+            if date_prefix:
+                return f"sessions/{agent_part}/{date_prefix}-{safe_name}"
+            return f"sessions/{agent_part}/{safe_name}"
 
     # Fallback: use first prompt as basis
     if prompt_responses and prompt_responses[0].prompt:
@@ -187,14 +201,18 @@ def generate_session_branch_name(
         first_line = first_prompt.split('\n')[0].strip()
         safe_name = re.sub(r'[^\w\-]', '-', first_line.lower())
         safe_name = re.sub(r'-+', '-', safe_name).strip('-')[:50]
-        return f"session/{agent_part}/{safe_name}"
+        if date_prefix:
+            return f"sessions/{agent_part}/{date_prefix}-{safe_name}"
+        return f"sessions/{agent_part}/{safe_name}"
 
     # Last resort: use session ID or timestamp
     if session_id:
-        return f"session/{agent_part}/{session_id[:12]}"
+        if date_prefix:
+            return f"sessions/{agent_part}/{date_prefix}-{session_id[:12]}"
+        return f"sessions/{agent_part}/{session_id[:12]}"
 
     import time
-    return f"session/{agent_part}/{int(time.time())}"
+    return f"sessions/{agent_part}/{int(time.time())}"
 
 
 def preprocess_batch_enhancement(

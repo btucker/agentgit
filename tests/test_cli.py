@@ -446,7 +446,7 @@ class TestBlameHelpers:
         repo.index.commit("Initial commit")
 
         # Create a session branch with a file
-        repo.git.checkout("-b", "session/claude_code/test-session")
+        repo.git.checkout("-b", "sessions/claude_code/test-session")
         test_file = repo_path / "src" / "agentgit" / "cli.py"
         test_file.parent.mkdir(parents=True)
         test_file.write_text("def foo():\n    pass\n")
@@ -482,7 +482,7 @@ class TestBlameHelpers:
         # Verify the entry contains session name and commit
         matching_line = [line for line in lines if line.startswith(f"{line1_hash}|")][0]
         parts = matching_line.split("|")
-        assert parts[1] == "session/claude_code/test-session"
+        assert parts[1] == "sessions/claude_code/test-session"
         assert parts[2] == commit.hexsha[:7]
         assert "Adding a simple function" in parts[3]
 
@@ -505,7 +505,7 @@ class TestBlameHelpers:
         repo.index.commit("Initial commit")
 
         # First session
-        repo.git.checkout("-b", "session/claude_code/session-1")
+        repo.git.checkout("-b", "sessions/claude_code/session-1")
         test_file = repo_path / "src" / "test.py"
         test_file.parent.mkdir(parents=True)
         test_file.write_text("# First session\n")
@@ -519,7 +519,7 @@ class TestBlameHelpers:
 
         # Second session
         repo.git.checkout("main")
-        repo.git.checkout("-b", "session/claude_code/session-2")
+        repo.git.checkout("-b", "sessions/claude_code/session-2")
         # Recreate the file and directory if needed
         test_file.parent.mkdir(parents=True, exist_ok=True)
         test_file.write_text("# Second session\n")
@@ -543,8 +543,8 @@ class TestBlameHelpers:
         line1_hash = _hash_line("# First session\n", "", "")
         line2_hash = _hash_line("# Second session\n", "", "")
 
-        assert f"{line1_hash}|session/claude_code/session-1" in content
-        assert f"{line2_hash}|session/claude_code/session-2" in content
+        assert f"{line1_hash}|sessions/claude_code/session-1" in content
+        assert f"{line2_hash}|sessions/claude_code/session-2" in content
 
     def test_lookup_line_with_grep_found(self, tmp_path):
         """Should find line in grep index."""
@@ -566,7 +566,7 @@ class TestBlameHelpers:
         repo.index.commit("Initial commit")
 
         # Create session with known line
-        repo.git.checkout("-b", "session/claude_code/test-session")
+        repo.git.checkout("-b", "sessions/claude_code/test-session")
         test_file = repo_path / "src" / "agentgit" / "cli.py"
         test_file.parent.mkdir(parents=True)
         test_file.write_text("def hello():\n    return 'world'\n")
@@ -586,7 +586,7 @@ class TestBlameHelpers:
         result = _lookup_line_with_grep(repo, "src/agentgit/cli.py", line_hash)
 
         assert result is not None
-        assert result["session"] == "session/claude_code/test-session"
+        assert result["session"] == "sessions/claude_code/test-session"
         assert result["commit"] == commit.hexsha[:7]
         assert "Simple greeting function" in result["context"]
 
