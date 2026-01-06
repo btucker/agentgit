@@ -172,17 +172,41 @@ It creates a **separate repository** that shares content with your code repo:
 
 The repos share git's object store via git alternates. **Same content = same blob SHA = automatic correlation between your code and its history.**
 
-### Blob SHA Linking
+### How Blame Works: Line-Level Matching
 
-When you run `agentgit blame` on a file in your code repo, agentgit:
+Git stores file content as **blobs** - binary objects representing entire file snapshots. When you commit a file, git creates a blob with that file's content and assigns it a SHA hash. If the content changes, a new blob is created with a new SHA.
 
-1. Runs `git blame` on your code repo to identify which commit introduced each line
-2. Extracts the blob SHA for each line from the commit's tree
-3. Looks up each blob SHA in an index built from all session branches
-4. Matches blobs to find which session (and commit within that session) contains the same content
-5. Displays the session name and agent's reasoning inline with each line
+Traditional approach: match entire file blobs between repos. Problem: files evolve—even if an agent wrote specific lines, other parts might change (imports, formatting, etc.), causing blob SHAs to differ.
 
-Since git uses content-addressable storage, the same file content always produces the same blob SHA—whether it's in your code repo or the agentgit repo. No metadata or trailers needed; the shared object store makes the correlation automatic and reliable.
+**agentgit's solution: match individual lines, not entire files.**
+
+Inspired by how `git diff` uses the Myers algorithm to compare files line-by-line, agentgit builds a searchable index of every line from every session:
+
+```
+refs/heads/agentgit-index/
+└── .agentgit/lines/
+    ├── src_agentgit_cli.py      # Line mappings for this file
+    └── src_agentgit_core.py     # Line mappings for this file
+```
+
+Each mapping file contains:
+```
+line_hash|session_name|commit_sha|context
+abc123def|session/cc/add-auth|xyz789|Adding JWT authentication with HS256
+def456ghi|session/cc/fix-bug|abc123|Fixed token expiration timestamp
+```
+
+**When you run `agentgit blame`:**
+
+1. Blame your code repo to get each line's content
+2. Hash each line: `sha256(line.rstrip('\n'))`
+3. Use `git grep` to search the index: `git grep "^{line_hash}" refs/heads/agentgit-index`
+4. Parse the result to get session name, commit SHA, and context
+5. Display inline with the code
+
+**Why git grep?** It's optimized to search git's object database at millions of lines per second, without needing to load the entire index into memory.
+
+**Why this works:** Even when files evolve and full blob SHAs differ, individual lines often remain identical. The agent wrote `def foo():` and that exact line exists in your code—we can match it, even if the surrounding imports changed.
 
 **Source transcripts** are read from standard locations:
 - Claude Code: `~/.claude/projects/`
