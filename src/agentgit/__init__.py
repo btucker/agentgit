@@ -201,6 +201,7 @@ def build_repo_grouped(
     enhance_config: "EnhanceConfig | None" = None,
     session_id: str | None = None,
     agent_name: str | None = None,
+    incremental: bool = True,
 ) -> tuple[Repo, Path, dict[str, str]]:
     """Build a git repository using merge-based structure.
 
@@ -215,6 +216,7 @@ def build_repo_grouped(
         enhance_config: Optional configuration for generating commit messages.
         session_id: Optional session identifier. If provided, creates a session branch.
         agent_name: Optional agent/format name for branch naming (e.g., 'claude-code').
+        incremental: If True, skip already-processed operations. Default True.
 
     Returns:
         Tuple of (repo, repo_path, path_mapping).
@@ -237,6 +239,7 @@ def build_repo_grouped(
         prompt_responses=prompt_responses,
         author_name=author_name,
         author_email=author_email,
+        incremental=incremental,
     )
 
 

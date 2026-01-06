@@ -400,6 +400,11 @@ def main() -> None:
     default=None,
     help="Model for LLM enhancer (e.g., 'haiku', 'sonnet'). Saved per-project.",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Force rebuild from scratch, discarding incremental state.",
+)
 def process(
     transcript: Path | None,
     output: Path | None,
@@ -410,6 +415,7 @@ def process(
     watch: bool,
     enhancer: str | None,
     enhance_model: str | None,
+    force: bool,
 ) -> None:
     """Process a transcript into a git repository.
 
@@ -421,6 +427,10 @@ def process(
 
     Use --enhancer to generate better commit messages. The preference is saved
     per-project and used automatically on future runs.
+
+    Use --force to rebuild the repository from scratch, discarding all
+    existing branches and state. Useful after updating agentgit to apply
+    new features like updated branch naming.
     """
     transcripts = resolve_transcripts(transcript)
 
@@ -449,6 +459,7 @@ def process(
             source_repo,
             enhancer=enhancer,
             enhance_model=enhance_model,
+            force=force,
         )
 
 
@@ -528,14 +539,25 @@ def _run_process(
     source_repo: Path | None,
     enhancer: str | None = None,
     enhance_model: str | None = None,
+    force: bool = False,
 ) -> None:
-    """Run processing of one or more transcripts."""
+    """Run processing of one or more transcripts.
+
+    Args:
+        force: If True, rebuild from scratch instead of incremental.
+    """
     from agentgit import build_repo_grouped, parse_transcript
     from agentgit.config import ProjectConfig, save_config
 
     # Use default output directory if not specified
     if output is None:
         output = get_default_output_dir(transcripts[0])
+
+    # Handle force rebuild
+    if force and output.exists() and (output / ".git").exists():
+        import shutil
+        click.echo(f"Force rebuild: removing existing repo at {output}")
+        shutil.rmtree(output)
 
     # Resolve enhancement configuration
     effective_enhancer, effective_model, enhance_config = _resolve_enhance_config(
@@ -575,6 +597,7 @@ def _run_process(
             enhance_config=enhance_config,
             session_id=parsed.session_id or transcript_path.stem,
             agent_name=agent_name,
+            incremental=not force,
         )
 
         total_prompts += len(parsed.prompts)
