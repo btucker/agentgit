@@ -130,10 +130,15 @@ class TestCLI:
         """Should list discovered sessions in table format."""
         from git import Repo
 
-        # Create a git repo
+        # Create a git repo with at least one commit
         repo_path = tmp_path / "myproject"
         repo_path.mkdir()
-        Repo.init(repo_path)
+        repo = Repo.init(repo_path)
+
+        # Create a file and commit it (required for hash-based naming)
+        (repo_path / "README.md").write_text("# Test")
+        repo.index.add(["README.md"])
+        repo.index.commit("Initial commit")
 
         # Create .claude/projects with matching directory
         encoded_path = str(repo_path.resolve()).replace("/", "-")

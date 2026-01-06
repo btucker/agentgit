@@ -159,6 +159,83 @@ def get_agentgit_repo_path() -> Path | None:
     return get_default_output_dir(transcripts[0])
 
 
+def _find_best_match_by_suffix(
+    path_parts: tuple[str, ...], matches: list[Path], repo_path: Path
+) -> Path | None:
+    """Find the best matching file by comparing path suffixes.
+
+    Args:
+        path_parts: Parts of the path to match (from Path.parts).
+        matches: List of candidate paths in the repo.
+        repo_path: Root path of the repo (for computing relative paths).
+
+    Returns:
+        Best matching path, or None if no good match found.
+    """
+    best_match = None
+    best_score = 0
+
+    for match in matches:
+        match_parts = match.relative_to(repo_path).parts
+        # Count matching path components from the end
+        score = 0
+        for path_part, match_part in zip(reversed(path_parts), reversed(match_parts)):
+            if path_part == match_part:
+                score += 1
+            else:
+                break
+        if score > best_score:
+            best_score = score
+            best_match = match
+
+    return best_match
+
+
+def _translate_single_path(arg: str, repo_path: Path, git_root: Path | None) -> str:
+    """Translate a single path argument to its equivalent in the agentgit repo.
+
+    Args:
+        arg: The argument to translate (could be a path or other argument).
+        repo_path: Path to the agentgit repository.
+        git_root: Path to the git root of the current project (or None).
+
+    Returns:
+        Translated path, or original argument if not translatable.
+    """
+    # Skip options
+    if arg.startswith("-"):
+        return arg
+
+    # Try to resolve the path
+    local_path = Path(arg)
+
+    # If path doesn't exist in cwd, try relative to git root
+    if not local_path.exists() and git_root:
+        potential_path = git_root / arg
+        if potential_path.exists():
+            local_path = potential_path
+
+    # Search for the filename in agentgit repo
+    filename = Path(arg).name
+    matches = list(repo_path.rglob(filename))
+
+    if not matches:
+        # No matches found - keep original
+        return arg
+    elif len(matches) == 1:
+        # Single match - use it
+        return str(matches[0].relative_to(repo_path))
+    else:
+        # Multiple matches - find best match by path suffix
+        # Use local_path if it exists, otherwise use arg
+        path_parts = local_path.parts if local_path.exists() else Path(arg).parts
+        best_match = _find_best_match_by_suffix(path_parts, matches, repo_path)
+        if best_match:
+            return str(best_match.relative_to(repo_path))
+        else:
+            return arg
+
+
 def translate_paths_for_agentgit_repo(args: list[str], repo_path: Path) -> list[str]:
     """Translate local file paths to their equivalents in the agentgit repo.
 
@@ -168,89 +245,7 @@ def translate_paths_for_agentgit_repo(args: list[str], repo_path: Path) -> list[
     from agentgit import find_git_root
 
     git_root = find_git_root()
-    translated = []
-
-    for arg in args:
-        # Skip options
-        if arg.startswith("-"):
-            translated.append(arg)
-            continue
-
-        # Try to resolve the path
-        local_path = Path(arg)
-
-        # If path doesn't exist in cwd, try relative to git root
-        if not local_path.exists() and git_root:
-            potential_path = git_root / arg
-            if potential_path.exists():
-                local_path = potential_path
-
-        # If still doesn't exist, try to find by filename in agentgit repo
-        if not local_path.exists():
-            # Search for the filename in agentgit repo
-            filename = Path(arg).name
-            matches = list(repo_path.rglob(filename))
-
-            if len(matches) == 1:
-                translated.append(str(matches[0].relative_to(repo_path)))
-                continue
-            elif len(matches) > 1:
-                # Multiple matches - try to find best match by path suffix
-                arg_parts = Path(arg).parts
-                best_match = None
-                best_score = 0
-                for match in matches:
-                    match_parts = match.relative_to(repo_path).parts
-                    score = 0
-                    for ap, mp in zip(reversed(arg_parts), reversed(match_parts)):
-                        if ap == mp:
-                            score += 1
-                        else:
-                            break
-                    if score > best_score:
-                        best_score = score
-                        best_match = match
-                if best_match:
-                    translated.append(str(best_match.relative_to(repo_path)))
-                    continue
-
-            # No matches found - keep original
-            translated.append(arg)
-            continue
-
-        # Path exists - try to find it in the agentgit repo by filename
-        filename = local_path.name
-        matches = list(repo_path.rglob(filename))
-
-        if len(matches) == 1:
-            # Found exactly one match - use the relative path
-            translated.append(str(matches[0].relative_to(repo_path)))
-        elif len(matches) > 1:
-            # Multiple matches - try to find best match by path suffix
-            local_parts = local_path.parts
-            best_match = None
-            best_score = 0
-            for match in matches:
-                match_parts = match.relative_to(repo_path).parts
-                # Count matching path components from the end
-                score = 0
-                for lp, mp in zip(reversed(local_parts), reversed(match_parts)):
-                    if lp == mp:
-                        score += 1
-                    else:
-                        break
-                if score > best_score:
-                    best_score = score
-                    best_match = match
-            if best_match:
-                translated.append(str(best_match.relative_to(repo_path)))
-            else:
-                translated.append(arg)
-        else:
-            # No matches found - keep original
-            translated.append(arg)
-
-    return translated
+    return [_translate_single_path(arg, repo_path, git_root) for arg in args]
 
 
 def run_git_passthrough(args: list[str]) -> None:
@@ -266,10 +261,10 @@ def run_git_passthrough(args: list[str]) -> None:
 
     # Smart path translation: only translate arguments that are actual file paths
     # This avoids translating branch names, refs, etc.
-    translated_args = []
     from agentgit import find_git_root
 
     git_root = find_git_root()
+    translated_args = []
 
     for arg in args:
         # Skip options (start with -)
@@ -280,22 +275,17 @@ def run_git_passthrough(args: list[str]) -> None:
         # Check if this looks like a file path that exists
         local_path = Path(arg)
 
-        # Try relative to cwd
+        # Try relative to cwd or git root
         if local_path.exists() and local_path.is_file():
             # This is an actual file - translate it
-            translated = translate_paths_for_agentgit_repo([arg], repo_path)
-            translated_args.append(translated[0])
-            continue
-
-        # Try relative to git root
-        if git_root and (git_root / arg).exists():
-            translated = translate_paths_for_agentgit_repo([arg], repo_path)
-            translated_args.append(translated[0])
-            continue
-
-        # Not a file path - pass through unchanged
-        # This handles branch names, commit SHAs, refs, etc.
-        translated_args.append(arg)
+            translated_args.append(_translate_single_path(arg, repo_path, git_root))
+        elif git_root and (git_root / arg).exists():
+            # Exists relative to git root - translate it
+            translated_args.append(_translate_single_path(arg, repo_path, git_root))
+        else:
+            # Not a file path - pass through unchanged
+            # This handles branch names, commit SHAs, refs, etc.
+            translated_args.append(arg)
 
     # Set up less with ANSI color support as the pager
     # -R: interpret ANSI color codes
