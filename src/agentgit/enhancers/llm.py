@@ -615,19 +615,25 @@ Respond with ONLY the summary, nothing else."""
         prompts_context = "\n\n".join(prompts_text)
         files_context = ", ".join(list(files_modified)[:10])
 
-        ai_prompt = f"""Generate a short, descriptive name for this coding session (3-6 words max, kebab-case).
+        ai_prompt = f"""Generate a concise, descriptive name for this coding session.
 
 User prompts:
 {prompts_context}
 
 Files modified: {files_context}
 
+Requirements:
+- Use 3-6 words maximum
+- Keep total length under 50 characters
+- Use kebab-case (lowercase with hyphens)
+- Focus on the main purpose or feature
+
 Examples of good session names:
 - "add-user-authentication"
 - "fix-login-validation-bugs"
-- "refactor-database-layer"
+- "discover-should-include-web-sessions"
 - "implement-oauth-flow"
-- "update-api-endpoints"
+- "add-rich-markdown-rendering"
 
 Respond with ONLY the session name in kebab-case, nothing else."""
 
@@ -639,6 +645,14 @@ Respond with ONLY the session name in kebab-case, nothing else."""
             import re
             name = re.sub(r'[^\w\-]', '-', name)
             name = re.sub(r'-+', '-', name).strip('-')
+
+            # Enforce 50 character limit (truncate at word boundary if needed)
+            if len(name) > 50:
+                name = name[:50]
+                # Trim to last complete word
+                if '-' in name:
+                    name = name.rsplit('-', 1)[0]
+
             return name
 
         return None
