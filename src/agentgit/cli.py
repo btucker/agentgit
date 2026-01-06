@@ -467,6 +467,45 @@ def process(
         )
 
 
+def _resolve_enhance_config(
+    output_dir: Path,
+    enhancer: str | None = None,
+    enhance_model: str | None = None,
+) -> tuple[str | None, str | None, "EnhanceConfig | None"]:
+    """Resolve enhancement configuration from CLI args and saved config.
+
+    Args:
+        output_dir: Output directory where config is stored.
+        enhancer: CLI-provided enhancer name (if any).
+        enhance_model: CLI-provided model name (if any).
+
+    Returns:
+        Tuple of (effective_enhancer, effective_model, enhance_config).
+    """
+    from agentgit.config import load_config
+    from agentgit.enhance import EnhanceConfig
+
+    # Load saved config and merge with CLI options
+    saved_config = load_config(output_dir)
+
+    # Auto-set enhancer to 'llm' if --llm-model is provided
+    if enhance_model and not enhancer:
+        enhancer = "llm"
+
+    effective_enhancer = enhancer or saved_config.enhancer
+    effective_model = enhance_model or saved_config.enhance_model or "haiku"
+
+    # Configure enhancement if an enhancer is set
+    enhance_config = None
+    if effective_enhancer:
+        enhance_config = EnhanceConfig(
+            enhancer=effective_enhancer, model=effective_model, enabled=True
+        )
+        click.echo(f"Enhancement: {effective_enhancer} (model: {effective_model})")
+
+    return effective_enhancer, effective_model, enhance_config
+
+
 def _run_process(
     transcripts: list[Path],
     output: Path | None,
@@ -479,28 +518,16 @@ def _run_process(
 ) -> None:
     """Run processing of one or more transcripts."""
     from agentgit import build_repo_grouped, parse_transcript
-    from agentgit.config import ProjectConfig, load_config, save_config
-    from agentgit.enhance import EnhanceConfig
+    from agentgit.config import ProjectConfig, save_config
 
     # Use default output directory if not specified
     if output is None:
         output = get_default_output_dir(transcripts[0])
 
-    # Load saved config and merge with CLI options
-    saved_config = load_config(output)
-    # Auto-set enhancer to 'llm' if --llm-model is provided
-    if enhance_model and not enhancer:
-        enhancer = "llm"
-    effective_enhancer = enhancer or saved_config.enhancer
-    effective_model = enhance_model or saved_config.enhance_model or "haiku"
-
-    # Configure enhancement if an enhancer is set
-    enhance_config = None
-    if effective_enhancer:
-        enhance_config = EnhanceConfig(
-            enhancer=effective_enhancer, model=effective_model, enabled=True
-        )
-        click.echo(f"Enhancement: {effective_enhancer} (model: {effective_model})")
+    # Resolve enhancement configuration
+    effective_enhancer, effective_model, enhance_config = _resolve_enhance_config(
+        output, enhancer, enhance_model
+    )
 
     if len(transcripts) == 1:
         click.echo(f"Processing transcript: {transcripts[0]}")
@@ -572,29 +599,17 @@ def _run_watch_mode(
     enhance_model: str | None = None,
 ) -> None:
     """Run in watch mode."""
-    from agentgit.config import ProjectConfig, load_config, save_config
-    from agentgit.enhance import EnhanceConfig
+    from agentgit.config import ProjectConfig, save_config
     from agentgit.watcher import TranscriptWatcher
 
     # Use default output directory if not specified
     if output is None:
         output = get_default_output_dir(transcript)
 
-    # Load saved config and merge with CLI options
-    saved_config = load_config(output)
-    # Auto-set enhancer to 'llm' if --llm-model is provided
-    if enhance_model and not enhancer:
-        enhancer = "llm"
-    effective_enhancer = enhancer or saved_config.enhancer
-    effective_model = enhance_model or saved_config.enhance_model or "haiku"
-
-    # Configure enhancement if an enhancer is set
-    enhance_config = None
-    if effective_enhancer:
-        enhance_config = EnhanceConfig(
-            enhancer=effective_enhancer, model=effective_model, enabled=True
-        )
-        click.echo(f"Enhancement: {effective_enhancer} (model: {effective_model})")
+    # Resolve enhancement configuration
+    effective_enhancer, effective_model, enhance_config = _resolve_enhance_config(
+        output, enhancer, enhance_model
+    )
 
     click.echo(f"Watching transcript: {transcript}")
     click.echo(f"Output directory: {output}")
