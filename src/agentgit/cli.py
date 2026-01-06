@@ -277,7 +277,15 @@ def run_git_passthrough(args: list[str]) -> None:
     # Set up Rich markdown pager for prettier git output
     # The agentgit-pager renders markdown with Rich then pipes to less -RFX
     env = os.environ.copy()
-    env["GIT_PAGER"] = "agentgit-pager"
+
+    # Find agentgit-pager in the same directory as this script
+    import shutil
+    pager_path = shutil.which("agentgit-pager")
+    if pager_path:
+        env["GIT_PAGER"] = pager_path
+    else:
+        # Fallback to less if agentgit-pager not found
+        env["GIT_PAGER"] = "less -RFX"
 
     # Run git with -C to specify the agentgit repo directory
     # Use --paginate to enable paging for commands that support it
