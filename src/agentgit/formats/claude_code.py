@@ -48,6 +48,12 @@ class ClaudeCodePlugin:
                         break
                     try:
                         obj = json.loads(line.strip())
+
+                        # Skip non-interactive sessions (from claude-cli --print mode)
+                        # These are created when tools like llm make API calls
+                        if i == 0 and obj.get("type") == "queue-operation" and obj.get("operation") == "dequeue":
+                            return None
+
                         if obj.get("type") in ("user", "assistant", "summary"):
                             return FORMAT_CLAUDE_CODE_JSONL
                     except json.JSONDecodeError:
@@ -580,6 +586,9 @@ class ClaudeCodePlugin:
                     # Skip agent sub-transcripts (they start with "agent-")
                     if jsonl_file.name.startswith("agent-"):
                         continue
+                    # Skip non-interactive API call sessions (queue-operation dequeue)
+                    if self._is_api_call_session(jsonl_file):
+                        continue
                     transcripts.append(jsonl_file)
         else:
             # Convert project path to Claude's format: /path/to/project -> -path-to-project
@@ -596,8 +605,36 @@ class ClaudeCodePlugin:
                 # Skip agent sub-transcripts (they start with "agent-")
                 if jsonl_file.name.startswith("agent-"):
                     continue
+                # Skip non-interactive API call sessions (queue-operation dequeue)
+                if self._is_api_call_session(jsonl_file):
+                    continue
                 transcripts.append(jsonl_file)
 
         # Sort by modification time, most recent first
         transcripts.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return transcripts
+
+    def _is_api_call_session(self, path: Path) -> bool:
+        """Check if a transcript file is a non-interactive API call session.
+
+        These are created when tools like llm use claude-cli with --print mode.
+        They start with a queue-operation dequeue entry.
+
+        Args:
+            path: Path to the transcript file.
+
+        Returns:
+            True if this is an API call session, False otherwise.
+        """
+        try:
+            with open(path, encoding="utf-8") as f:
+                first_line = f.readline().strip()
+                if not first_line:
+                    return False
+                obj = json.loads(first_line)
+                return (
+                    obj.get("type") == "queue-operation"
+                    and obj.get("operation") == "dequeue"
+                )
+        except Exception:
+            return False
