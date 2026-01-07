@@ -425,13 +425,19 @@ def discover_transcripts_enriched(
         project_name = pm.hook.agentgit_get_project_name(transcript_path=path)
         display_name = pm.hook.agentgit_get_display_name(transcript_path=path)
 
+        # Get last timestamp from transcript content (if available)
+        # Falls back to file modification time if plugin doesn't provide one
+        last_timestamp = pm.hook.agentgit_get_last_timestamp(transcript_path=path)
+        if last_timestamp is None:
+            last_timestamp = path.stat().st_mtime
+
         stat = path.stat()
         enriched.append(
             DiscoveredTranscript(
                 path=path,
                 format_type=format_type,
                 plugin_name=plugin_name,
-                mtime=stat.st_mtime,
+                mtime=last_timestamp,
                 size_bytes=stat.st_size,
                 project_name=project_name,
                 display_name=display_name,

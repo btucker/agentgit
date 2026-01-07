@@ -776,6 +776,26 @@ class ClaudeCodeWebPlugin:
 
         return f"[Web] {session_id[:8]}..."
 
+    @hookimpl
+    def agentgit_get_last_timestamp(self, transcript_path: Path) -> float | None:
+        """Get the last timestamp from a cached web session.
+
+        Reads the end of the JSONL file to find the last entry's timestamp
+        instead of using file modification time.
+        """
+        # Only handle files in our cache directory
+        try:
+            transcript_path.resolve().relative_to(WEB_SESSION_CACHE_DIR.resolve())
+        except ValueError:
+            return None
+
+        # Skip metadata files
+        if transcript_path.suffix != ".jsonl":
+            return None
+
+        from agentgit.formats.claude_code import get_last_timestamp_from_jsonl
+        return get_last_timestamp_from_jsonl(transcript_path)
+
 
 def clear_web_session_cache() -> int:
     """Clear all cached web sessions.

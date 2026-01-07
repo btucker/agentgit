@@ -896,15 +896,13 @@ def sessions(
     )
     console.print()
 
-    # Build unified table
+    # Build unified table - compact format
     count_label = "session" if len(transcripts) == 1 else "sessions"
     table = Table(title=f"{len(transcripts)} {count_label}")
-    table.add_column("#", style="dim", width=4)
-    table.add_column("Agent", style="magenta")
-    table.add_column("Name/Path", style="cyan", no_wrap=True, overflow="fold")
-    table.add_column("Modified", style="green")
-    table.add_column("Size", style="yellow", justify="right")
-    table.add_column("Status", style="blue", no_wrap=True)
+    table.add_column("#", style="dim", justify="right")
+    table.add_column("Date", style="green", no_wrap=True)
+    table.add_column("Name", style="cyan", no_wrap=True, overflow="ellipsis", max_width=50)
+    table.add_column("Branch", style="blue")
 
     for i, t in enumerate(transcripts, 1):
         # Use display name if available, otherwise path
@@ -919,7 +917,7 @@ def sessions(
 
         # Check if this session has been processed into git repo
         output_dir = get_default_output_dir(t.path)
-        status = ""
+        branch = ""
         if output_dir.exists() and (output_dir / ".git").exists():
             # Find the branch for this transcript by reading its session ref
             try:
@@ -934,13 +932,20 @@ def sessions(
                     # Read the symbolic ref and extract the branch name
                     ref_content = session_ref_path.read_text().strip()
                     if ref_content.startswith("ref: refs/heads/"):
-                        status = ref_content[len("ref: refs/heads/") :]
+                        full_branch = ref_content[len("ref: refs/heads/") :]
+                        # Show only the date+name part (after "sessions/agent/")
+                        # e.g. "sessions/claude_code/260104-my-session" -> "260104-my-session"
+                        parts = full_branch.split("/")
+                        branch = parts[-1] if len(parts) > 2 else full_branch
             except (OSError, IOError):
-                status = "REPO"
+                branch = "✓"
 
-        table.add_row(
-            str(i), t.plugin_name, name, t.mtime_formatted, t.size_human, status
-        )
+        # Format date with time
+        from datetime import datetime
+        date_obj = datetime.fromtimestamp(t.mtime)
+        date_str = date_obj.strftime("%m/%d %H:%M")
+
+        table.add_row(str(i), date_str, name, branch)
 
     console.print(table)
     console.print()

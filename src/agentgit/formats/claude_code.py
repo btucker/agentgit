@@ -24,6 +24,59 @@ from agentgit.utils import extract_deleted_paths
 FORMAT_CLAUDE_CODE_JSONL = "claude_code_jsonl"
 
 
+def get_last_timestamp_from_jsonl(file_path: Path) -> float | None:
+    """Extract the last timestamp from a JSONL file.
+
+    Reads the last 8KB of the file to find the most recent entry's timestamp.
+    This is more efficient than reading the entire file and more accurate than
+    using file modification time.
+
+    Args:
+        file_path: Path to the JSONL file.
+
+    Returns:
+        Unix timestamp (seconds since epoch) of the last entry, or None if not found.
+    """
+    try:
+        with open(file_path, 'rb') as f:
+            # Get file size
+            f.seek(0, 2)  # Seek to end
+            file_size = f.tell()
+
+            if file_size == 0:
+                return None
+
+            # Read last 8KB (or entire file if smaller)
+            chunk_size = min(8192, file_size)
+            f.seek(file_size - chunk_size)
+            chunk = f.read(chunk_size).decode('utf-8', errors='ignore')
+
+            # Split into lines and process in reverse
+            # Skip first line as it's likely truncated (unless we read the whole file)
+            lines = chunk.split('\n')
+            if chunk_size < file_size and len(lines) > 1:
+                lines = lines[1:]  # Discard potentially truncated first line
+
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    timestamp_str = obj.get("timestamp")
+                    if timestamp_str:
+                        # Parse ISO timestamp and convert to unix timestamp
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                        return dt.timestamp()
+                except (json.JSONDecodeError, ValueError):
+                    continue
+    except Exception:
+        pass
+
+    return None
+
+
 class ClaudeCodePlugin:
     """Plugin for parsing Claude Code JSONL transcripts."""
 
@@ -438,6 +491,24 @@ class ClaudeCodePlugin:
         return transcript_path.name
 
     @hookimpl
+    def agentgit_get_last_timestamp(self, transcript_path: Path) -> float | None:
+        """Get the last timestamp from a Claude Code transcript.
+
+        Reads the end of the JSONL file to find the last entry's timestamp
+        instead of using file modification time.
+        """
+        transcript_abs = transcript_path.resolve()
+        claude_projects_dir = Path.home() / ".claude" / "projects"
+
+        # Only handle Claude Code transcripts
+        try:
+            transcript_abs.relative_to(claude_projects_dir)
+        except ValueError:
+            return None
+
+        return get_last_timestamp_from_jsonl(transcript_path)
+
+    @hookimpl
     def agentgit_build_prompt_responses(
         self, transcript: Transcript
     ) -> list[PromptResponse]:
@@ -586,6 +657,9 @@ class ClaudeCodePlugin:
                     # Skip agent sub-transcripts (they start with "agent-")
                     if jsonl_file.name.startswith("agent-"):
                         continue
+                    # Skip empty files (0 bytes)
+                    if jsonl_file.stat().st_size == 0:
+                        continue
                     # Skip non-interactive API call sessions (queue-operation dequeue)
                     if self._is_api_call_session(jsonl_file):
                         continue
@@ -604,6 +678,9 @@ class ClaudeCodePlugin:
             for jsonl_file in project_dir.glob("*.jsonl"):
                 # Skip agent sub-transcripts (they start with "agent-")
                 if jsonl_file.name.startswith("agent-"):
+                    continue
+                # Skip empty files (0 bytes)
+                if jsonl_file.stat().st_size == 0:
                     continue
                 # Skip non-interactive API call sessions (queue-operation dequeue)
                 if self._is_api_call_session(jsonl_file):

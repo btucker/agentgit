@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agentgit.core import OperationType, Transcript
-from agentgit.formats.claude_code import ClaudeCodePlugin
+from agentgit.formats.claude_code import ClaudeCodePlugin, get_last_timestamp_from_jsonl
 
 
 @pytest.fixture
@@ -784,3 +784,149 @@ class TestPromptNeedsContext:
             )
             is False
         )
+
+
+class TestGetLastTimestamp:
+    """Tests for get_last_timestamp_from_jsonl helper function."""
+
+    def test_extracts_last_timestamp(self, tmp_path):
+        """Should extract the timestamp from the last entry."""
+        content = [
+            {"type": "user", "timestamp": "2025-01-01T10:00:00.000Z", "message": "first"},
+            {"type": "assistant", "timestamp": "2025-01-01T10:00:05.000Z", "message": "second"},
+            {"type": "user", "timestamp": "2025-01-01T10:00:10.000Z", "message": "third"},
+        ]
+
+        jsonl_path = tmp_path / "session.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        result = get_last_timestamp_from_jsonl(jsonl_path)
+
+        # Should return the last timestamp (2025-01-01T10:00:10)
+        from datetime import datetime
+        expected = datetime.fromisoformat("2025-01-01T10:00:10.000+00:00").timestamp()
+        assert result == expected
+
+    def test_skips_entries_without_timestamp(self, tmp_path):
+        """Should skip entries that don't have a timestamp field."""
+        content = [
+            {"type": "user", "timestamp": "2025-01-01T10:00:00.000Z", "message": "first"},
+            {"type": "assistant", "timestamp": "2025-01-01T10:00:05.000Z", "message": "second"},
+            {"type": "other", "message": "no timestamp"},  # No timestamp
+        ]
+
+        jsonl_path = tmp_path / "session.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        result = get_last_timestamp_from_jsonl(jsonl_path)
+
+        # Should return the second timestamp since last entry has none
+        from datetime import datetime
+        expected = datetime.fromisoformat("2025-01-01T10:00:05.000+00:00").timestamp()
+        assert result == expected
+
+    def test_handles_empty_file(self, tmp_path):
+        """Should return None for empty file."""
+        jsonl_path = tmp_path / "empty.jsonl"
+        jsonl_path.write_text("")
+
+        result = get_last_timestamp_from_jsonl(jsonl_path)
+        assert result is None
+
+    def test_handles_truncated_first_line(self, tmp_path):
+        """Should handle files larger than 8KB by skipping truncated first line."""
+        # Create a file with many entries to exceed 8KB
+        content = []
+        for i in range(200):
+            # Use i as seconds (0-59 valid), cycle through minutes
+            minute = i // 60
+            second = i % 60
+            content.append({
+                "type": "user",
+                "timestamp": f"2025-01-01T10:{minute:02d}:{second:02d}.000Z",
+                "message": f"message {i}" * 100,  # Make it large
+            })
+
+        jsonl_path = tmp_path / "large.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        result = get_last_timestamp_from_jsonl(jsonl_path)
+
+        # Should still extract the last timestamp correctly
+        from datetime import datetime
+        # Last entry was i=199 -> minute=3, second=19
+        expected = datetime.fromisoformat("2025-01-01T10:03:19.000+00:00").timestamp()
+        assert result == expected
+
+    def test_handles_invalid_json_lines(self, tmp_path):
+        """Should skip invalid JSON lines and continue searching."""
+        jsonl_path = tmp_path / "mixed.jsonl"
+        with open(jsonl_path, "w") as f:
+            f.write(json.dumps({"type": "user", "timestamp": "2025-01-01T10:00:00.000Z"}) + "\n")
+            f.write("not valid json\n")
+            f.write(json.dumps({"type": "assistant", "timestamp": "2025-01-01T10:00:05.000Z"}) + "\n")
+
+        result = get_last_timestamp_from_jsonl(jsonl_path)
+
+        # Should return the last valid timestamp
+        from datetime import datetime
+        expected = datetime.fromisoformat("2025-01-01T10:00:05.000+00:00").timestamp()
+        assert result == expected
+
+    def test_returns_none_if_no_timestamps(self, tmp_path):
+        """Should return None if file has no entries with timestamps."""
+        content = [
+            {"type": "other", "message": "no timestamp"},
+            {"type": "other", "data": "also no timestamp"},
+        ]
+
+        jsonl_path = tmp_path / "no_timestamps.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        result = get_last_timestamp_from_jsonl(jsonl_path)
+        assert result is None
+
+
+class TestClaudeCodeGetLastTimestamp:
+    """Tests for agentgit_get_last_timestamp hook."""
+
+    def test_returns_timestamp_for_claude_code_transcript(self, plugin, tmp_path, monkeypatch):
+        """Should return last timestamp for Claude Code transcripts."""
+        # Create .claude/projects directory
+        claude_project_dir = tmp_path / ".claude" / "projects" / "-tmp-myproject"
+        claude_project_dir.mkdir(parents=True)
+
+        # Create transcript with timestamps
+        transcript = claude_project_dir / "session.jsonl"
+        content = [
+            {"type": "user", "timestamp": "2025-01-01T10:00:00.000Z"},
+            {"type": "assistant", "timestamp": "2025-01-01T10:00:10.000Z"},
+        ]
+        with open(transcript, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        result = plugin.agentgit_get_last_timestamp(transcript)
+
+        # Should return the last timestamp
+        from datetime import datetime
+        expected = datetime.fromisoformat("2025-01-01T10:00:10.000+00:00").timestamp()
+        assert result == expected
+
+    def test_returns_none_for_non_claude_transcript(self, plugin, tmp_path):
+        """Should return None for transcripts not in ~/.claude/projects/."""
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text('{"type": "user", "timestamp": "2025-01-01T10:00:00.000Z"}\n')
+
+        result = plugin.agentgit_get_last_timestamp(transcript)
+        assert result is None

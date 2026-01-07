@@ -151,6 +151,20 @@ class AgentGitSpec:
             A display name string, or None if this plugin can't provide one.
         """
 
+    @hookspec(firstresult=True)
+    def agentgit_get_last_timestamp(self, transcript_path: Path) -> float | None:
+        """Get the last activity timestamp from a transcript file.
+
+        Reads the transcript to find the last timestamp (e.g., from the last
+        entry), rather than using file modification time.
+
+        Args:
+            transcript_path: Path to the transcript file.
+
+        Returns:
+            Unix timestamp (seconds since epoch) of last activity, or None.
+        """
+
     # Enhancement hooks
     @hookspec
     def agentgit_get_enhancer_info(self) -> dict[str, str] | None:
