@@ -8,21 +8,6 @@ from typing import Any
 import click
 
 
-def encode_path_as_name(path: Path) -> str:
-    """Encode a path for use as a project name in directory names.
-
-    Replaces path separators with dashes.
-    e.g., /Users/name/project -> -Users-name-project
-
-    Args:
-        path: The path to encode.
-
-    Returns:
-        Encoded string safe for directory names.
-    """
-    return str(path.resolve()).replace("/", "-")
-
-
 def get_repo_id(code_repo: Path) -> str | None:
     """Get the repository ID from the first (root) commit SHA.
 
@@ -538,6 +523,42 @@ def _resolve_enhance_config(
     return effective_enhancer, effective_model, enhance_config
 
 
+def _prepare_output_and_enhance_config(
+    output: Path | None,
+    enhancer: str | None,
+    enhance_model: str | None,
+    transcripts: list[Path],
+) -> tuple[Path, str | None, str | None, "EnhanceConfig | None"]:
+    """Resolve output directory and enhancement config for a run."""
+    if output is None:
+        output = get_default_output_dir(transcripts[0])
+
+    effective_enhancer, effective_model, enhance_config = _resolve_enhance_config(
+        output, enhancer, enhance_model, transcripts
+    )
+    return output, effective_enhancer, effective_model, enhance_config
+
+
+def _save_enhance_config(
+    output: Path,
+    enhancer: str | None,
+    enhance_model: str | None,
+    effective_enhancer: str | None,
+    effective_model: str | None,
+) -> None:
+    """Persist enhancement settings only when explicitly provided."""
+    if enhancer is None and enhance_model is None:
+        return
+
+    from agentgit.config import ProjectConfig, save_config
+
+    new_config = ProjectConfig(
+        enhancer=effective_enhancer,
+        enhance_model=effective_model,
+    )
+    save_config(output, new_config)
+
+
 def _batch_enhance_all_sessions(
     parsed_sessions: list[dict],
     enhance_config: "EnhanceConfig",
@@ -589,11 +610,10 @@ def _run_process(
         reprocess: If True, rebuild from scratch instead of incremental.
     """
     from agentgit import build_repo_grouped, parse_transcript
-    from agentgit.config import ProjectConfig, save_config
 
-    # Use default output directory if not specified
-    if output is None:
-        output = get_default_output_dir(transcripts[0])
+    output, effective_enhancer, effective_model, enhance_config = (
+        _prepare_output_and_enhance_config(output, enhancer, enhance_model, transcripts)
+    )
 
     # Handle reprocess - rebuild from scratch
     if reprocess and output.exists() and (output / ".git").exists():
@@ -601,19 +621,28 @@ def _run_process(
         click.echo(f"Reprocessing: removing existing repo at {output}")
         shutil.rmtree(output)
 
-    # Resolve enhancement configuration
-    effective_enhancer, effective_model, enhance_config = _resolve_enhance_config(
-        output, enhancer, enhance_model, transcripts
-    )
-
     from rich.console import Console
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
     console = Console()
 
+    # Load processed operations from existing repo (if incremental)
+    processed_ops = set()
+    if not reprocess and output.exists() and (output / ".git").exists():
+        from git import Repo
+        from agentgit.git_builder import get_processed_operations
+        try:
+            repo = Repo(output)
+            processed_ops = get_processed_operations(repo)
+            if processed_ops:
+                console.print(f"[dim]Found {len(processed_ops)} already-processed operations[/dim]")
+        except Exception:
+            pass
+
     # Parse all transcripts first
     parsed_sessions = []
     parse_errors = []
+    skipped_sessions = []
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
@@ -635,13 +664,41 @@ def _run_process(
                     agent_name = parsed.source_format.replace("_jsonl", "").replace("_web", "")
 
                 session_id = parsed.session_id or transcript_path.stem
+
+                # Check if this session is already fully processed
+                if not reprocess and processed_ops:
+                    all_operations = []
+                    for pr in parsed.prompt_responses:
+                        for turn in pr.turns:
+                            all_operations.extend(turn.operations)
+
+                    # Check if all operations are already processed
+                    unprocessed_ops = []
+                    for op in all_operations:
+                        op_id = op.tool_id if op.tool_id else f"ts:{op.timestamp}"
+                        if op_id not in processed_ops:
+                            unprocessed_ops.append(op)
+
+                    if not unprocessed_ops:
+                        # All operations already processed, skip this session
+                        skipped_sessions.append(transcript_path.name)
+                        continue
+
                 parsed_sessions.append({
                     "transcript_path": transcript_path,
                     "parsed": parsed,
                     "agent_name": agent_name,
                     "session_id": session_id,
                 })
-            except (ValueError, Exception) as e:
+            except ValueError as e:
+                parse_errors.append((transcript_path, str(e)))
+                continue
+            except Exception as e:
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    "Unexpected error parsing transcript: %s", transcript_path
+                )
                 parse_errors.append((transcript_path, str(e)))
                 continue
 
@@ -650,6 +707,18 @@ def _run_process(
         console.print(f"[yellow]Warning: Skipped {len(parse_errors)} transcript(s) due to errors[/yellow]")
         for path, error in parse_errors[:3]:  # Show first 3 errors
             console.print(f"  [dim]{path.name}: {error}[/dim]")
+
+    # Report skipped sessions
+    if skipped_sessions:
+        console.print(f"[dim]Skipped {len(skipped_sessions)} already-processed session(s)[/dim]")
+
+    # Exit early if no new sessions to process
+    if not parsed_sessions:
+        if skipped_sessions:
+            console.print("[green]✓[/green] All sessions already processed")
+        else:
+            console.print("[yellow]No sessions to process[/yellow]")
+        return
 
     # Batch enhance all sessions at once (if using LLM enhancer)
     # This populates caches so individual builds are fast
@@ -715,12 +784,7 @@ def _run_process(
         return
 
     # Save new preferences if explicitly provided (after repo exists)
-    if enhancer is not None or enhance_model is not None:
-        new_config = ProjectConfig(
-            enhancer=effective_enhancer,
-            enhance_model=effective_model,
-        )
-        save_config(output, new_config)
+    _save_enhance_config(output, enhancer, enhance_model, effective_enhancer, effective_model)
 
     # Count branches (sessions)
     session_branches = [b.name for b in repo.heads if b.name.startswith("sessions/")]
@@ -742,16 +806,10 @@ def _run_watch_mode(
     enhance_model: str | None = None,
 ) -> None:
     """Run in watch mode."""
-    from agentgit.config import ProjectConfig, save_config
     from agentgit.watcher import TranscriptWatcher
 
-    # Use default output directory if not specified
-    if output is None:
-        output = get_default_output_dir(transcript)
-
-    # Resolve enhancement configuration
-    effective_enhancer, effective_model, enhance_config = _resolve_enhance_config(
-        output, enhancer, enhance_model, [transcript]
+    output, effective_enhancer, effective_model, enhance_config = (
+        _prepare_output_and_enhance_config(output, enhancer, enhance_model, [transcript])
     )
 
     click.echo(f"Watching transcript: {transcript}")
@@ -778,12 +836,7 @@ def _run_watch_mode(
     watcher.start()
 
     # Save new preferences if explicitly provided (after repo exists)
-    if enhancer is not None or enhance_model is not None:
-        new_config = ProjectConfig(
-            enhancer=effective_enhancer,
-            enhance_model=effective_model,
-        )
-        save_config(output, new_config)
+    _save_enhance_config(output, enhancer, enhance_model, effective_enhancer, effective_model)
 
     try:
         repo = Repo(output)
@@ -902,6 +955,7 @@ def sessions(
     table.add_column("#", style="dim", justify="right")
     table.add_column("Date", style="green", no_wrap=True)
     table.add_column("Name", style="cyan", no_wrap=True, overflow="ellipsis", max_width=50)
+    table.add_column("Agent", style="magenta", no_wrap=True)
     table.add_column("Branch", style="blue")
 
     for i, t in enumerate(transcripts, 1):
@@ -945,7 +999,7 @@ def sessions(
         date_obj = datetime.fromtimestamp(t.mtime)
         date_str = date_obj.strftime("%m/%d %H:%M")
 
-        table.add_row(str(i), date_str, name, branch)
+        table.add_row(str(i), date_str, name, t.plugin_name, branch)
 
     console.print(table)
     console.print()

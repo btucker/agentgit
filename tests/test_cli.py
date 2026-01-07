@@ -1001,16 +1001,6 @@ class TestClaudeCodeDetection:
 class TestUtilityFunctions:
     """Tests for CLI utility functions."""
 
-    def test_encode_path_as_name(self):
-        """Should encode path by replacing slashes with dashes."""
-        from pathlib import Path
-
-        from agentgit.cli import encode_path_as_name
-
-        path = Path("/Users/name/project")
-        result = encode_path_as_name(path)
-        assert result.startswith("-Users-name-project")
-
     def test_get_repo_id_valid_repo(self, tmp_path):
         """Should return first 12 chars of root commit SHA."""
         from git import Repo

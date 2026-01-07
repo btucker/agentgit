@@ -100,29 +100,6 @@ def get_processed_operations(repo: Repo) -> set[str]:
     return processed
 
 
-def get_last_processed_timestamp(repo: Repo) -> str | None:
-    """Get the timestamp of the last processed operation.
-
-    Args:
-        repo: The git repository to scan.
-
-    Returns:
-        ISO timestamp string or None if no operations found.
-    """
-    try:
-        for commit in repo.iter_commits():
-            metadata = parse_commit_trailers(commit.message)
-            if metadata.timestamp:
-                return metadata.timestamp
-    except ValueError:
-        # Empty repository has no commits
-        pass
-    except GitCommandError as e:
-        logger.warning("Failed to read commits from repository: %s", e)
-
-    return None
-
-
 def format_commit_message(operation: FileOperation) -> str:
     """Format a rich commit message for a file operation.
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agentgit.watcher import TranscriptWatcher, watch_transcript
+from agentgit.watcher import TranscriptWatcher
 
 
 @pytest.fixture
@@ -188,47 +188,3 @@ class TestTranscriptWatcher:
 
         watcher.stop()
 
-
-class TestWatchTranscript:
-    """Tests for watch_transcript helper function."""
-
-    def test_creates_and_starts_watcher(self, sample_jsonl, tmp_path):
-        """Should create a started watcher."""
-        output_dir = tmp_path / "output"
-        output_dir.mkdir()
-
-        watcher = watch_transcript(
-            transcript_path=sample_jsonl,
-            output_dir=output_dir,
-        )
-
-        time.sleep(0.1)
-
-        # Watcher should be running
-        assert watcher._observer is not None
-        assert watcher._observer.is_alive()
-
-        watcher.stop()
-
-    def test_passes_all_parameters(self, sample_jsonl, tmp_path):
-        """Should pass all parameters to watcher."""
-        output_dir = tmp_path / "output"
-        output_dir.mkdir()
-        source_repo = tmp_path / "source"
-
-        updates = []
-
-        watcher = watch_transcript(
-            transcript_path=sample_jsonl,
-            output_dir=output_dir,
-            author_name="Test",
-            author_email="test@test.com",
-            source_repo=source_repo,
-            on_update=lambda c: updates.append(c),
-        )
-
-        assert watcher.author_name == "Test"
-        assert watcher.author_email == "test@test.com"
-        assert watcher.source_repo == source_repo
-
-        watcher.stop()

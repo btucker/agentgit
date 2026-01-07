@@ -20,7 +20,6 @@ from agentgit.git_builder import (
     format_commit_message,
     format_prompt_merge_message,
     format_turn_commit_message,
-    get_last_processed_timestamp,
     get_processed_operations,
     normalize_file_paths,
     parse_commit_trailers,
@@ -472,39 +471,6 @@ class TestGetProcessedOperations:
 
         result = get_processed_operations(repo)
         assert "ts:2025-01-01T00:00:00Z" in result
-
-
-class TestGetLastProcessedTimestamp:
-    """Tests for get_last_processed_timestamp function."""
-
-    def test_returns_none_for_empty_repo(self, tmp_path):
-        """Should return None for empty repo."""
-        repo = Repo.init(tmp_path)
-        result = get_last_processed_timestamp(repo)
-        assert result is None
-
-    def test_returns_most_recent_timestamp(self, tmp_path):
-        """Should return timestamp from most recent commit."""
-        repo = Repo.init(tmp_path)
-        with repo.config_writer() as config:
-            config.set_value("user", "name", "Test")
-            config.set_value("user", "email", "test@test.com")
-
-        # Create first commit with older timestamp
-        file1 = tmp_path / "file1.py"
-        file1.write_text("content1")
-        repo.index.add(["file1.py"])
-        repo.index.commit("Create file1.py\n\nTimestamp: 2025-01-01T00:00:00Z")
-
-        # Create second commit with newer timestamp
-        file2 = tmp_path / "file2.py"
-        file2.write_text("content2")
-        repo.index.add(["file2.py"])
-        repo.index.commit("Create file2.py\n\nTimestamp: 2025-01-02T00:00:00Z")
-
-        result = get_last_processed_timestamp(repo)
-        # Most recent commit is returned first by iter_commits
-        assert result == "2025-01-02T00:00:00Z"
 
 
 class TestIncrementalBuild:

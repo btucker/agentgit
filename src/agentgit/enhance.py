@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 from agentgit.plugins import get_configured_plugin_manager
 
 if TYPE_CHECKING:
+    import logging
+
     from agentgit.core import AssistantTurn, FileOperation, Prompt, PromptResponse
 
 # Default enhancer to use (rules = no AI, claude_code = AI-powered)
@@ -22,6 +24,25 @@ class EnhanceConfig:
     enhancer: str = DEFAULT_ENHANCER
     model: str = DEFAULT_MODEL
     enabled: bool = True
+
+
+def _normalize_config(config: EnhanceConfig | None) -> EnhanceConfig:
+    """Return a usable enhancement config."""
+    return config or EnhanceConfig()
+
+
+def _get_enabled_config(
+    config: EnhanceConfig | None,
+    logger: "logging.Logger | None" = None,
+    disabled_message: str | None = None,
+) -> EnhanceConfig | None:
+    """Return config if enabled; otherwise None."""
+    cfg = _normalize_config(config)
+    if not cfg.enabled:
+        if logger and disabled_message:
+            logger.debug(disabled_message)
+        return None
+    return cfg
 
 
 def get_available_enhancers() -> list[dict[str, str]]:
@@ -56,11 +77,10 @@ def generate_turn_summary(
     import logging
     logger = logging.getLogger(__name__)
 
+    config = _get_enabled_config(
+        config, logger, "generate_turn_summary: enhancement disabled"
+    )
     if config is None:
-        config = EnhanceConfig()
-
-    if not config.enabled:
-        logger.debug("generate_turn_summary: enhancement disabled")
         return None
 
     pm = get_configured_plugin_manager()
@@ -89,10 +109,8 @@ def generate_prompt_summary(
     Returns:
         Generated entry summary, or None if generation fails.
     """
+    config = _get_enabled_config(config)
     if config is None:
-        config = EnhanceConfig()
-
-    if not config.enabled:
         return None
 
     pm = get_configured_plugin_manager()
@@ -120,10 +138,8 @@ def curate_turn_context(
     Returns:
         Curated context string to include in commit body, or None to use default.
     """
+    config = _get_enabled_config(config)
     if config is None:
-        config = EnhanceConfig()
-
-    if not config.enabled:
         return None
 
     pm = get_configured_plugin_manager()

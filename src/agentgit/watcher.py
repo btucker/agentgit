@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -147,47 +146,3 @@ class TranscriptWatcher:
             self._observer.stop()
             self._observer.join()
             self._observer = None
-
-    def run_forever(self) -> None:
-        """Run the watcher until interrupted."""
-        self.start()
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            self.stop()
-
-
-def watch_transcript(
-    transcript_path: Path,
-    output_dir: Path,
-    author_name: str = "Agent",
-    author_email: str = "agent@local",
-    source_repo: Path | None = None,
-    on_update: Callable[[int], None] | None = None,
-) -> TranscriptWatcher:
-    """Create and start a transcript watcher.
-
-    Args:
-        transcript_path: Path to the transcript file to watch.
-        output_dir: Directory for the git repo.
-        author_name: Name for git commits.
-        author_email: Email for git commits.
-        source_repo: Optional source repository to interleave commits from.
-        on_update: Optional callback called with number of new commits after each update.
-
-    Returns:
-        A running TranscriptWatcher instance.
-    """
-    watcher = TranscriptWatcher(
-        transcript_path=transcript_path,
-        output_dir=output_dir,
-        author_name=author_name,
-        author_email=author_email,
-        source_repo=source_repo,
-        on_update=on_update,
-    )
-    watcher.start()
-    return watcher
