@@ -12,7 +12,7 @@ import pluggy
 from agentgit.settings import CONFIG_PATH, get_config, save_config
 
 if TYPE_CHECKING:
-    from agentgit.core import AssistantTurn, FileOperation, Prompt, PromptResponse, Transcript
+    from agentgit.core import AssistantTurn, ConversationRound, FileOperation, Prompt, PromptResponse, Transcript
 
 hookspec = pluggy.HookspecMarker("agentgit")
 hookimpl = pluggy.HookimplMarker("agentgit")
@@ -105,6 +105,24 @@ class AgentGitSpec:
         """
 
     @hookspec
+    def agentgit_build_conversation_rounds(
+        self, transcript: Transcript
+    ) -> list[ConversationRound]:
+        """Build conversation rounds from a transcript.
+
+        Groups ALL transcript entries (user, assistant, tool results, etc.) by
+        user prompts. Each round contains a prompt and all entries until the
+        next prompt. This structure creates a conversational git history where
+        each prompt gets its own branch with commits for every entry.
+
+        Args:
+            transcript: The parsed transcript with all entries.
+
+        Returns:
+            List of ConversationRound objects with grouped entries.
+        """
+
+    @hookspec
     def agentgit_discover_transcripts(
         self, project_path: Path | None
     ) -> list[Path]:
@@ -163,6 +181,22 @@ class AgentGitSpec:
 
         Returns:
             Unix timestamp (seconds since epoch) of last activity, or None.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_get_author_info(self, transcript: "Transcript") -> dict[str, str] | None:
+        """Get the git author information for assistant commits.
+
+        Extracts agent/model identification to use as the git author
+        for assistant commits. Returns author name and email.
+
+        Args:
+            transcript: The parsed transcript.
+
+        Returns:
+            Dict with 'name' and 'email' keys (e.g., {"name": "Claude Sonnet 4.5",
+            "email": "claude-sonnet-4-5@anthropic.com"}), or None if this plugin
+            can't provide author info.
         """
 
     # Enhancement hooks

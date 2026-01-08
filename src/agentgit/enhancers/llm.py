@@ -302,12 +302,18 @@ def batch_enhance_prompt_responses(
 
     logger.info("Processing %d items in batches (batch size: %d)", len(items), MAX_BATCH_SIZE)
 
+    # Calculate total chunks for progress
+    total_chunks = (len(items) + MAX_BATCH_SIZE - 1) // MAX_BATCH_SIZE
+
     # Process items in chunks to avoid context limits
-    for chunk_start in range(0, len(items), MAX_BATCH_SIZE):
+    for chunk_num, chunk_start in enumerate(range(0, len(items), MAX_BATCH_SIZE), 1):
         chunk_end = min(chunk_start + MAX_BATCH_SIZE, len(items))
         chunk_items = items[chunk_start:chunk_end]
         chunk_keys = item_keys[chunk_start:chunk_end]
         chunk_metadata = item_metadata[chunk_start:chunk_end]
+
+        # Progress indicator
+        print(f"  Processing batch {chunk_num}/{total_chunks} ({len(chunk_items)} items)...", flush=True)
 
         # Build the batch prompt for this chunk
         batch_prompt = """Generate commit message content for these items.
@@ -387,11 +393,16 @@ ONLY respond with the JSON object, nothing else."""
                             # Turn - just use the summary
                             _message_cache[key] = _clean_message(summary)
 
+                # Success - processed this chunk
+                print(f"  ✓ Batch {chunk_num}/{total_chunks} complete ({len(messages)} messages)", flush=True)
+
             except json.JSONDecodeError as e:
                 logger.warning("Failed to parse batch response as JSON: %s", e)
                 logger.debug("Response was: %s", response[:500])
+                print(f"  ✗ Batch {chunk_num}/{total_chunks} failed to parse", flush=True)
         else:
             logger.warning("LLM returned no response for chunk %d-%d", chunk_start, chunk_end)
+            print(f"  ✗ Batch {chunk_num}/{total_chunks} got no response", flush=True)
 
     logger.info("Batch enhancement complete. Total cache entries: %d", len(_message_cache))
     return _message_cache

@@ -10,6 +10,7 @@ from typing import Any
 from agentgit.core import (
     AssistantContext,
     AssistantTurn,
+    ConversationRound,
     FileOperation,
     OperationType,
     Prompt,
@@ -509,6 +510,23 @@ class ClaudeCodePlugin:
         return get_last_timestamp_from_jsonl(transcript_path)
 
     @hookimpl
+    def agentgit_get_author_info(self, transcript: Transcript) -> dict[str, str] | None:
+        """Get git author information for Claude Code transcripts.
+
+        Returns Claude as the author. In the future, this could extract
+        specific model information from the transcript if available.
+        """
+        if transcript.source_format != FORMAT_CLAUDE_CODE_JSONL:
+            return None
+
+        # Default author for Claude Code transcripts
+        # TODO: Extract actual model info from transcript when available
+        return {
+            "name": "Claude",
+            "email": "claude@anthropic.com",
+        }
+
+    @hookimpl
     def agentgit_build_prompt_responses(
         self, transcript: Transcript
     ) -> list[PromptResponse]:
@@ -593,6 +611,66 @@ class ClaudeCodePlugin:
             )
 
         return prompt_responses
+
+    @hookimpl
+    def agentgit_build_conversation_rounds(
+        self, transcript: Transcript
+    ) -> list[ConversationRound]:
+        """Build conversation rounds grouping ALL entries by user prompt."""
+        if transcript.source_format != FORMAT_CLAUDE_CODE_JSONL:
+            return []
+
+        rounds: list[ConversationRound] = []
+        current_prompt: Prompt | None = None
+        current_entries: list[TranscriptEntry] = []
+        sequence = 0
+
+        for entry in transcript.entries:
+            # New user prompt starts a new round
+            if entry.entry_type == "user" and not entry.is_meta:
+                # Save previous round if it exists
+                if current_prompt is not None and current_entries:
+                    rounds.append(ConversationRound(
+                        prompt=current_prompt,
+                        entries=current_entries,
+                        sequence=sequence
+                    ))
+
+                # Start new round
+                sequence += 1
+
+                # Find or create the Prompt object for this entry
+                text = self._extract_text_from_content(entry.message.get("content", ""))
+                current_prompt = None
+                for p in transcript.prompts:
+                    if p.timestamp == entry.timestamp:
+                        current_prompt = p
+                        break
+
+                if current_prompt is None and text:
+                    # Create Prompt if not found in transcript.prompts
+                    current_prompt = Prompt(
+                        text=text,
+                        timestamp=entry.timestamp,
+                        raw_entry=entry.raw_entry
+                    )
+
+                # Initialize with this user entry
+                current_entries = [entry]
+            else:
+                # Add all other entries to current round
+                if current_prompt is not None:
+                    current_entries.append(entry)
+
+        # Don't forget the last round
+        if current_prompt is not None and current_entries:
+            rounds.append(ConversationRound(
+                prompt=current_prompt,
+                entries=current_entries,
+                sequence=sequence
+            ))
+
+        return rounds
 
     def _build_assistant_turn(
         self, entry: TranscriptEntry, tool_id_to_op: dict[str, FileOperation]

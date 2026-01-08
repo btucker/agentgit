@@ -930,3 +930,25 @@ class TestClaudeCodeGetLastTimestamp:
 
         result = plugin.agentgit_get_last_timestamp(transcript)
         assert result is None
+
+
+class TestClaudeCodeAuthorInfo:
+    """Tests for agentgit_get_author_info hook."""
+
+    def test_returns_author_info_for_claude_code_transcript(self, plugin, sample_jsonl):
+        """Should return Claude author info for Claude Code transcripts."""
+        transcript = plugin.agentgit_parse_transcript(sample_jsonl, "claude_code_jsonl")
+
+        result = plugin.agentgit_get_author_info(transcript)
+
+        assert result is not None
+        assert result["name"] == "Claude"
+        assert result["email"] == "claude@anthropic.com"
+
+    def test_returns_none_for_non_claude_transcript(self, plugin):
+        """Should return None for non-Claude Code transcripts."""
+        transcript = Transcript(source_format="other_format")
+
+        result = plugin.agentgit_get_author_info(transcript)
+
+        assert result is None

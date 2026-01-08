@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -116,6 +117,34 @@ class TranscriptEntry:
 
 
 @dataclass
+class ConversationRound:
+    """A user prompt and all entries until the next prompt.
+
+    This becomes a feature branch in the git structure, with each entry
+    becoming a commit on that branch, then merged back to the session branch.
+    """
+
+    prompt: Prompt
+    entries: list[TranscriptEntry] = field(default_factory=list)
+    sequence: int = 0  # 1-based sequence number for branch naming
+
+    @property
+    def short_summary(self) -> str:
+        """Generate short summary for branch name (50 chars max)."""
+        # Extract first line of prompt
+        text = self.prompt.text.split('\n')[0].strip()
+        # Sanitize for git branch (remove special chars, spaces to dashes)
+        safe_text = re.sub(r'[^\w\s-]', '', text.lower())
+        safe_text = re.sub(r'[\s_]+', '-', safe_text)
+        return safe_text[:50].strip('-')
+
+    @property
+    def branch_name(self) -> str:
+        """Full branch name: {sequence:03d}-{short-summary}"""
+        return f"{self.sequence:03d}-{self.short_summary}"
+
+
+@dataclass
 class AssistantTurn:
     """A single assistant response containing grouped file operations.
 
@@ -189,8 +218,9 @@ class Transcript:
     prompts: list[Prompt] = field(default_factory=list)
     operations: list[FileOperation] = field(default_factory=list)
 
-    # Grouped structure for git history
-    prompt_responses: list[PromptResponse] = field(default_factory=list)
+    # Grouped structures for git history
+    prompt_responses: list[PromptResponse] = field(default_factory=list)  # Legacy
+    conversation_rounds: list[ConversationRound] = field(default_factory=list)  # New
 
     source_path: Optional[str] = None
     source_format: str = ""

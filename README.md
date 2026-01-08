@@ -118,6 +118,20 @@ agentgit diff HEAD~2..HEAD
 agentgit show abc123
 ```
 
+### Convenience Commands
+
+**agit** - Shorter alias for `agentgit`:
+```bash
+agit log --graph --oneline
+agit show abc123
+```
+
+**alazygit** - Use [lazygit](https://github.com/jesseduffield/lazygit) with your agentgit repo:
+```bash
+alazygit              # Opens lazygit TUI for agentgit repo
+alazygit --version    # Pass any lazygit args
+```
+
 ## Supported Agents
 
 ```bash

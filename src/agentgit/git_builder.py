@@ -21,6 +21,7 @@ from agentgit.core import (
     PromptResponse,
     SourceCommit,
 )
+from agentgit.plugins import get_configured_plugin_manager
 
 if TYPE_CHECKING:
     from agentgit.enhance import EnhanceConfig
@@ -38,6 +39,32 @@ class CommitMetadata:
     file_path: str | None = None
     prompt_id: str | None = None
     source_commit: str | None = None
+    entry_id: str | None = None
+
+
+def format_git_date(iso_timestamp: str) -> str:
+    """Format ISO 8601 timestamp for git environment variables.
+
+    Git expects dates in format: "YYYY-MM-DD HH:MM:SS +0000"
+
+    Args:
+        iso_timestamp: ISO 8601 timestamp (e.g., "2025-01-15T14:30:45Z")
+
+    Returns:
+        Git-formatted date string.
+    """
+    from datetime import datetime
+
+    # Parse ISO 8601 timestamp
+    # Handle both Z suffix and timezone offsets
+    if iso_timestamp.endswith('Z'):
+        dt = datetime.fromisoformat(iso_timestamp.replace('Z', '+00:00'))
+    else:
+        dt = datetime.fromisoformat(iso_timestamp)
+
+    # Format for git: "YYYY-MM-DD HH:MM:SS +HHMM"
+    # Use strftime with timezone
+    return dt.strftime("%Y-%m-%d %H:%M:%S %z")
 
 
 def parse_commit_trailers(message: str) -> CommitMetadata:
@@ -59,6 +86,7 @@ def parse_commit_trailers(message: str) -> CommitMetadata:
         "file_path": r"^File:\s*(.+)$",
         "prompt_id": r"^Prompt-Id:\s*(.+)$",
         "source_commit": r"^Source-Commit:\s*(.+)$",
+        "entry_id": r"^Entry-Id:\s*(.+)$",
     }
 
     for field, pattern in trailer_patterns.items():
@@ -426,6 +454,25 @@ class GitRepoBuilder:
 
         return find_git_root()
 
+    def _get_code_repo_author(self) -> tuple[str, str]:
+        """Get the author name and email from the code repository.
+
+        Returns:
+            Tuple of (name, email) from code repo git config, or defaults.
+        """
+        code_repo_path = self._get_code_repo_path()
+        if not code_repo_path:
+            return ("User", "user@local")
+
+        try:
+            code_repo = Repo(code_repo_path)
+            reader = code_repo.config_reader()
+            name = reader.get_value("user", "name", default="User")
+            email = reader.get_value("user", "email", default="user@local")
+            return (name, email)
+        except Exception:
+            return ("User", "user@local")
+
     def _setup_alternates(self, code_repo: Path) -> None:
         """Set up git alternates to share objects with code repo.
 
@@ -652,6 +699,88 @@ class GitRepoBuilder:
 
         return self.repo, self.output_dir, self.path_mapping
 
+    def build_from_conversation_rounds(
+        self,
+        conversation_rounds: list["ConversationRound"],
+        transcript: "Transcript",
+        author_name: str = "Agent",
+        author_email: str = "agent@local",
+        incremental: bool = True,
+    ) -> tuple[Repo, Path, dict[str, str]]:
+        """Build git repo with conversational structure.
+
+        Each conversation round becomes:
+        1. A feature branch: {sequence:03d}-{summary}
+        2. One commit per entry on that branch
+        3. A merge commit back to session branch (authored by the human user)
+
+        Args:
+            conversation_rounds: List of ConversationRound objects.
+            transcript: The full transcript for operation lookup.
+            author_name: Name for agent commits.
+            author_email: Email for agent commits.
+            incremental: If True, skip already-processed entries.
+
+        Returns:
+            Tuple of (repo, repo_path, path_mapping).
+        """
+        existing_repo = self._setup_repo(incremental)
+
+        # Get author info from plugin if available
+        pm = get_configured_plugin_manager()
+        plugin_author_info = pm.hook.agentgit_get_author_info(transcript=transcript)
+
+        if plugin_author_info:
+            author_name = plugin_author_info.get("name", author_name)
+            author_email = plugin_author_info.get("email", author_email)
+
+        # Store author info for agent commits
+        self._agent_author_name = author_name
+        self._agent_author_email = author_email
+
+        # Get user author info from code repo for merge commits
+        self._user_author_name, self._user_author_email = self._get_code_repo_author()
+
+        with self.repo.config_writer() as config:
+            config.set_value("user", "name", author_name)
+            config.set_value("user", "email", author_email)
+
+        # Collect all operations for path normalization
+        all_operations = [op for op in transcript.operations if op.operation_type != OperationType.DELETE]
+        _, self.path_mapping = normalize_file_paths(all_operations)
+
+        if not conversation_rounds:
+            return self.repo, self.output_dir, self.path_mapping
+
+        # Ensure we have an initial commit on main
+        if not self._has_commits():
+            self._create_initial_commit()
+
+        # Create or checkout session branch
+        if self.session_branch_name:
+            if self.session_branch_name in self.repo.heads:
+                self.repo.heads[self.session_branch_name].checkout()
+            else:
+                main_ref = self.repo.head.commit
+                session_branch = self.repo.create_head(self.session_branch_name, main_ref)
+                session_branch.checkout()
+                logger.info("Created session branch: %s", self.session_branch_name)
+
+        # Process each conversation round
+        for round in conversation_rounds:
+            if incremental and self._is_round_processed(round):
+                continue
+            self._process_conversation_round(round, transcript)
+
+        # Create session ref if session_id is provided
+        if self.session_id and self.session_branch_name:
+            session_ref_path = self.output_dir / ".git" / "refs" / "sessions" / self.session_id
+            session_ref_path.parent.mkdir(parents=True, exist_ok=True)
+            session_ref_path.write_text(f"ref: refs/heads/{self.session_branch_name}\n")
+            logger.info("Created session ref: %s -> %s", f"refs/sessions/{self.session_id}", self.session_branch_name)
+
+        return self.repo, self.output_dir, self.path_mapping
+
     def _has_commits(self) -> bool:
         """Check if the repository has any commits."""
         try:
@@ -660,9 +789,13 @@ class GitRepoBuilder:
         except ValueError:
             return False
 
-    def _create_initial_commit(self) -> None:
-        """Create an initial empty commit."""
-        self.repo.index.commit("Initial commit")
+    def _create_initial_commit(self, timestamp: str = "1970-01-01T00:00:00Z") -> None:
+        """Create an initial empty commit.
+
+        Args:
+            timestamp: ISO 8601 timestamp for the commit. Defaults to epoch.
+        """
+        self._commit_with_date("Initial commit", timestamp, allow_empty=True)
 
     def _process_prompt_response(
         self, pr: PromptResponse, incremental: bool
@@ -724,17 +857,33 @@ class GitRepoBuilder:
         # Switch back to main
         self.repo.heads.main.checkout() if "main" in self.repo.heads else self.repo.heads.master.checkout()
 
-        # Merge the feature branch with a merge commit
+        # Merge the feature branch with a merge commit using the prompt timestamp
         merge_message = format_prompt_merge_message(pr.prompt, pr.turns)
+        git_date = format_git_date(pr.prompt.timestamp)
+        old_author_date = os.environ.get('GIT_AUTHOR_DATE')
+        old_committer_date = os.environ.get('GIT_COMMITTER_DATE')
         try:
-            self.repo.git.merge(branch_name, "--no-ff", "-m", merge_message)
-        except GitCommandError as e:
-            logger.warning("Merge failed for prompt %s: %s", pr.prompt.short_id, e)
-            # Try to continue despite merge issues
+            os.environ['GIT_AUTHOR_DATE'] = git_date
+            os.environ['GIT_COMMITTER_DATE'] = git_date
             try:
-                self.repo.git.merge("--abort")
-            except GitCommandError:
-                pass
+                self.repo.git.merge(branch_name, "--no-ff", "-m", merge_message)
+            except GitCommandError as e:
+                logger.warning("Merge failed for prompt %s: %s", pr.prompt.short_id, e)
+                # Try to continue despite merge issues
+                try:
+                    self.repo.git.merge("--abort")
+                except GitCommandError:
+                    pass
+        finally:
+            # Restore old env vars
+            if old_author_date is not None:
+                os.environ['GIT_AUTHOR_DATE'] = old_author_date
+            else:
+                os.environ.pop('GIT_AUTHOR_DATE', None)
+            if old_committer_date is not None:
+                os.environ['GIT_COMMITTER_DATE'] = old_committer_date
+            else:
+                os.environ.pop('GIT_COMMITTER_DATE', None)
 
         # Delete the feature branch
         try:
@@ -775,13 +924,13 @@ class GitRepoBuilder:
 
             # Create regular commit with file changes
             try:
-                self.repo.index.commit(commit_msg)
+                self._commit_with_date(commit_msg, turn.timestamp)
             except GitCommandError as e:
                 logger.warning("Failed to commit turn: %s", e)
         else:
             # No file changes - create an empty commit to preserve the conversation
             try:
-                self.repo.git.commit("--allow-empty", "-m", commit_msg)
+                self._commit_with_date(commit_msg, turn.timestamp, allow_empty=True)
             except GitCommandError as e:
                 logger.warning("Failed to create empty commit for turn: %s", e)
 
@@ -832,7 +981,8 @@ class GitRepoBuilder:
             full_path.parent.mkdir(parents=True, exist_ok=True)
             full_path.write_text(content)
             self.repo.index.add([rel_path])
-            self.repo.index.commit("Initial state (pre-session)")
+            # Use the operation timestamp for the initial state commit
+            self._commit_with_date("Initial state (pre-session)", operation.timestamp)
             return content
         else:
             return None
@@ -893,6 +1043,35 @@ class GitRepoBuilder:
 
         return files_removed
 
+    def _commit_with_date(self, commit_msg: str, timestamp: str, allow_empty: bool = False) -> None:
+        """Create a commit with a specific timestamp.
+
+        Args:
+            commit_msg: The commit message.
+            timestamp: ISO 8601 timestamp to use for commit date.
+            allow_empty: Whether to allow empty commits.
+        """
+        git_date = format_git_date(timestamp)
+        old_author_date = os.environ.get('GIT_AUTHOR_DATE')
+        old_committer_date = os.environ.get('GIT_COMMITTER_DATE')
+        try:
+            os.environ['GIT_AUTHOR_DATE'] = git_date
+            os.environ['GIT_COMMITTER_DATE'] = git_date
+            if allow_empty:
+                self.repo.git.commit("--allow-empty", "-m", commit_msg)
+            else:
+                self.repo.index.commit(commit_msg)
+        finally:
+            # Restore old env vars
+            if old_author_date is not None:
+                os.environ['GIT_AUTHOR_DATE'] = old_author_date
+            else:
+                os.environ.pop('GIT_AUTHOR_DATE', None)
+            if old_committer_date is not None:
+                os.environ['GIT_COMMITTER_DATE'] = old_committer_date
+            else:
+                os.environ.pop('GIT_COMMITTER_DATE', None)
+
     def _load_file_states_from_repo(self) -> None:
         """Load current file states from existing repo."""
         if not self.repo or self.repo.bare:
@@ -933,7 +1112,7 @@ class GitRepoBuilder:
         rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
         self.repo.index.add([rel_path])
         commit_msg = format_commit_message(operation)
-        self.repo.index.commit(commit_msg)
+        self._commit_with_date(commit_msg, operation.timestamp)
 
     def _apply_edit(self, operation: FileOperation) -> None:
         """Apply an edit operation."""
@@ -945,7 +1124,7 @@ class GitRepoBuilder:
         rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
         self.repo.index.add([rel_path])
         commit_msg = format_commit_message(operation)
-        self.repo.index.commit(commit_msg)
+        self._commit_with_date(commit_msg, operation.timestamp)
 
     def _apply_delete(self, operation: FileOperation) -> None:
         """Apply a delete operation."""
@@ -956,7 +1135,7 @@ class GitRepoBuilder:
         # Create commit for the deletion
         commit_msg = format_commit_message(operation)
         try:
-            self.repo.index.commit(commit_msg)
+            self._commit_with_date(commit_msg, operation.timestamp)
         except GitCommandError as e:
             # May fail if nothing to commit
             logger.debug("Could not commit delete operation: %s", e)
@@ -1000,10 +1179,408 @@ class GitRepoBuilder:
                         full_path.write_text(content)
                         self.repo.index.add([rel_path])
 
-        # Create commit with original metadata
+        # Create commit with original metadata and timestamp
         message = f"{commit.message}\n\nSource-Commit: {commit.sha}\nSource-Author: {commit.author} <{commit.author_email}>"
         try:
-            self.repo.index.commit(message)
+            self._commit_with_date(message, commit.timestamp)
         except GitCommandError as e:
             # May fail if nothing to commit
             logger.debug("Could not commit source commit %s: %s", commit.sha[:8], e)
+
+    # Conversation round processing methods
+
+    def _process_conversation_round(
+        self,
+        round: "ConversationRound",
+        transcript: "Transcript",
+    ) -> None:
+        """Process a single conversation round: branch, commits, merge."""
+        # Remember current session branch position
+        session_ref = self.repo.head.commit
+
+        # Create prompt branch
+        try:
+            prompt_branch = self.repo.create_head(round.branch_name, session_ref)
+            prompt_branch.checkout()
+        except GitCommandError as e:
+            logger.warning("Failed to create prompt branch %s: %s", round.branch_name, e)
+            return
+
+        # Create commits for each entry (skip the user prompt - it's in the merge commit)
+        for entry in round.entries:
+            # Skip user entries - they're already represented in the merge commit
+            if entry.entry_type == "user" and not entry.is_meta:
+                continue
+            self._commit_entry(entry, round, transcript)
+
+        # Switch back to session branch
+        if self.session_branch_name and self.session_branch_name in self.repo.heads:
+            self.repo.heads[self.session_branch_name].checkout()
+        else:
+            try:
+                self.repo.heads.main.checkout()
+            except AttributeError:
+                # No main branch, stay where we are
+                pass
+
+        # Merge the prompt branch (authored by the human user, not the agent)
+        merge_message = self._format_round_merge_message(round)
+
+        # Temporarily set user author for the merge commit
+        original_name = self.repo.config_reader().get_value("user", "name")
+        original_email = self.repo.config_reader().get_value("user", "email")
+
+        # Set timestamp for merge commit using the prompt timestamp
+        git_date = format_git_date(round.prompt.timestamp)
+        old_author_date = os.environ.get('GIT_AUTHOR_DATE')
+        old_committer_date = os.environ.get('GIT_COMMITTER_DATE')
+
+        try:
+            with self.repo.config_writer() as config:
+                config.set_value("user", "name", self._user_author_name)
+                config.set_value("user", "email", self._user_author_email)
+
+            os.environ['GIT_AUTHOR_DATE'] = git_date
+            os.environ['GIT_COMMITTER_DATE'] = git_date
+
+            try:
+                self.repo.git.merge(round.branch_name, "--no-ff", "-m", merge_message)
+            except GitCommandError as e:
+                logger.warning("Merge failed for round %s: %s", round.sequence, e)
+                # Try to recover
+                try:
+                    self.repo.git.merge("--abort")
+                except GitCommandError:
+                    pass
+        finally:
+            # Restore agent author for subsequent commits
+            with self.repo.config_writer() as config:
+                config.set_value("user", "name", original_name)
+                config.set_value("user", "email", original_email)
+
+            # Restore old env vars
+            if old_author_date is not None:
+                os.environ['GIT_AUTHOR_DATE'] = old_author_date
+            else:
+                os.environ.pop('GIT_AUTHOR_DATE', None)
+            if old_committer_date is not None:
+                os.environ['GIT_COMMITTER_DATE'] = old_committer_date
+            else:
+                os.environ.pop('GIT_COMMITTER_DATE', None)
+
+        # Delete the prompt branch
+        try:
+            self.repo.delete_head(round.branch_name, force=True)
+        except GitCommandError:
+            pass
+
+    def _commit_entry(
+        self,
+        entry: "TranscriptEntry",
+        round: "ConversationRound",
+        transcript: "Transcript",
+    ) -> None:
+        """Create a commit for a single transcript entry."""
+        # Find any file operations for this entry
+        operations = self._find_operations_for_entry(entry, transcript)
+
+        # Apply file operations if any
+        files_changed = []
+        for op in operations:
+            if self._apply_operation_no_commit(op):
+                rel_path = self.path_mapping.get(op.file_path, op.file_path)
+                files_changed.append(rel_path)
+
+        # Generate entry ID for tracking
+        entry_id = self._get_entry_id(entry)
+
+        # Create commit message
+        commit_msg = self._format_entry_commit_message(entry, round, operations)
+
+        # Create commit (may be empty if no file changes)
+        if files_changed:
+            for rel_path in files_changed:
+                try:
+                    self.repo.index.add([rel_path])
+                except GitCommandError:
+                    pass
+            try:
+                self._commit_with_date(commit_msg, entry.timestamp)
+                # Mark as processed
+                if not hasattr(self, '_processed_entries'):
+                    self._processed_entries = set()
+                self._processed_entries.add(entry_id)
+            except GitCommandError as e:
+                logger.warning("Failed to commit entry: %s", e)
+        else:
+            # Empty commit to preserve conversation
+            try:
+                self._commit_with_date(commit_msg, entry.timestamp, allow_empty=True)
+                # Mark as processed
+                if not hasattr(self, '_processed_entries'):
+                    self._processed_entries = set()
+                self._processed_entries.add(entry_id)
+            except GitCommandError as e:
+                logger.warning("Failed to create empty commit: %s", e)
+
+    def _find_operations_for_entry(
+        self,
+        entry: "TranscriptEntry",
+        transcript: "Transcript",
+    ) -> list["FileOperation"]:
+        """Find file operations associated with an entry."""
+        operations = []
+
+        # For assistant entries, look for tool_use blocks and match with operations
+        if entry.entry_type == "assistant":
+            content = entry.message.get("content", [])
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool_id = block.get("id")
+                        if tool_id:
+                            # Find operation with this tool_id
+                            for op in transcript.operations:
+                                if op.tool_id == tool_id:
+                                    operations.append(op)
+
+        return operations
+
+    def _get_entry_id(self, entry: "TranscriptEntry") -> str:
+        """Generate stable ID for a transcript entry."""
+        import hashlib
+        import json
+
+        content_str = json.dumps(entry.message, sort_keys=True)
+        content_hash = hashlib.md5(content_str.encode()).hexdigest()[:8]
+        return f"{entry.timestamp}:{entry.entry_type}:{content_hash}"
+
+    def _is_round_processed(self, round: "ConversationRound") -> bool:
+        """Check if all entries in a round have been processed."""
+        if not hasattr(self, '_processed_entries'):
+            # Load from existing commits
+            self._processed_entries = self._get_processed_entries()
+
+        for entry in round.entries:
+            # Skip user entries - they're not committed individually
+            if entry.entry_type == "user" and not entry.is_meta:
+                continue
+            entry_id = self._get_entry_id(entry)
+            if entry_id not in self._processed_entries:
+                return False
+        return True
+
+    def _get_processed_entries(self) -> set[str]:
+        """Extract Entry-Id values from existing commits."""
+        processed = set()
+
+        if not self.repo or not self._has_commits():
+            return processed
+
+        try:
+            for commit in self.repo.iter_commits():
+                # Parse commit message for Entry-Id trailer
+                metadata = parse_commit_trailers(commit.message)
+                if metadata.entry_id:
+                    processed.add(metadata.entry_id)
+        except GitCommandError:
+            pass
+
+        return processed
+
+    # Markdown formatters
+
+    def _format_entry_commit_message(
+        self,
+        entry: "TranscriptEntry",
+        round: "ConversationRound",
+        operations: list["FileOperation"],
+    ) -> str:
+        """Format commit message for a transcript entry."""
+        if entry.entry_type == "user":
+            return self._format_user_entry(entry, round)
+        elif entry.entry_type == "assistant":
+            return self._format_assistant_entry(entry, round, operations)
+        else:
+            # Generic format for other entry types
+            return self._format_generic_entry(entry, round)
+
+    def _format_user_entry(
+        self,
+        entry: "TranscriptEntry",
+        round: "ConversationRound",
+    ) -> str:
+        """Format user prompt entry."""
+        text = self._extract_text_from_content(entry.message.get("content", ""))
+
+        # First line as subject
+        first_line = text.split('\n')[0].strip()
+        if len(first_line) > 72:
+            subject = first_line[:69] + "..."
+        else:
+            subject = first_line or "User prompt"
+
+        # Build body
+        body = text
+
+        # Trailers
+        entry_id = self._get_entry_id(entry)
+        trailers = [
+            "---",
+            "",
+            f"Entry-Id: {entry_id}",
+            f"Timestamp: {entry.timestamp}",
+            f"Prompt-Id: {round.prompt.prompt_id}",
+        ]
+
+        trailers_str = "\n".join(trailers)
+        return f"{subject}\n\n{body}\n\n{trailers_str}"
+
+    def _format_assistant_entry(
+        self,
+        entry: "TranscriptEntry",
+        round: "ConversationRound",
+        operations: list["FileOperation"],
+    ) -> str:
+        """Format assistant response entry with tool calls."""
+        import json
+
+        content = entry.message.get("content", [])
+
+        # Extract blocks
+        text_blocks = []
+        thinking_blocks = []
+        tool_calls = []
+
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    block_type = block.get("type")
+                    if block_type == "text":
+                        text_blocks.append(block.get("text", ""))
+                    elif block_type == "thinking":
+                        thinking_blocks.append(block.get("thinking", ""))
+                    elif block_type == "tool_use":
+                        tool_calls.append(block)
+
+        # Generate subject
+        if text_blocks:
+            first_text = text_blocks[0].split('\n')[0].strip()
+            subject = first_text[:72] if len(first_text) > 72 else first_text
+        elif tool_calls:
+            if len(tool_calls) == 1:
+                subject = f"Call {tool_calls[0].get('name', 'tool')}"
+            else:
+                subject = f"Call {len(tool_calls)} tools"
+        else:
+            subject = "Assistant response"
+
+        # Build body
+        body_parts = []
+
+        if text_blocks:
+            body_parts.append("\n\n".join(text_blocks))
+
+        if thinking_blocks:
+            thinking_md = "## Extended Thinking\n\n" + "\n\n".join(thinking_blocks)
+            body_parts.append(thinking_md)
+
+        # Only include tool call details if this commit has no file operations
+        # (the diff shows what happened for commits with code changes)
+        if tool_calls and not operations:
+            tools_md = "## Tool Calls\n\n"
+            for call in tool_calls:
+                tool_name = call.get("name", "unknown")
+                tool_id = call.get("id", "")
+                tool_input = call.get("input", {})
+                input_json = json.dumps(tool_input, indent=2)
+                tools_md += f"- **{tool_name}** (`{tool_id}`)\n  ```json\n  {input_json}\n  ```\n\n"
+            body_parts.append(tools_md)
+
+        body = "\n\n".join(body_parts) if body_parts else ""
+
+        # Trailers
+        entry_id = self._get_entry_id(entry)
+        trailers = [
+            "---",
+            "",
+            f"Entry-Id: {entry_id}",
+            f"Timestamp: {entry.timestamp}",
+        ]
+        for call in tool_calls:
+            tool_id = call.get("id")
+            if tool_id:
+                trailers.append(f"Tool-Id: {tool_id}")
+
+        trailers_str = "\n".join(trailers)
+        return f"{subject}\n\n{body}\n\n{trailers_str}"
+
+    def _format_generic_entry(
+        self,
+        entry: "TranscriptEntry",
+        round: "ConversationRound",
+    ) -> str:
+        """Format generic entry (system, tool results, etc.)."""
+        import json
+
+        # Try to extract meaningful subject
+        subject = f"{entry.entry_type.title()} message"
+
+        # Try to get content as text
+        content = entry.message.get("content", "")
+        if isinstance(content, str):
+            body = content
+        else:
+            body = json.dumps(content, indent=2)
+
+        # Trailers
+        entry_id = self._get_entry_id(entry)
+        trailers = [
+            "---",
+            "",
+            f"Entry-Id: {entry_id}",
+            f"Timestamp: {entry.timestamp}",
+            f"Type: {entry.entry_type}",
+        ]
+
+        trailers_str = "\n".join(trailers)
+        return f"{subject}\n\n{body}\n\n{trailers_str}"
+
+    def _format_round_merge_message(
+        self,
+        round: "ConversationRound",
+    ) -> str:
+        """Format merge commit message for a conversation round."""
+        # Subject: "User Prompt #X" where X is the sequence number
+        subject = f"User Prompt #{round.sequence}"
+
+        # Body: Full prompt text (not truncated)
+        body = round.prompt.text
+
+        # Trailers
+        trailers = [
+            "---",
+            "",
+            f"Prompt-Id: {round.prompt.prompt_id}",
+            f"Round-Sequence: {round.sequence}",
+        ]
+
+        trailers_str = "\n".join(trailers)
+        return f"{subject}\n\n{body}\n\n{trailers_str}"
+
+    def _extract_text_from_content(self, content: Any) -> str:
+        """Extract plain text from message content."""
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        text_parts.append(item.get("text", ""))
+                    elif "text" in item:
+                        text_parts.append(item["text"])
+                elif isinstance(item, str):
+                    text_parts.append(item)
+            return "\n".join(text_parts)
+        return ""

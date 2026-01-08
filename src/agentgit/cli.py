@@ -223,7 +223,10 @@ def translate_paths_for_agentgit_repo(args: list[str], repo_path: Path) -> list[
 def run_git_passthrough(args: list[str]) -> None:
     """Run a git command on the agentgit repo."""
     import os
+    import shutil
     import subprocess
+    import sys
+    from pathlib import Path
 
     repo_path = get_agentgit_repo_path()
     if not repo_path or not repo_path.exists():
@@ -263,9 +266,20 @@ def run_git_passthrough(args: list[str]) -> None:
     # The agentgit-pager renders markdown with Rich then pipes to less -RFX
     env = os.environ.copy()
 
-    # Find agentgit-pager in the same directory as this script
-    import shutil
-    pager_path = shutil.which("agentgit-pager")
+    # Find agentgit-pager - look in venv bin directory first, then PATH
+    pager_path = None
+
+    # Check if we're in a virtual environment and look for pager there
+    if hasattr(sys, 'prefix') and sys.prefix != sys.base_prefix:
+        # We're in a venv - check the bin directory
+        venv_bin = Path(sys.prefix) / "bin" / "agentgit-pager"
+        if venv_bin.exists():
+            pager_path = str(venv_bin)
+
+    # Fall back to searching PATH
+    if not pager_path:
+        pager_path = shutil.which("agentgit-pager")
+
     if pager_path:
         env["GIT_PAGER"] = pager_path
     else:
@@ -274,12 +288,53 @@ def run_git_passthrough(args: list[str]) -> None:
 
     # Run git with -C to specify the agentgit repo directory
     # Use --paginate to enable paging for commands that support it
+    # Git colors are preserved - the pager will strip ANSI codes before markdown rendering
     # Explicitly inherit stdin/stdout/stderr to ensure terminal interaction works
     result = subprocess.run(
         ["git", "--paginate", "-C", str(repo_path)] + translated_args,
         env=env,
     )
     raise SystemExit(result.returncode)
+
+
+def run_lazygit_passthrough(args: list[str]) -> None:
+    """Run lazygit with -g pointing to the agentgit repo."""
+    import shutil
+    import subprocess
+
+    # Check if lazygit is installed
+    if not shutil.which("lazygit"):
+        raise click.ClickException(
+            "lazygit is not installed. Install it from https://github.com/jesseduffield/lazygit"
+        )
+
+    repo_path = get_agentgit_repo_path()
+    if not repo_path or not repo_path.exists():
+        raise click.ClickException(
+            "No agentgit repository found. Run 'agentgit' first to create one."
+        )
+
+    # lazygit's -g flag expects path to .git directory
+    git_dir = repo_path / ".git"
+    if not git_dir.exists():
+        raise click.ClickException(
+            f"Git directory not found at {git_dir}. The agentgit repository may be corrupted."
+        )
+
+    # Run lazygit with -g flag to specify git directory
+    result = subprocess.run(
+        ["lazygit", "-g", str(git_dir)] + args,
+    )
+    raise SystemExit(result.returncode)
+
+
+def run_lazygit_passthrough_cmd() -> None:
+    """Entry point for alazygit command."""
+    import sys
+
+    # Get all arguments passed to alazygit
+    args = sys.argv[1:]
+    run_lazygit_passthrough(args)
 
 
 class DefaultGroup(click.Group):
@@ -760,7 +815,8 @@ def _run_process(
 
             # Build into session branch
             repo, repo_path, _ = build_repo_grouped(
-                prompt_responses=session["parsed"].prompt_responses,
+                conversation_rounds=session["parsed"].conversation_rounds,
+                transcript=session["parsed"],
                 output_dir=output,
                 author_name=author,
                 author_email=email,

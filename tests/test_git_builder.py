@@ -1014,6 +1014,263 @@ class TestBuildFromPromptResponses:
             assert len(diffs) == 0
 
 
+class TestFormatGitDate:
+    """Tests for format_git_date function."""
+
+    def test_formats_utc_timestamp(self):
+        """Should format UTC timestamp correctly."""
+        from agentgit.git_builder import format_git_date
+
+        result = format_git_date("2025-01-15T14:30:45Z")
+        assert result == "2025-01-15 14:30:45 +0000"
+
+    def test_formats_timestamp_with_offset(self):
+        """Should format timestamp with timezone offset."""
+        from agentgit.git_builder import format_git_date
+
+        result = format_git_date("2025-01-15T14:30:45+05:30")
+        assert result == "2025-01-15 14:30:45 +0530"
+
+    def test_formats_timestamp_with_negative_offset(self):
+        """Should format timestamp with negative timezone offset."""
+        from agentgit.git_builder import format_git_date
+
+        result = format_git_date("2025-01-15T14:30:45-08:00")
+        assert result == "2025-01-15 14:30:45 -0800"
+
+
+class TestCommitDates:
+    """Tests for commit date handling from timestamps."""
+
+    def test_commit_date_matches_timestamp(self, tmp_path):
+        """Should set git commit date to match operation timestamp."""
+        ops = [
+            FileOperation(
+                file_path="/project/hello.py",
+                operation_type=OperationType.WRITE,
+                timestamp="2025-01-15T14:30:45Z",
+                content="print('hello')",
+                tool_id="toolu_001",
+            )
+        ]
+
+        builder = GitRepoBuilder(output_dir=tmp_path)
+        repo, _, _ = builder.build(ops)
+
+        commit = list(repo.iter_commits())[0]
+        # Git dates should match the timestamp
+        assert commit.authored_datetime.isoformat() == "2025-01-15T14:30:45+00:00"
+        assert commit.committed_datetime.isoformat() == "2025-01-15T14:30:45+00:00"
+
+    def test_multiple_commits_preserve_chronological_dates(self, tmp_path):
+        """Should preserve chronological order with different timestamps."""
+        prompt = Prompt(text="Add functions", timestamp="2025-01-15T10:00:00Z")
+        ops = [
+            FileOperation(
+                file_path="/project/first.py",
+                operation_type=OperationType.WRITE,
+                timestamp="2025-01-15T10:00:00Z",
+                content="# first",
+                prompt=prompt,
+                tool_id="toolu_001",
+            ),
+            FileOperation(
+                file_path="/project/second.py",
+                operation_type=OperationType.WRITE,
+                timestamp="2025-01-15T11:30:00Z",
+                content="# second",
+                prompt=prompt,
+                tool_id="toolu_002",
+            ),
+            FileOperation(
+                file_path="/project/third.py",
+                operation_type=OperationType.WRITE,
+                timestamp="2025-01-15T13:45:30Z",
+                content="# third",
+                prompt=prompt,
+                tool_id="toolu_003",
+            ),
+        ]
+
+        builder = GitRepoBuilder(output_dir=tmp_path)
+        repo, _, _ = builder.build(ops)
+
+        commits = list(reversed(list(repo.iter_commits())))
+        assert commits[0].authored_datetime.isoformat() == "2025-01-15T10:00:00+00:00"
+        assert commits[1].authored_datetime.isoformat() == "2025-01-15T11:30:00+00:00"
+        assert commits[2].authored_datetime.isoformat() == "2025-01-15T13:45:30+00:00"
+
+    def test_turn_commit_uses_turn_timestamp(self, tmp_path):
+        """Should use turn timestamp for grouped commits."""
+        prompt = Prompt(text="Setup project", timestamp="2025-01-15T12:00:00Z")
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/file1.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-15T12:01:00Z",
+                    content="# file1",
+                    prompt=prompt,
+                    tool_id="toolu_001",
+                ),
+                FileOperation(
+                    file_path="/project/file2.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-15T12:01:30Z",
+                    content="# file2",
+                    prompt=prompt,
+                    tool_id="toolu_002",
+                ),
+            ],
+            timestamp="2025-01-15T12:02:00Z",
+        )
+        pr = PromptResponse(prompt=prompt, turns=[turn])
+
+        builder = GitRepoBuilder(output_dir=tmp_path, session_branch_name="session")
+        repo, _, _ = builder.build_from_prompt_responses([pr])
+
+        # Find the turn commit (not the initial commit)
+        commits = list(repo.iter_commits())
+        turn_commit = [c for c in commits if "file1" in c.message or "Setup project" in c.message][0]
+
+        # Should use the turn timestamp
+        assert turn_commit.authored_datetime.isoformat() == "2025-01-15T12:02:00+00:00"
+
+    def test_timestamp_trailer_still_present(self, tmp_path):
+        """Should keep Timestamp trailer in commit message as metadata."""
+        ops = [
+            FileOperation(
+                file_path="/project/hello.py",
+                operation_type=OperationType.WRITE,
+                timestamp="2025-01-15T14:30:45Z",
+                content="print('hello')",
+            )
+        ]
+
+        builder = GitRepoBuilder(output_dir=tmp_path)
+        repo, _, _ = builder.build(ops)
+
+        commit = list(repo.iter_commits())[0]
+        # Timestamp trailer should still be in the message
+        assert "Timestamp: 2025-01-15T14:30:45Z" in commit.message
+
+    def test_source_commit_preserves_timestamp(self, tmp_path):
+        """Should use source commit timestamp when applying source commits."""
+        import os
+        from agentgit.core import SourceCommit
+
+        # Create a source repo
+        source_repo = tmp_path / "source"
+        source_repo.mkdir()
+        source = Repo.init(source_repo)
+        with source.config_writer() as config:
+            config.set_value("user", "name", "Source Author")
+            config.set_value("user", "email", "source@example.com")
+
+        # Create a file and commit with specific date
+        test_file = source_repo / "test.py"
+        test_file.write_text("content")
+        source.index.add(["test.py"])
+
+        # Set commit date to a specific time
+        old_date = os.environ.get('GIT_AUTHOR_DATE')
+        try:
+            os.environ['GIT_AUTHOR_DATE'] = "2025-01-10 10:00:00 +0000"
+            os.environ['GIT_COMMITTER_DATE'] = "2025-01-10 10:00:00 +0000"
+            source.index.commit("Source commit")
+        finally:
+            if old_date:
+                os.environ['GIT_AUTHOR_DATE'] = old_date
+                os.environ['GIT_COMMITTER_DATE'] = old_date
+            else:
+                os.environ.pop('GIT_AUTHOR_DATE', None)
+                os.environ.pop('GIT_COMMITTER_DATE', None)
+
+        source_sha = source.head.commit.hexsha
+
+        # Create source commit object
+        source_commit = SourceCommit(
+            sha=source_sha,
+            message="Source commit",
+            timestamp="2025-01-10T10:00:00Z",
+            author="Source Author",
+            author_email="source@example.com",
+            files_changed=["test.py"],
+        )
+
+        # Apply to agentgit repo
+        builder = GitRepoBuilder(output_dir=tmp_path / "agentgit")
+        builder._setup_repo(incremental=False)
+        builder._apply_source_commit(source_commit, source_repo)
+
+        # Verify commit was created with the correct timestamp
+        commits = list(builder.repo.iter_commits())
+        assert len(commits) == 1
+        assert commits[0].authored_datetime.isoformat() == "2025-01-10T10:00:00+00:00"
+        assert commits[0].committed_datetime.isoformat() == "2025-01-10T10:00:00+00:00"
+
+    def test_initial_commit_uses_earliest_timestamp(self, tmp_path):
+        """Should create initial commit with timestamp before all operations."""
+        prompt = Prompt(text="Add files", timestamp="2025-01-15T10:00:00Z")
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/file.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-15T10:00:00Z",
+                    content="# file",
+                    prompt=prompt,
+                )
+            ],
+            timestamp="2025-01-15T10:00:00Z",
+        )
+        pr = PromptResponse(prompt=prompt, turns=[turn])
+
+        builder = GitRepoBuilder(output_dir=tmp_path, session_branch_name="session")
+        repo, _, _ = builder.build_from_prompt_responses([pr])
+
+        # Get all commits
+        commits = list(reversed(list(repo.iter_commits())))
+
+        # First commit should be the initial commit
+        initial_commit = commits[0]
+        assert "Initial commit" in initial_commit.message
+
+        # Initial commit should have a timestamp before the first operation
+        # Default behavior: use epoch or a fixed early timestamp
+        assert initial_commit.authored_datetime.isoformat() < "2025-01-15T10:00:00+00:00"
+
+    def test_merge_commit_uses_prompt_timestamp(self, tmp_path):
+        """Should use prompt timestamp for merge commits."""
+        prompt = Prompt(text="Add feature", timestamp="2025-01-15T12:00:00Z")
+        turn = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/file.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-15T12:01:00Z",
+                    content="# file",
+                    prompt=prompt,
+                    tool_id="toolu_001",
+                )
+            ],
+            timestamp="2025-01-15T12:01:00Z",
+        )
+        pr = PromptResponse(prompt=prompt, turns=[turn])
+
+        # Build without session branch to get merge commits
+        builder = GitRepoBuilder(output_dir=tmp_path)
+        repo, _, _ = builder.build_from_prompt_responses([pr])
+
+        # Find the merge commit
+        merge_commits = [c for c in repo.iter_commits() if len(c.parents) == 2]
+        assert len(merge_commits) > 0
+
+        merge_commit = merge_commits[0]
+        # Merge commit should use the prompt timestamp
+        assert merge_commit.authored_datetime.isoformat() == "2025-01-15T12:00:00+00:00"
+
+
 class TestEnsureInitialStateForEdit:
     """Tests for _ensure_initial_state_for_edit helper function."""
 

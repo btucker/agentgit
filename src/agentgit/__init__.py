@@ -111,6 +111,10 @@ def parse_transcript(path: Path | str, plugin_type: str | None = None) -> Transc
     for prompt_responses in pm.hook.agentgit_build_prompt_responses(transcript=transcript):
         transcript.prompt_responses.extend(prompt_responses)
 
+    # Build conversation_rounds structure for conversational git history
+    for conversation_rounds in pm.hook.agentgit_build_conversation_rounds(transcript=transcript):
+        transcript.conversation_rounds.extend(conversation_rounds)
+
     return transcript
 
 
@@ -194,7 +198,8 @@ def build_repo(
 
 
 def build_repo_grouped(
-    prompt_responses: list[PromptResponse],
+    conversation_rounds: list["ConversationRound"],
+    transcript: "Transcript",
     output_dir: Path | None = None,
     author_name: str = "Agent",
     author_email: str = "agent@local",
@@ -203,30 +208,38 @@ def build_repo_grouped(
     agent_name: str | None = None,
     incremental: bool = True,
 ) -> tuple[Repo, Path, dict[str, str]]:
-    """Build a git repository using merge-based structure.
+    """Build a git repository using conversational structure.
 
-    If session_id is provided, creates a session branch for all commits (never merged).
-    Otherwise, each prompt becomes a merge commit on main with feature branches.
+    Each conversation round becomes a feature branch with commits for every entry,
+    then merges back to the session branch.
 
     Args:
-        prompt_responses: List of PromptResponse objects from transcript.
+        conversation_rounds: List of ConversationRound objects from transcript.
+        transcript: The full transcript (needed for operation lookup).
         output_dir: Directory for the git repo. If None, creates a temp dir.
         author_name: Name for git commits.
         author_email: Email for git commits.
         enhance_config: Optional configuration for generating commit messages.
         session_id: Optional session identifier. If provided, creates a session branch.
         agent_name: Optional agent/format name for branch naming (e.g., 'claude-code').
-        incremental: If True, skip already-processed operations. Default True.
+        incremental: If True, skip already-processed entries. Default True.
 
     Returns:
         Tuple of (repo, repo_path, path_mapping).
     """
     # Generate session branch name if session_id is provided
     session_branch_name = None
-    if session_id:
+    if session_id and conversation_rounds:
         from agentgit.enhance import generate_session_branch_name
+        # Use conversation_rounds to get prompts for session naming
+        # Convert to PromptResponse format for compatibility with existing function
+        prompt_responses_for_naming = []
+        for round in conversation_rounds:
+            from agentgit.core import PromptResponse
+            prompt_responses_for_naming.append(PromptResponse(prompt=round.prompt, turns=[]))
+
         session_branch_name = generate_session_branch_name(
-            prompt_responses, session_id, enhance_config, agent_name
+            prompt_responses_for_naming, session_id, enhance_config, agent_name
         )
 
     builder = GitRepoBuilder(
@@ -235,8 +248,9 @@ def build_repo_grouped(
         session_branch_name=session_branch_name,
         session_id=session_id,
     )
-    return builder.build_from_prompt_responses(
-        prompt_responses=prompt_responses,
+    return builder.build_from_conversation_rounds(
+        conversation_rounds=conversation_rounds,
+        transcript=transcript,
         author_name=author_name,
         author_email=author_email,
         incremental=incremental,
@@ -272,8 +286,8 @@ def transcript_to_repo(
     """
     transcript = parse_transcript(transcript_path, plugin_type=plugin_type)
 
-    # Use grouped build if we have prompt_responses and it's enabled
-    if use_grouped and transcript.prompt_responses:
+    # Use grouped build if we have conversation_rounds and it's enabled
+    if use_grouped and transcript.conversation_rounds:
         # Extract agent name from format (e.g., "claude_code_jsonl" -> "claude-code")
         agent_name = None
         if transcript.source_format:
@@ -283,7 +297,8 @@ def transcript_to_repo(
         session_id = transcript.session_id or Path(transcript_path).stem
 
         repo, repo_path, _ = build_repo_grouped(
-            prompt_responses=transcript.prompt_responses,
+            conversation_rounds=transcript.conversation_rounds,
+            transcript=transcript,
             output_dir=output_dir,
             author_name=author_name,
             author_email=author_email,

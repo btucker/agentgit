@@ -20,6 +20,7 @@ dependencies = [
 agentgit = "agentgit.cli:main"
 agit = "agentgit.cli:main"
 agentgit-pager = "agentgit.pager:main"
+alazygit = "agentgit.cli:run_lazygit_passthrough_cmd"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
