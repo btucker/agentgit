@@ -86,7 +86,7 @@ $ agentgit blame auth.py --session session/claude-code/add-user-auth
 $ agentgit blame auth.py -L 10,20
 ```
 
-**How it works:** agentgit blames your actual code repo, then maps each line to its session branch using blob SHA matching. Since both repos share git's object store via alternates, identical file content produces identical blob SHAs. agentgit builds an index of all blob SHAs in session branches, then looks up each blamed line's blob SHA to find the matching session and agent context—all inline, no extra commands needed.
+**How it works:** agentgit uses git's native blame on each session branch to find which commits wrote which lines. For each line in your code, it finds the earliest commit across all sessions that introduced that exact line content. Since both repos share git's object store via alternates, this is fast and accurate.
 
 View all sessions with `agentgit branch`, compare approaches with `git diff session/A session/B`, or explore individual session histories.
 
@@ -186,41 +186,18 @@ It creates a **separate repository** that shares content with your code repo:
 
 The repos share git's object store via git alternates. **Same content = same blob SHA = automatic correlation between your code and its history.**
 
-### How Blame Works: Line-Level Matching
+### How Blame Works: Native Git Blame
 
-Git stores file content as **blobs** - binary objects representing entire file snapshots. When you commit a file, git creates a blob with that file's content and assigns it a SHA hash. If the content changes, a new blob is created with a new SHA.
+When you run `agentgit blame`:
 
-Traditional approach: match entire file blobs between repos. Problem: files evolve—even if an agent wrote specific lines, other parts might change (imports, formatting, etc.), causing blob SHAs to differ.
+1. **Blame each session branch** using git's native blame algorithm (Myers diff)
+2. **Collect all line attributions** - which commit in which session wrote each line
+3. **Find the earliest** - for each line in your code, return the oldest commit that wrote it
+4. **Display inline** with session name and agent context
 
-**agentgit's solution: match individual lines, not entire files.**
+This approach uses git's built-in line-tracking capabilities rather than custom indexing. Git's blame algorithm already handles whitespace normalization, move detection, and accurate line provenance.
 
-Inspired by how `git diff` uses the Myers algorithm to compare files line-by-line, agentgit builds a searchable index of every line from every session:
-
-```
-refs/heads/agentgit-index/
-└── .agentgit/lines/
-    ├── src_agentgit_cli.py      # Line mappings for this file
-    └── src_agentgit_core.py     # Line mappings for this file
-```
-
-Each mapping file contains:
-```
-line_hash|session_name|commit_sha|context
-abc123def|session/cc/add-auth|xyz789|Adding JWT authentication with HS256
-def456ghi|session/cc/fix-bug|abc123|Fixed token expiration timestamp
-```
-
-**When you run `agentgit blame`:**
-
-1. Blame your code repo to get each line's content
-2. Hash each line: `sha256(line.rstrip('\n'))`
-3. Use `git grep` to search the index: `git grep "^{line_hash}" refs/heads/agentgit-index`
-4. Parse the result to get session name, commit SHA, and context
-5. Display inline with the code
-
-**Why git grep?** It's optimized to search git's object database at millions of lines per second, without needing to load the entire index into memory.
-
-**Why this works:** Even when files evolve and full blob SHAs differ, individual lines often remain identical. The agent wrote `def foo():` and that exact line exists in your code—we can match it, even if the surrounding imports changed.
+**Why this works:** Even when files evolve across sessions, git blame correctly tracks which commit introduced each line. By blaming all session branches and finding the earliest timestamp, we identify the original agent session that wrote each line of code.
 
 **Source transcripts** are read from standard locations:
 - Claude Code: `~/.claude/projects/`
