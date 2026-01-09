@@ -112,7 +112,10 @@ def get_processed_operations(repo: Repo) -> set[str]:
     processed = set()
 
     try:
-        for commit in repo.iter_commits():
+        # Use --all to scan commits from all branches, not just current branch.
+        # This is critical because session branches contain the actual operation
+        # commits, while main may only have merges or be empty.
+        for commit in repo.iter_commits("--all"):
             metadata = parse_commit_trailers(commit.message)
             if metadata.tool_id:
                 processed.add(metadata.tool_id)
@@ -132,35 +135,49 @@ def format_commit_message(operation: FileOperation) -> str:
     """Format a rich commit message for a file operation.
 
     Structure:
-    - Subject line: operation type and file
+    - Subject line: contextual summary (from previous assistant message) or operation
     - Blank line
-    - User prompt (the "why") - full text, no truncation
+    - Context: previous assistant message (the explanation before tool call)
     - Blank line
-    - Assistant context if available
+    - Thinking: the reasoning that preceded the tool call
+    - Blank line
+    - User Prompt: truncated to 200 chars
     - Blank line
     - Git trailers for machine parsing
 
     Args:
         operation: The file operation to format.
     """
-    op_verb = {
-        OperationType.WRITE: "Create",
-        OperationType.EDIT: "Edit",
-        OperationType.DELETE: "Delete",
-    }.get(operation.operation_type, "Modify")
-    subject = f"{op_verb} {operation.filename}"
+    # Subject: prefer contextual summary from previous assistant message
+    subject = None
+    if operation.assistant_context:
+        subject = operation.assistant_context.contextual_summary
+
+    # Fallback to operation-based subject
+    if not subject:
+        op_verb = {
+            OperationType.WRITE: "Create",
+            OperationType.EDIT: "Edit",
+            OperationType.DELETE: "Delete",
+        }.get(operation.operation_type, "Modify")
+        subject = f"{op_verb} {operation.filename}"
 
     body_parts = []
 
-    # User prompt (the "why") - full text, no truncation
-    if operation.prompt:
-        body_parts.append(f"Prompt #{operation.prompt.short_id}:\n{operation.prompt.text}")
+    # Context: previous assistant message (the explanation)
+    if operation.assistant_context and operation.assistant_context.previous_message_text:
+        body_parts.append(f"Context:\n{operation.assistant_context.previous_message_text}")
 
-    # Assistant context (the reasoning)
-    if operation.assistant_context and operation.assistant_context.summary:
-        context = operation.assistant_context.summary
-        if context:
-            body_parts.append(f"Context:\n{context}")
+    # Thinking: the reasoning that preceded the tool call
+    if operation.assistant_context and operation.assistant_context.thinking:
+        body_parts.append(f"Thinking:\n{operation.assistant_context.thinking}")
+
+    # User prompt (truncated to 200 chars)
+    if operation.prompt:
+        prompt_text = operation.prompt.text
+        if len(prompt_text) > 200:
+            prompt_text = prompt_text[:197] + "..."
+        body_parts.append(f"User Prompt: {prompt_text}")
 
     body = "\n\n".join(body_parts) if body_parts else ""
 
@@ -672,8 +689,8 @@ class GitRepoBuilder:
                 # Branch exists, check it out
                 self.repo.heads[self.session_branch_name].checkout()
             else:
-                # Create new session branch from main
-                main_ref = self.repo.head.commit
+                # Create new session branch from main (not HEAD!)
+                main_ref = self._get_main_branch_commit()
                 session_branch = self.repo.create_head(self.session_branch_name, main_ref)
                 session_branch.checkout()
                 logger.info("Created session branch: %s", self.session_branch_name)
@@ -761,7 +778,8 @@ class GitRepoBuilder:
             if self.session_branch_name in self.repo.heads:
                 self.repo.heads[self.session_branch_name].checkout()
             else:
-                main_ref = self.repo.head.commit
+                # Create new session branch from main (not HEAD!)
+                main_ref = self._get_main_branch_commit()
                 session_branch = self.repo.create_head(self.session_branch_name, main_ref)
                 session_branch.checkout()
                 logger.info("Created session branch: %s", self.session_branch_name)
@@ -788,6 +806,27 @@ class GitRepoBuilder:
             return True
         except ValueError:
             return False
+
+    def _get_main_branch_commit(self):
+        """Get the commit from the main branch (not HEAD).
+
+        This is important when creating new session branches - they should
+        branch from main, not from whatever branch HEAD currently points to.
+        Otherwise, if HEAD is on session A's branch, new session B would
+        incorrectly inherit all of session A's commits.
+
+        Returns:
+            The commit object from the main branch.
+        """
+        # Try 'main' first, then 'master' for compatibility
+        if "main" in self.repo.heads:
+            return self.repo.heads.main.commit
+        elif "master" in self.repo.heads:
+            return self.repo.heads.master.commit
+        else:
+            # Fall back to HEAD if no main/master branch exists
+            # (this handles the initial setup case)
+            return self.repo.head.commit
 
     def _create_initial_commit(self, timestamp: str = "1970-01-01T00:00:00Z") -> None:
         """Create an initial empty commit.

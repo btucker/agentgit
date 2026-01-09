@@ -1,13 +1,12 @@
 """Blame command implementation for agentgit.
 
-Maps lines in your code to the agent sessions that wrote them by using
-git's native blame across all session branches.
+Maps lines in your code to the agent sessions that wrote them by running
+git blame across all session branches and finding the earliest agent commit.
 """
 
 from __future__ import annotations
 
 import re
-from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -37,9 +36,9 @@ def blame_command(
 ) -> None:
     """Show git blame with agent context for each line.
 
-    By default, blames your code repo and maps commits to session branches.
-    For each line, finds the EARLIEST commit across all sessions that wrote it.
-    Falls back to agentgit repo if not in a code repo.
+    Runs git blame across all session branches to find which agent commits
+    introduced each line of code. For each line, finds the EARLIEST agent
+    commit across all sessions.
 
     Examples:
 
@@ -51,7 +50,7 @@ def blame_command(
         file_path: Path to the file to blame
         lines: Optional line range in format "start,end" or "start,+count"
         no_context: If True, don't show agent context
-        session: Optional session branch to blame
+        session: Optional session branch to blame (uses standard git blame)
         get_agentgit_repo_path: Function to get agentgit repo path
         translate_paths_for_agentgit_repo: Function to translate paths
     """
@@ -65,218 +64,274 @@ def blame_command(
             "No agentgit repository found. Run 'agentgit' first to create one."
         )
 
-    # Check if we're in a code repo
-    code_repo = None
-    code_repo_path = None
-    try:
-        code_repo_path = find_git_root(Path.cwd())
-        if code_repo_path and code_repo_path != agentgit_repo_path:
-            code_repo = Repo(code_repo_path)
-            click.echo(f"Using code repo: {code_repo_path}", err=True)
-    except Exception:
-        pass
-
-    # Decide which repo to blame
+    # If explicit session specified, use standard git blame on that branch
     if session:
-        # Explicit session specified - use agentgit repo directly
-        repo = Repo(agentgit_repo_path)
+        agentgit_repo = Repo(agentgit_repo_path)
         translated = translate_paths_for_agentgit_repo([file_path], agentgit_repo_path)
         target_file = translated[0]
-        blame_ref = session
-        use_session_mapping = False
         click.echo(f"Blaming session: {session}", err=True)
-    elif code_repo:
-        # Use code repo and map to sessions
-        repo = code_repo
-        target_file = file_path
-        blame_ref = 'HEAD'
-        use_session_mapping = True
-    else:
-        # Fall back to agentgit repo
-        repo = Repo(agentgit_repo_path)
+        _blame_single_branch(agentgit_repo, session, target_file, lines, no_context)
+        return
+
+    # Check if we're in a code repo
+    code_repo_path = find_git_root(Path.cwd())
+    if not code_repo_path or code_repo_path == agentgit_repo_path:
+        # Fall back to agentgit repo with standard blame
+        agentgit_repo = Repo(agentgit_repo_path)
         translated = translate_paths_for_agentgit_repo([file_path], agentgit_repo_path)
         target_file = translated[0]
-        blame_ref = 'HEAD'
-        use_session_mapping = False
         click.echo("No code repo found, using agentgit repo", err=True)
+        _blame_single_branch(agentgit_repo, "HEAD", target_file, lines, no_context)
+        return
+
+    click.echo(f"Using code repo: {code_repo_path}", err=True)
+
+    # Read the file from the code repo
+    full_path = code_repo_path / file_path
+    if not full_path.exists():
+        raise click.ClickException(f"File not found: {full_path}")
+
+    content = full_path.read_text()
+    file_lines = content.split('\n')
 
     # Parse line range if provided
-    start_line = None
-    end_line = None
-    if lines:
-        parts = lines.split(',')
-        if len(parts) == 2:
-            start_line = int(parts[0]) - 1  # GitPython uses 0-based indexing
-            if parts[1].startswith('+'):
-                end_line = start_line + int(parts[1])
-            else:
-                end_line = int(parts[1]) - 1
+    start_line, end_line = _parse_line_range(lines)
 
-    try:
-        blame_data = repo.blame(blame_ref, target_file)
-    except Exception as e:
-        raise click.ClickException(f"Failed to get blame data: {e}")
+    # Use git blame across all session branches
+    agentgit_repo = Repo(agentgit_repo_path)
+    line_to_session = blame_across_sessions(
+        agentgit_repo,
+        file_path,
+    )
 
-    # Build session index if mapping mode
-    session_index: dict[str, list[SessionBlameEntry]] = {}
-    if use_session_mapping:
-        agentgit_repo = Repo(agentgit_repo_path)
-        click.echo("Building session index...", err=True)
-        session_index = build_session_index(agentgit_repo, target_file)
-        click.echo(f"Indexed {len(session_index)} unique lines", err=True)
+    click.echo(f"Found {len(line_to_session)} lines with session attribution", err=True)
 
-    # Flatten blame data for line-by-line processing
-    all_lines = []
-    for commit, lines_list in blame_data:
-        for line_content in lines_list:
-            all_lines.append((commit, line_content))
-
-    # Process and display blame output
-    line_num = 0
-    for commit, line_content in all_lines:
-        # Apply line range filter if specified
+    # Output blame
+    for i, line in enumerate(file_lines):
         if start_line is not None and end_line is not None:
-            if line_num < start_line or line_num > end_line:
-                line_num += 1
+            if i < start_line or i > end_line:
                 continue
 
-        content = line_content.rstrip('\n')
+        stripped = line.rstrip('\n')
+        entry = line_to_session.get(stripped)
 
-        # Find session if in mapping mode
-        session_entry = find_earliest_session(content, session_index)
-
-        if session_entry:
+        if entry:
             blame_line = format_blame_line_with_session(
-                session_entry.commit_sha,
-                session_entry.session,
-                session_entry.context,
-                content,
+                entry.commit_sha,
+                entry.session,
+                entry.context,
+                stripped,
                 no_context,
             )
         else:
-            # Standard blame format (no session match)
-            short_sha = commit.hexsha[:7]
-            author = commit.author.name[:12]
-            date = commit.committed_datetime.strftime('%Y-%m-%d')
-            blame_line = f"{short_sha} ({author:12} {date:10}) {content}"
+            # No session match - show placeholder
+            blame_line = f"??????? {'':30}   {stripped}"
 
         click.echo(blame_line)
-        line_num += 1
 
 
-def build_session_index(
+def blame_across_sessions(
     agentgit_repo: "Repo",
-    code_relative_path: str,
-) -> dict[str, list[SessionBlameEntry]]:
-    """Build an index of all lines across all session branches.
+    relative_path: str,
+) -> dict[str, SessionBlameEntry]:
+    """Find earliest agent commit for each line using git blame across sessions.
 
-    Uses git's native blame on each session branch to find the commit
-    that introduced each line.
+    Runs git blame on each session branch, then merges results to find
+    the earliest agent commit for each line content.
 
     Args:
         agentgit_repo: The agentgit repository
-        code_relative_path: Relative path of the file in code repo (e.g., 'src/cli.py')
+        relative_path: Relative path of the file in the code repo
 
     Returns:
-        Dict mapping line content -> list of SessionBlameEntry from all sessions
+        Dict mapping line content -> SessionBlameEntry for earliest commit
     """
-    results: dict[str, list[SessionBlameEntry]] = defaultdict(list)
+    # Find session branches
+    session_branches = [
+        ref.name for ref in agentgit_repo.refs
+        if ref.name.startswith('sessions/')
+    ]
 
-    # Find all session branches
-    session_branches = [b for b in agentgit_repo.heads if b.name.startswith('sessions/')]
+    if not session_branches:
+        return {}
 
-    # Find all path variants for this file across sessions
-    agentgit_paths = find_agentgit_paths(code_relative_path, session_branches)
+    click.echo(f"Searching {len(session_branches)} session branches...", err=True)
 
-    # Blame each session branch
-    for branch in session_branches:
-        for file_path in agentgit_paths:
-            try:
-                # Check if file exists in this branch
-                branch.commit.tree[file_path]
-            except KeyError:
-                continue
-
-            try:
-                blame_data = agentgit_repo.blame(branch.name, file_path)
-            except Exception:
-                continue
-
-            for commit, lines in blame_data:
-                context = extract_context(commit)
-                for line in lines:
-                    line_stripped = line.rstrip('\n')
-                    results[line_stripped].append(SessionBlameEntry(
-                        commit_sha=commit.hexsha[:7],
-                        session=branch.name,
-                        timestamp=commit.committed_datetime,
-                        context=context,
-                    ))
-
-    return dict(results)
-
-
-def find_agentgit_paths(
-    code_relative_path: str,
-    session_branches: list,
-) -> list[str]:
-    """Find all path variants for a code file in the agentgit repo.
-
-    Session branches may have files at different absolute paths like:
-        Documents/projects/myapp/src/cli.py
-        Users/name/Documents/projects/myapp/src/cli.py
-
-    Args:
-        code_relative_path: Relative path from code repo (e.g., 'src/cli.py')
-        session_branches: List of session branches to search
-
-    Returns:
-        List of unique paths in agentgit that match the code file
-    """
-    all_paths = set()
-    for branch in session_branches:
+    # Find file paths that match in each branch using GitPython
+    def find_file_in_branch(branch: str) -> tuple[str, str | None]:
+        """Find the file path in this branch that ends with relative_path."""
         try:
-            for item in branch.commit.tree.traverse():
-                if item.type == 'blob' and item.path.endswith(code_relative_path):
-                    all_paths.add(item.path)
+            # Use GitPython's ls-tree equivalent
+            tree_contents = agentgit_repo.git.ls_tree('-r', '--name-only', branch)
+            for path in tree_contents.split('\n'):
+                if path.endswith(relative_path):
+                    return branch, path
+            return branch, None
         except Exception:
-            continue
-    return list(all_paths)
+            return branch, None
+
+    # Find files sequentially (GitPython operations on same repo not thread-safe)
+    branch_paths: dict[str, str] = {}
+    for branch in session_branches:
+        _, path = find_file_in_branch(branch)
+        if path:
+            branch_paths[branch] = path
+
+    if not branch_paths:
+        return {}
+
+    click.echo(f"Found file in {len(branch_paths)} branches", err=True)
+
+    # Run git blame on each branch using GitPython
+    def blame_branch(branch_path: tuple[str, str]) -> dict[str, tuple[str, int, str]]:
+        """Run git blame on a branch and return line -> (sha, timestamp, branch)."""
+        branch, path = branch_path
+        results: dict[str, tuple[str, int, str]] = {}
+
+        try:
+            # Use GitPython's blame method which returns parsed data
+            blame_data = agentgit_repo.blame(branch, path)
+
+            for commit, lines_list in blame_data:
+                # Skip initial state commits (bulk imports)
+                if commit.summary == 'Initial state (pre-session)':
+                    continue
+
+                timestamp = int(commit.committed_date)
+
+                for line_content in lines_list:
+                    line_content = line_content.rstrip('\n')
+                    if not line_content:
+                        continue
+
+                    # Only record if we don't have this line yet,
+                    # or if this commit is earlier
+                    if line_content not in results or timestamp < results[line_content][1]:
+                        results[line_content] = (commit.hexsha[:7], timestamp, branch)
+
+        except Exception:
+            pass
+
+        return results
+
+    # Blame all branches sequentially (GitPython's blame is not thread-safe)
+    all_results: dict[str, tuple[str, int, str]] = {}
+    for branch_path in branch_paths.items():
+        branch_results = blame_branch(branch_path)
+        # Merge: keep earliest timestamp for each line
+        for line_content, (sha, timestamp, branch) in branch_results.items():
+            if line_content not in all_results or timestamp < all_results[line_content][1]:
+                all_results[line_content] = (sha, timestamp, branch)
+
+    # Convert to SessionBlameEntry with context
+    final_results: dict[str, SessionBlameEntry] = {}
+    for line_content, (sha, timestamp, branch) in all_results.items():
+        # Get context from commit message
+        try:
+            commit = agentgit_repo.commit(sha)
+            context = extract_context(commit)
+        except Exception:
+            context = None
+
+        final_results[line_content] = SessionBlameEntry(
+            commit_sha=sha,
+            session=branch,
+            timestamp=datetime.fromtimestamp(timestamp),
+            context=context,
+        )
+
+    return final_results
 
 
-def find_earliest_session(
-    line_content: str,
-    session_index: dict[str, list[SessionBlameEntry]],
-) -> SessionBlameEntry | None:
-    """Find the earliest session commit that wrote this line.
+def _blame_single_branch(
+    repo: "Repo",
+    ref: str,
+    file_path: str,
+    lines: str | None,
+    no_context: bool,
+) -> None:
+    """Standard git blame on a single branch."""
+    start_line, end_line = _parse_line_range(lines)
 
-    Args:
-        line_content: The line of code to look up
-        session_index: Index from build_session_index()
+    try:
+        blame_data = repo.blame(ref, file_path)
+    except Exception as e:
+        raise click.ClickException(f"Failed to get blame data: {e}")
 
-    Returns:
-        SessionBlameEntry for the earliest commit, or None if not found
-    """
-    entries = session_index.get(line_content)
-    if not entries:
-        return None
+    line_num = 0
+    for commit, lines_list in blame_data:
+        for line_content in lines_list:
+            if start_line is not None and end_line is not None:
+                if line_num < start_line or line_num > end_line:
+                    line_num += 1
+                    continue
 
-    # Return the earliest by timestamp
-    return min(entries, key=lambda e: e.timestamp)
+            content = line_content.rstrip('\n')
+            context = extract_context(commit)
+            short_sha = commit.hexsha[:7]
+
+            if context and not no_context:
+                click.echo(f"{short_sha}: {context[:50]}   {content}")
+            else:
+                author = commit.author.name[:12]
+                date = commit.committed_datetime.strftime('%Y-%m-%d')
+                click.echo(f"{short_sha} ({author:12} {date:10}) {content}")
+
+            line_num += 1
+
+
+def _parse_line_range(lines: str | None) -> tuple[int | None, int | None]:
+    """Parse line range from -L argument."""
+    if not lines:
+        return None, None
+
+    parts = lines.split(',')
+    if len(parts) != 2:
+        return None, None
+
+    start_line = int(parts[0]) - 1  # 0-indexed
+    if parts[1].startswith('+'):
+        end_line = start_line + int(parts[1])
+    else:
+        end_line = int(parts[1]) - 1
+
+    return start_line, end_line
 
 
 def extract_context(commit) -> str | None:
     """Extract context from commit message.
 
+    Prefers the commit subject line (which now contains the contextual summary
+    from the previous assistant message). Falls back to the Context section
+    for backward compatibility with older commits.
+
     Args:
         commit: GitPython commit object
 
     Returns:
-        First sentence of context, or None if not found
+        Subject line or first sentence of context, or None if generic
     """
     message = commit.message
+    subject = message.split('\n')[0].strip()
+
+    # Skip generic subjects that don't provide useful context
+    generic_patterns = [
+        r'^(Create|Edit|Delete|Modify) \S+$',  # "Edit file.py"
+        r'^Initial (commit|state)',  # Initial commits
+        r'^Call \d+ tools?$',  # "Call 3 tools"
+        r'^Assistant response$',
+        r'^User prompt$',
+    ]
+    is_generic = any(re.match(pattern, subject, re.IGNORECASE) for pattern in generic_patterns)
+
+    if not is_generic and subject:
+        if len(subject) > 80:
+            return subject[:77] + "..."
+        return subject
+
+    # Fallback: extract from Context section for backward compatibility
     match = re.search(
-        r'Context:\s*\n(.+?)(?:\n\n|\nPrompt-Id:|\nOperation:|\nTimestamp:|\Z)',
+        r'Context:\s*\n(.+?)(?:\n\n|\nThinking:|\nPrompt-Id:|\nOperation:|\nTimestamp:|\Z)',
         message,
         re.DOTALL
     )
@@ -298,9 +353,7 @@ def format_blame_line_with_session(
 ) -> str:
     """Format a blame line with session information.
 
-    Format: {sha} {agent}/{branch}...: {context...}   {code}
-
-    Terminal-width aware - wider terminals show more detail.
+    Format: {sha} {session}: {context}   {code}
 
     Args:
         sha: Commit SHA (short form)
@@ -333,7 +386,6 @@ def format_blame_line_with_session(
         session_short = session_name
 
     # Calculate available space
-    # Format: "{sha} {session}: {context}   {code}"
     fixed_space = 7 + 1 + 2 + 3  # sha + space + ": " + "   "
     code_space = len(code)
     available = term_width - fixed_space - code_space

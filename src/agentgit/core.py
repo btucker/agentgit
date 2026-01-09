@@ -50,11 +50,16 @@ class AssistantContext:
     """Context from assistant messages preceding a file operation.
 
     Captures the reasoning/thinking that explains why a change was made.
+    Includes both the immediate context (thinking/text in the same message
+    as the tool call) and the previous message context (the explanatory
+    message that came before).
     """
 
     thinking: Optional[str] = None
     text: Optional[str] = None
     timestamp: str = ""
+    # Context from the previous assistant message (not the one with tool_use)
+    previous_message_text: Optional[str] = None
 
     @property
     def summary(self) -> str:
@@ -63,6 +68,26 @@ class AssistantContext:
             return self.thinking
         if self.text:
             return self.text
+        return ""
+
+    @property
+    def contextual_summary(self) -> str:
+        """Get beginning of previous message for subject line.
+
+        Returns the first line of the previous assistant message,
+        truncated to 72 chars for git subject line.
+        """
+        if self.previous_message_text:
+            first_line = self.previous_message_text.split('\n')[0].strip()
+            if len(first_line) > 72:
+                return first_line[:69] + "..."
+            return first_line
+        # Fallback to first line of summary
+        if self.summary:
+            first_line = self.summary.split('\n')[0].strip()
+            if len(first_line) > 72:
+                return first_line[:69] + "..."
+            return first_line
         return ""
 
 
@@ -270,6 +295,7 @@ class DiscoveredTranscript:
     size_bytes: int
     project_name: Optional[str] = None  # Project name from plugin
     display_name: Optional[str] = None  # Display name from plugin
+    has_file_ops: Optional[bool] = None  # Whether session has file-modifying operations
 
     @property
     def size_human(self) -> str:

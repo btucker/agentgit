@@ -6,10 +6,7 @@ from datetime import datetime, timezone
 
 from agentgit.cmd.blame import (
     SessionBlameEntry,
-    build_session_index,
     extract_context,
-    find_agentgit_paths,
-    find_earliest_session,
     format_blame_line_with_session,
 )
 
@@ -33,70 +30,71 @@ class TestSessionBlameEntry:
 class TestExtractContext:
     """Tests for extract_context function."""
 
-    def test_extracts_context_from_message(self):
-        """Test extracting context section from commit message."""
+    def test_uses_subject_line_when_informative(self):
+        """Test uses subject line when it's not a generic operation description."""
 
         class MockCommit:
-            message = "Subject\n\nContext:\nThis is the context explaining the change.\n\nPrompt-Id: abc123"
+            message = "I'll add a validation helper function\n\nContext:\nSome context here\n\nPrompt-Id: abc123"
 
         result = extract_context(MockCommit())
-        # Result contains first sentence (includes trailing period if no sentence break found)
-        assert result == "This is the context explaining the change."
+        assert result == "I'll add a validation helper function"
 
-    def test_returns_none_when_no_context(self):
-        """Test returns None when no Context section."""
+    def test_falls_back_to_context_section_for_generic_subject(self):
+        """Test falls back to Context section when subject is generic like 'Edit file.py'."""
 
         class MockCommit:
-            message = "Subject\n\nSome other content\n\nPrompt-Id: abc123"
+            message = "Edit auth.py\n\nContext:\nThis is the context explaining the change.\n\nPrompt-Id: abc123"
+
+        result = extract_context(MockCommit())
+        # Should fall back to Context section
+        assert result == "This is the context explaining the change."
+
+    def test_skips_generic_create_delete_modify_subjects(self):
+        """Test skips generic Create/Delete/Modify subjects."""
+
+        class MockCommit:
+            message = "Create helper.py\n\nContext:\nAdding a helper.\n\nPrompt-Id: abc123"
+
+        result = extract_context(MockCommit())
+        assert result == "Adding a helper."
+
+    def test_skips_initial_commit_subjects(self):
+        """Test skips Initial commit/state subjects."""
+
+        class MockCommit:
+            message = "Initial state (pre-session)\n\nPrompt-Id: abc123"
 
         result = extract_context(MockCommit())
         assert result is None
 
-    def test_truncates_long_context(self):
-        """Test that long context is truncated."""
+    def test_returns_none_when_no_context_and_generic_subject(self):
+        """Test returns None when both subject is generic and no Context section."""
 
         class MockCommit:
-            message = "Subject\n\nContext:\n" + ("x" * 100) + "\n\nPrompt-Id: abc123"
+            message = "Edit file.py\n\nSome other content\n\nPrompt-Id: abc123"
+
+        result = extract_context(MockCommit())
+        assert result is None
+
+    def test_truncates_long_subject(self):
+        """Test that long subject is truncated."""
+
+        class MockCommit:
+            message = ("x" * 100) + "\n\nPrompt-Id: abc123"
 
         result = extract_context(MockCommit())
         assert result is not None
         assert len(result) <= 80
         assert result.endswith("...")
 
+    def test_handles_thinking_section_boundary(self):
+        """Test correctly stops at Thinking section."""
 
-class TestFindEarliestSession:
-    """Tests for find_earliest_session function."""
+        class MockCommit:
+            message = "Edit file.py\n\nContext:\nExplanation here.\n\nThinking:\nSome thinking\n\nPrompt-Id: abc123"
 
-    def test_finds_earliest_by_timestamp(self):
-        """Test that the earliest entry by timestamp is returned."""
-        index = {
-            "def foo():": [
-                SessionBlameEntry("aaa1111", "sessions/cc/first", datetime(2025, 1, 3, tzinfo=timezone.utc), "Third"),
-                SessionBlameEntry("bbb2222", "sessions/cc/second", datetime(2025, 1, 1, tzinfo=timezone.utc), "First"),
-                SessionBlameEntry("ccc3333", "sessions/cc/third", datetime(2025, 1, 2, tzinfo=timezone.utc), "Second"),
-            ]
-        }
-
-        result = find_earliest_session("def foo():", index)
-        assert result is not None
-        assert result.commit_sha == "bbb2222"
-        assert result.context == "First"
-
-    def test_returns_none_when_line_not_found(self):
-        """Test returns None when line is not in index."""
-        index = {
-            "def bar():": [
-                SessionBlameEntry("aaa1111", "sessions/cc/feature", datetime(2025, 1, 1, tzinfo=timezone.utc), "Ctx"),
-            ]
-        }
-
-        result = find_earliest_session("def foo():", index)
-        assert result is None
-
-    def test_handles_empty_index(self):
-        """Test handles empty index gracefully."""
-        result = find_earliest_session("anything", {})
-        assert result is None
+        result = extract_context(MockCommit())
+        assert result == "Explanation here."
 
 
 class TestFormatBlameLineWithSession:
@@ -149,81 +147,3 @@ class TestFormatBlameLineWithSession:
         # Should still have session but not the full context
         assert "abc1234" in result
         assert "cc/feature" in result
-
-
-class TestFindAgentgitPaths:
-    """Tests for find_agentgit_paths function."""
-
-    def test_finds_matching_paths(self):
-        """Test finding path variants that end with the code relative path."""
-
-        class MockBlob:
-            type = "blob"
-
-            def __init__(self, path):
-                self.path = path
-
-        class MockTree:
-            def traverse(self):
-                return [
-                    MockBlob("Documents/project/src/cli.py"),
-                    MockBlob("Users/name/Documents/project/src/cli.py"),
-                    MockBlob("src/other.py"),
-                ]
-
-        class MockCommit:
-            tree = MockTree()
-
-        class MockBranch:
-            name = "sessions/cc/feature"
-            commit = MockCommit()
-
-        paths = find_agentgit_paths("src/cli.py", [MockBranch()])
-        assert len(paths) == 2
-        assert "Documents/project/src/cli.py" in paths
-        assert "Users/name/Documents/project/src/cli.py" in paths
-        assert "src/other.py" not in paths
-
-    def test_handles_empty_branches(self):
-        """Test handles empty branch list."""
-        paths = find_agentgit_paths("src/cli.py", [])
-        assert paths == []
-
-
-class TestBuildSessionIndex:
-    """Tests for build_session_index function."""
-
-    def test_returns_empty_dict_when_no_sessions(self):
-        """Test returns empty dict when repo has no session branches."""
-
-        class MockRepo:
-            heads = []
-
-        result = build_session_index(MockRepo(), "src/cli.py")
-        assert result == {}
-
-    def test_returns_empty_dict_when_file_not_in_sessions(self):
-        """Test returns empty dict when file doesn't exist in any session."""
-
-        class MockTree:
-            def traverse(self):
-                return []
-
-            def __getitem__(self, key):
-                raise KeyError(key)
-
-        class MockCommit:
-            tree = MockTree()
-
-        class MockBranch:
-            name = "sessions/cc/feature"
-            commit = MockCommit()
-
-        class MockRepo:
-            heads = [MockBranch()]
-
-            def blame(self, _ref, _path):
-                return []
-
-        result = build_session_index(MockRepo(), "nonexistent.py")
-        assert result == {}

@@ -59,8 +59,8 @@ class TestFormatCommitMessage:
         message = format_commit_message(op)
         assert message.startswith("Delete file.py")
 
-    def test_includes_prompt_text(self):
-        """Should include full prompt text without truncation."""
+    def test_includes_prompt_text_truncated(self):
+        """Should include prompt text truncated to 200 chars."""
         long_prompt = "x" * 1000
         prompt = Prompt(text=long_prompt, timestamp="2025-01-01T00:00:00Z")
         op = FileOperation(
@@ -70,8 +70,62 @@ class TestFormatCommitMessage:
             prompt=prompt,
         )
         message = format_commit_message(op)
-        assert f"Prompt #{prompt.short_id}:" in message
-        assert long_prompt in message
+        assert "User Prompt:" in message
+        # Should be truncated with ellipsis
+        assert ("x" * 197 + "...") in message
+        # Should NOT contain full prompt
+        assert long_prompt not in message
+
+    def test_uses_contextual_summary_as_subject(self):
+        """Should use contextual summary from previous assistant message as subject."""
+        op = FileOperation(
+            file_path="/file.py",
+            operation_type=OperationType.WRITE,
+            timestamp="2025-01-01T00:00:00Z",
+            assistant_context=AssistantContext(
+                previous_message_text="I'll create a utility function to handle authentication",
+                thinking="Let me think about the approach...",
+            ),
+        )
+        message = format_commit_message(op)
+        # Subject should be the first line of previous_message_text
+        assert message.startswith("I'll create a utility function to handle authentication")
+
+    def test_includes_context_section_with_previous_message(self):
+        """Should include Context section with previous assistant message."""
+        op = FileOperation(
+            file_path="/file.py",
+            operation_type=OperationType.WRITE,
+            timestamp="2025-01-01T00:00:00Z",
+            assistant_context=AssistantContext(
+                previous_message_text="This is the explanation of what I'm about to do.",
+            ),
+        )
+        message = format_commit_message(op)
+        assert "Context:\nThis is the explanation of what I'm about to do." in message
+
+    def test_includes_thinking_section(self):
+        """Should include Thinking section when thinking is present."""
+        op = FileOperation(
+            file_path="/file.py",
+            operation_type=OperationType.WRITE,
+            timestamp="2025-01-01T00:00:00Z",
+            assistant_context=AssistantContext(
+                thinking="I need to consider error handling here...",
+            ),
+        )
+        message = format_commit_message(op)
+        assert "Thinking:\nI need to consider error handling here..." in message
+
+    def test_falls_back_to_operation_subject_when_no_context(self):
+        """Should fall back to operation-based subject when no contextual summary."""
+        op = FileOperation(
+            file_path="/path/to/file.py",
+            operation_type=OperationType.WRITE,
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        message = format_commit_message(op)
+        assert message.startswith("Create file.py")
 
     def test_includes_trailers(self):
         """Should include machine-parseable trailers."""
@@ -471,6 +525,48 @@ class TestGetProcessedOperations:
 
         result = get_processed_operations(repo)
         assert "ts:2025-01-01T00:00:00Z" in result
+
+    def test_extracts_tool_ids_from_all_branches(self, tmp_path):
+        """Should extract Tool-Ids from all branches, not just current branch.
+
+        This is critical for incremental processing - session branches contain
+        the actual operation commits, while main may only have merges or be empty.
+        """
+        repo = Repo.init(tmp_path)
+        with repo.config_writer() as config:
+            config.set_value("user", "name", "Test")
+            config.set_value("user", "email", "test@test.com")
+
+        # Create initial commit on main
+        readme = tmp_path / "README.md"
+        readme.write_text("# Project")
+        repo.index.add(["README.md"])
+        repo.index.commit("Initial commit")
+
+        # Create a session branch with commits
+        session_branch = repo.create_head("sessions/claude_code/test-session")
+        session_branch.checkout()
+
+        # Add commits with Tool-Ids on the session branch
+        file1 = tmp_path / "file1.py"
+        file1.write_text("content1")
+        repo.index.add(["file1.py"])
+        repo.index.commit("Create file1.py\n\nTool-Id: toolu_session_001")
+
+        file2 = tmp_path / "file2.py"
+        file2.write_text("content2")
+        repo.index.add(["file2.py"])
+        repo.index.commit("Create file2.py\n\nTool-Id: toolu_session_002")
+
+        # Switch back to main branch
+        repo.heads.main.checkout()
+
+        # get_processed_operations should find Tool-Ids from ALL branches
+        result = get_processed_operations(repo)
+
+        # These should be found even though we're on main
+        assert "toolu_session_001" in result, "Should find Tool-Id from session branch"
+        assert "toolu_session_002" in result, "Should find Tool-Id from session branch"
 
 
 class TestIncrementalBuild:
@@ -1269,6 +1365,98 @@ class TestCommitDates:
         merge_commit = merge_commits[0]
         # Merge commit should use the prompt timestamp
         assert merge_commit.authored_datetime.isoformat() == "2025-01-15T12:00:00+00:00"
+
+
+class TestSessionBranchIsolation:
+    """Tests for session branch isolation.
+
+    Session branches should be isolated from each other - each session
+    should only contain its own commits plus the shared initial commit.
+    """
+
+    def test_session_branches_are_isolated_from_each_other(self, tmp_path):
+        """Session branches should NOT inherit commits from other sessions.
+
+        This is a regression test for a bug where sessions created after
+        the first session incorrectly inherited commits from previous
+        sessions because the code used HEAD instead of the main branch
+        when creating new session branches.
+        """
+        prompt1 = Prompt(text="Session 1 work", timestamp="2025-01-01T10:00:00Z")
+        turn1 = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/session1.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-01T10:00:01Z",
+                    content="# session 1 file",
+                    prompt=prompt1,
+                    tool_id="toolu_session1",
+                )
+            ],
+            timestamp="2025-01-01T10:00:01Z",
+        )
+        pr1 = PromptResponse(prompt=prompt1, turns=[turn1])
+
+        prompt2 = Prompt(text="Session 2 work", timestamp="2025-01-02T10:00:00Z")
+        turn2 = AssistantTurn(
+            operations=[
+                FileOperation(
+                    file_path="/project/session2.py",
+                    operation_type=OperationType.WRITE,
+                    timestamp="2025-01-02T10:00:01Z",
+                    content="# session 2 file",
+                    prompt=prompt2,
+                    tool_id="toolu_session2",
+                )
+            ],
+            timestamp="2025-01-02T10:00:01Z",
+        )
+        pr2 = PromptResponse(prompt=prompt2, turns=[turn2])
+
+        # Build first session
+        builder1 = GitRepoBuilder(
+            output_dir=tmp_path,
+            session_branch_name="sessions/session1",
+            session_id="session1",
+        )
+        repo, _, _ = builder1.build_from_prompt_responses([pr1])
+
+        # Build second session (in the SAME repo)
+        builder2 = GitRepoBuilder(
+            output_dir=tmp_path,
+            session_branch_name="sessions/session2",
+            session_id="session2",
+        )
+        repo, _, _ = builder2.build_from_prompt_responses([pr2])
+
+        # Get commits for each session branch
+        session1_commits = list(repo.iter_commits("sessions/session1"))
+        session2_commits = list(repo.iter_commits("sessions/session2"))
+
+        # Get commit messages for easier debugging
+        session1_messages = [c.message.split('\n')[0] for c in session1_commits]
+        session2_messages = [c.message.split('\n')[0] for c in session2_commits]
+
+        # Session 1 should only have its own commits + initial commit
+        # (no commits containing "session2" text)
+        for msg in session1_messages:
+            assert "session2" not in msg.lower(), \
+                f"Session 1 branch contains session 2 commit: {msg}"
+
+        # Session 2 should only have its own commits + initial commit
+        # (no commits containing "session1" text or Tool-Id toolu_session1)
+        for commit in session2_commits:
+            assert "toolu_session1" not in commit.message, \
+                f"Session 2 branch contains session 1 commit: {commit.message.split(chr(10))[0]}"
+
+        # Both should share only the initial commit
+        # Session 1: initial commit + 1 turn commit = 2 commits
+        # Session 2: initial commit + 1 turn commit = 2 commits
+        assert len(session1_commits) == 2, \
+            f"Session 1 should have 2 commits, got {len(session1_commits)}: {session1_messages}"
+        assert len(session2_commits) == 2, \
+            f"Session 2 should have 2 commits, got {len(session2_commits)}: {session2_messages}"
 
 
 class TestEnsureInitialStateForEdit:

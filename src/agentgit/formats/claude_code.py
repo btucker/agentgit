@@ -276,7 +276,13 @@ class ClaudeCodePlugin:
         operation: FileOperation,
         transcript: Transcript,
     ) -> FileOperation:
-        """Enrich operation with prompt and assistant context."""
+        """Enrich operation with prompt and assistant context.
+
+        Captures two levels of context:
+        1. Immediate context: thinking/text in the same message as the tool_use
+        2. Previous message context: the assistant message before the one with tool_use
+           (often the explanatory message that describes the approach)
+        """
         if transcript.source_format != FORMAT_CLAUDE_CODE_JSONL:
             return operation
 
@@ -291,8 +297,10 @@ class ClaudeCodePlugin:
         if current_prompt:
             operation.prompt = current_prompt
 
-        # Find assistant context (thinking/text) immediately before this tool use
+        # Find assistant context - track both current and previous message
         context = AssistantContext()
+        previous_assistant_text: str | None = None
+
         for entry in transcript.entries:
             if entry.timestamp > operation.timestamp:
                 break
@@ -300,20 +308,36 @@ class ClaudeCodePlugin:
             if entry.entry_type == "assistant":
                 content = entry.message.get("content", [])
                 if isinstance(content, list):
+                    # First pass: check if this entry contains our target tool_use
+                    # and collect the text from this entry
+                    entry_text: str | None = None
+                    entry_thinking: str | None = None
+                    has_target_tool = False
+
                     for block in content:
                         if isinstance(block, dict):
                             if block.get("type") == "thinking":
-                                context.thinking = block.get("thinking", "")
-                                context.timestamp = entry.timestamp
+                                entry_thinking = block.get("thinking", "")
                             elif block.get("type") == "text":
-                                context.text = block.get("text", "")
-                                context.timestamp = entry.timestamp
+                                entry_text = block.get("text", "")
                             elif block.get("type") == "tool_use":
                                 if block.get("id") == operation.tool_id:
-                                    if context.thinking or context.text:
-                                        operation.assistant_context = context
-                                    return operation
-                                context = AssistantContext()
+                                    has_target_tool = True
+
+                    if has_target_tool:
+                        # Found the entry with our tool_use
+                        # Use thinking/text from THIS entry for immediate context
+                        context.thinking = entry_thinking
+                        context.text = entry_text
+                        context.timestamp = entry.timestamp
+                        # Use text from PREVIOUS assistant entry for contextual summary
+                        context.previous_message_text = previous_assistant_text
+                        operation.assistant_context = context
+                        return operation
+                    else:
+                        # This is a previous assistant entry, save its text
+                        if entry_text:
+                            previous_assistant_text = entry_text
 
         return operation
 
@@ -628,35 +652,44 @@ class ClaudeCodePlugin:
         for entry in transcript.entries:
             # New user prompt starts a new round
             if entry.entry_type == "user" and not entry.is_meta:
-                # Save previous round if it exists
-                if current_prompt is not None and current_entries:
-                    rounds.append(ConversationRound(
-                        prompt=current_prompt,
-                        entries=current_entries,
-                        sequence=sequence
-                    ))
-
-                # Start new round
-                sequence += 1
-
-                # Find or create the Prompt object for this entry
+                # Extract text to check if this is a real prompt or just tool_result
                 text = self._extract_text_from_content(entry.message.get("content", ""))
-                current_prompt = None
-                for p in transcript.prompts:
-                    if p.timestamp == entry.timestamp:
-                        current_prompt = p
-                        break
 
-                if current_prompt is None and text:
-                    # Create Prompt if not found in transcript.prompts
-                    current_prompt = Prompt(
-                        text=text,
-                        timestamp=entry.timestamp,
-                        raw_entry=entry.raw_entry
-                    )
+                # Only start a new round if there's actual user text
+                # (not just tool_result entries which have no text)
+                if text:
+                    # Save previous round if it exists
+                    if current_prompt is not None and current_entries:
+                        rounds.append(ConversationRound(
+                            prompt=current_prompt,
+                            entries=current_entries,
+                            sequence=sequence
+                        ))
 
-                # Initialize with this user entry
-                current_entries = [entry]
+                    # Start new round
+                    sequence += 1
+
+                    # Find or create the Prompt object for this entry
+                    current_prompt = None
+                    for p in transcript.prompts:
+                        if p.timestamp == entry.timestamp:
+                            current_prompt = p
+                            break
+
+                    if current_prompt is None:
+                        # Create Prompt if not found in transcript.prompts
+                        current_prompt = Prompt(
+                            text=text,
+                            timestamp=entry.timestamp,
+                            raw_entry=entry.raw_entry
+                        )
+
+                    # Initialize with this user entry
+                    current_entries = [entry]
+                else:
+                    # Tool-result only entry - add to current round if we have one
+                    if current_prompt is not None:
+                        current_entries.append(entry)
             else:
                 # Add all other entries to current round
                 if current_prompt is not None:

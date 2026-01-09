@@ -126,3 +126,51 @@ def get_git_remotes(project_path: Path) -> list[str]:
         return remotes
     except (subprocess.SubprocessError, OSError):
         return []
+
+
+# Tool names that modify files
+FILE_MODIFYING_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
+
+
+def has_file_operations(file_path: Path) -> bool:
+    """Quickly check if a JSONL transcript contains file-modifying operations.
+
+    This performs a fast scan of the file looking for tool_use entries with
+    Write, Edit, or NotebookEdit tools. Stops as soon as one is found.
+
+    Args:
+        file_path: Path to the JSONL transcript file.
+
+    Returns:
+        True if the file contains file-modifying operations, False otherwise.
+    """
+    import json
+
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Quick string check before full JSON parse
+                if '"tool_use"' not in line:
+                    continue
+
+                try:
+                    data = json.loads(line)
+                    msg = data.get("message", {})
+                    content = msg.get("content", [])
+                    if isinstance(content, list):
+                        for item in content:
+                            if (
+                                item.get("type") == "tool_use"
+                                and item.get("name") in FILE_MODIFYING_TOOLS
+                            ):
+                                return True
+                except json.JSONDecodeError:
+                    continue
+    except (OSError, IOError):
+        pass
+
+    return False
