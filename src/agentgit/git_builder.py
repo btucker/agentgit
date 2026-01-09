@@ -1341,7 +1341,8 @@ class GitRepoBuilder:
             for rel_path in files_changed:
                 try:
                     self.repo.index.add([rel_path])
-                except GitCommandError:
+                except (GitCommandError, FileNotFoundError, OSError):
+                    # File may not exist (deleted, renamed, etc.)
                     pass
             try:
                 self._commit_with_date(commit_msg, entry.timestamp)
