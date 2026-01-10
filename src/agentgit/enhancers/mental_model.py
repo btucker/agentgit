@@ -1,0 +1,734 @@
+"""Mental Model Enhancer - AI-driven semantic visualization.
+
+This enhancer maintains a "living mental model" that evolves as code changes.
+It integrates with the agentgit enhancer system to:
+
+1. Observe code changes and update the model (AI decides the structure)
+2. Process human instructions to reshape the model
+3. Generate interactive visualizations with time travel
+
+The mental model is NOT prescribed - the AI decides what level of abstraction
+and what types of elements/relationships make sense for the codebase.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable
+
+from agentgit.plugins import hookimpl, hookspec
+
+if TYPE_CHECKING:
+    from agentgit.core import AssistantTurn, FileOperation, Prompt, PromptResponse
+
+logger = logging.getLogger(__name__)
+
+ENHANCER_NAME = "mental_model"
+
+
+# ============================================================================
+# Data Structures (freeform - AI decides structure)
+# ============================================================================
+
+
+@dataclass
+class ModelElement:
+    """A freeform element in the mental model. AI decides what it represents."""
+
+    id: str
+    label: str
+    properties: dict[str, Any] = field(default_factory=dict)
+    shape: str = "box"
+    color: str | None = None
+    created_by: str = ""  # "ai" or "human"
+    reasoning: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "properties": self.properties,
+            "shape": self.shape,
+            "color": self.color,
+            "created_by": self.created_by,
+            "reasoning": self.reasoning,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ModelElement":
+        return cls(
+            id=data["id"],
+            label=data["label"],
+            properties=data.get("properties", {}),
+            shape=data.get("shape", "box"),
+            color=data.get("color"),
+            created_by=data.get("created_by", ""),
+            reasoning=data.get("reasoning", ""),
+        )
+
+
+@dataclass
+class ModelRelation:
+    """A freeform relationship. AI decides what it means."""
+
+    source_id: str
+    target_id: str
+    label: str = ""
+    properties: dict[str, Any] = field(default_factory=dict)
+    style: str = "solid"
+    created_by: str = ""
+    reasoning: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "source_id": self.source_id,
+            "target_id": self.target_id,
+            "label": self.label,
+            "properties": self.properties,
+            "style": self.style,
+            "created_by": self.created_by,
+            "reasoning": self.reasoning,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ModelRelation":
+        return cls(
+            source_id=data["source_id"],
+            target_id=data["target_id"],
+            label=data.get("label", ""),
+            properties=data.get("properties", {}),
+            style=data.get("style", "solid"),
+            created_by=data.get("created_by", ""),
+            reasoning=data.get("reasoning", ""),
+        )
+
+
+@dataclass
+class ModelSnapshot:
+    """A point-in-time snapshot for time travel."""
+
+    version: int
+    timestamp: datetime
+    elements: dict[str, ModelElement]
+    relations: list[ModelRelation]
+    ai_summary: str
+    trigger: str  # What caused this snapshot
+
+
+@dataclass
+class MentalModel:
+    """The living mental model - structure emerges from AI observation."""
+
+    elements: dict[str, ModelElement] = field(default_factory=dict)
+    relations: list[ModelRelation] = field(default_factory=list)
+    version: int = 0
+    ai_summary: str = ""
+    snapshots: list[ModelSnapshot] = field(default_factory=list)
+
+    # Files associated with each element (for focused prompting)
+    element_files: dict[str, set[str]] = field(default_factory=dict)
+
+    def snapshot(self, trigger: str = "") -> None:
+        """Save current state for time travel."""
+        import copy
+
+        self.snapshots.append(
+            ModelSnapshot(
+                version=self.version,
+                timestamp=datetime.now(),
+                elements=copy.deepcopy(self.elements),
+                relations=copy.deepcopy(self.relations),
+                ai_summary=self.ai_summary,
+                trigger=trigger,
+            )
+        )
+
+    def to_mermaid(self) -> str:
+        """Export as Mermaid diagram."""
+        lines = ["graph TD"]
+
+        shapes = {
+            "box": ("[", "]"),
+            "rounded": ("(", ")"),
+            "circle": ("((", "))"),
+            "diamond": ("{", "}"),
+            "cylinder": ("[(", ")]"),
+            "hexagon": ("{{", "}}"),
+            "stadium": ("([", "])"),
+        }
+
+        for elem in self.elements.values():
+            left, right = shapes.get(elem.shape, ("[", "]"))
+            safe_label = elem.label.replace('"', "'")
+            lines.append(f'    {elem.id}{left}"{safe_label}"{right}')
+
+        arrow_styles = {
+            "solid": "-->",
+            "dashed": "-.->",
+            "dotted": "..>",
+            "thick": "==>",
+        }
+
+        for rel in self.relations:
+            arrow = arrow_styles.get(rel.style, "-->")
+            if rel.label:
+                lines.append(f'    {rel.source_id} {arrow}|"{rel.label}"| {rel.target_id}')
+            else:
+                lines.append(f'    {rel.source_id} {arrow} {rel.target_id}')
+
+        for elem in self.elements.values():
+            if elem.color:
+                lines.append(f"    style {elem.id} fill:{elem.color}")
+
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict:
+        return {
+            "elements": {eid: e.to_dict() for eid, e in self.elements.items()},
+            "relations": [r.to_dict() for r in self.relations],
+            "version": self.version,
+            "ai_summary": self.ai_summary,
+            "element_files": {k: list(v) for k, v in self.element_files.items()},
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "MentalModel":
+        model = cls(
+            version=data.get("version", 0),
+            ai_summary=data.get("ai_summary", ""),
+        )
+        for eid, edata in data.get("elements", {}).items():
+            model.elements[eid] = ModelElement.from_dict(edata)
+        for rdata in data.get("relations", []):
+            model.relations.append(ModelRelation.from_dict(rdata))
+        for eid, files in data.get("element_files", {}).items():
+            model.element_files[eid] = set(files)
+        return model
+
+
+# ============================================================================
+# LLM Integration (uses same pattern as llm.py)
+# ============================================================================
+
+
+def _get_llm_model(model: str = "claude-cli-haiku"):
+    """Get LLM model instance."""
+    try:
+        import llm
+
+        return llm.get_model(model)
+    except ImportError:
+        logger.warning("llm not installed")
+        return None
+    except Exception as e:
+        logger.warning("Failed to get model: %s", e)
+        return None
+
+
+def _run_llm(prompt: str, model: str = "claude-cli-haiku") -> str | None:
+    """Run prompt through LLM."""
+    llm_model = _get_llm_model(model)
+    if not llm_model:
+        return None
+    try:
+        return llm_model.prompt(prompt).text()
+    except Exception as e:
+        logger.warning("LLM request failed: %s", e)
+        return None
+
+
+def _truncate(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
+
+
+# ============================================================================
+# AI Prompts (AI decides structure - no prescribed types)
+# ============================================================================
+
+
+def build_observation_prompt(model: MentalModel, context: dict) -> str:
+    """Build prompt for AI to observe changes and update model."""
+
+    current_diagram = model.to_mermaid() if model.elements else "(empty)"
+
+    return f"""You are maintaining a "mental model" diagram for a codebase.
+This represents the CONCEPTUAL structure - not files, but how the system works.
+
+## Current Mental Model
+```mermaid
+{current_diagram}
+```
+
+{f"Current understanding: {model.ai_summary}" if model.ai_summary else ""}
+
+## Recent Changes
+{json.dumps(context, indent=2)}
+
+## Your Task
+Decide how to update the mental model. You have COMPLETE FREEDOM in structure:
+- Choose whatever elements/relationships capture the system best
+- Pick appropriate shapes (box, rounded, circle, diamond, cylinder, hexagon, stadium)
+- Use colors to indicate groupings or importance
+- The abstraction level should emerge from what you observe
+
+Respond with JSON:
+```json
+{{
+    "thinking": "Your reasoning about the system structure",
+    "summary": "1-2 sentence description of what this system does",
+    "updates": {{
+        "add_elements": [
+            {{"id": "unique_id", "label": "Name", "shape": "box", "color": "#hex", "reasoning": "why"}}
+        ],
+        "remove_element_ids": ["id"],
+        "modify_elements": [{{"id": "x", "label": "new", "shape": "new"}}],
+        "add_relations": [
+            {{"source_id": "a", "target_id": "b", "label": "relationship", "style": "solid", "reasoning": "why"}}
+        ],
+        "remove_relations": [["source_id", "target_id"]]
+    }}
+}}
+```
+
+If no changes needed: {{"thinking": "...", "summary": "...", "updates": null}}
+"""
+
+
+def build_instruction_prompt(model: MentalModel, selected_ids: list[str], instruction: str) -> str:
+    """Build prompt for AI to process human instruction about selected region."""
+
+    selected_elements = [model.elements[eid] for eid in selected_ids if eid in model.elements]
+
+    selection_desc = ""
+    if selected_elements:
+        selection_desc = "Selected elements:\n"
+        for elem in selected_elements:
+            selection_desc += f"- {elem.label} ({elem.id}): {elem.reasoning}\n"
+    else:
+        selection_desc = "(No specific elements - instruction applies to whole model)"
+
+    return f"""The user has selected part of the mental model and given an instruction.
+
+## Current Model
+```mermaid
+{model.to_mermaid()}
+```
+
+## Selection
+{selection_desc}
+
+## User Instruction
+"{instruction}"
+
+Interpret this instruction and update the model accordingly.
+The user is reshaping how they think about this part of the system.
+
+Respond with JSON:
+```json
+{{
+    "interpretation": "How you understand the instruction",
+    "updates": {{
+        "add_elements": [...],
+        "remove_element_ids": [...],
+        "modify_elements": [...],
+        "add_relations": [...],
+        "remove_relations": [...]
+    }}
+}}
+```
+"""
+
+
+def build_focused_prompt(model: MentalModel, element_id: str, intent: str) -> str:
+    """Generate a focused prompt for interacting with a specific element."""
+
+    elem = model.elements.get(element_id)
+    if not elem:
+        return f"Element {element_id} not found in model."
+
+    # Find connected elements
+    connected = []
+    for rel in model.relations:
+        if rel.source_id == element_id and rel.target_id in model.elements:
+            connected.append(f"{model.elements[rel.target_id].label} ({rel.label})")
+        elif rel.target_id == element_id and rel.source_id in model.elements:
+            connected.append(f"{model.elements[rel.source_id].label} ({rel.label})")
+
+    files = list(model.element_files.get(element_id, []))
+
+    context = f"**{elem.label}**"
+    if elem.reasoning:
+        context += f"\n{elem.reasoning}"
+    if connected:
+        context += f"\nConnected to: {', '.join(connected)}"
+    if files:
+        context += f"\nRelated files: {', '.join(files[:5])}"
+
+    prompts = {
+        "explore": f"Tell me about the {elem.label}. What does it do and how does it fit in?",
+        "modify": f"I want to change the {elem.label}. What files should I look at?",
+        "debug": f"I'm having issues with {elem.label}. Help me understand how it works.",
+        "test": f"I want to add tests for {elem.label}. What should I test?",
+        "refactor": f"I'm considering refactoring {elem.label}. What would be the impact?",
+    }
+
+    prompt = prompts.get(intent, prompts["explore"])
+    if files:
+        prompt += f"\n\nRelevant files: {', '.join(files[:3])}"
+
+    return prompt
+
+
+# ============================================================================
+# Enhancer Plugin
+# ============================================================================
+
+
+class MentalModelEnhancer:
+    """Enhancer that maintains a living mental model of the codebase."""
+
+    def __init__(self):
+        self.model = MentalModel()
+        self._model_path: Path | None = None
+
+    def set_model_path(self, path: Path) -> None:
+        """Set path for model persistence."""
+        self._model_path = path
+        if path.exists():
+            self.model = MentalModel.from_dict(json.loads(path.read_text()))
+
+    def save(self) -> None:
+        """Save model to configured path."""
+        if self._model_path:
+            self._model_path.parent.mkdir(parents=True, exist_ok=True)
+            self._model_path.write_text(self.model.to_json())
+
+    @hookimpl
+    def agentgit_get_enhancer_info(self) -> dict[str, str]:
+        return {
+            "name": ENHANCER_NAME,
+            "description": "Maintain a living mental model diagram of the codebase",
+        }
+
+    def observe_changes(
+        self,
+        prompt_responses: list["PromptResponse"],
+        model: str = "claude-cli-haiku",
+    ) -> dict | None:
+        """
+        Observe code changes and update the mental model.
+
+        This is the main entry point - call after processing a transcript.
+        """
+        # Build context from changes
+        context = {"prompts": [], "files_changed": [], "reasoning": []}
+
+        for pr in prompt_responses[:5]:  # Look at recent prompts
+            context["prompts"].append(_truncate(pr.prompt.text, 200))
+            for turn in pr.turns:
+                for op in turn.operations:
+                    context["files_changed"].append(op.file_path)
+                if turn.context and turn.context.summary:
+                    context["reasoning"].append(_truncate(turn.context.summary, 200))
+
+        context["files_changed"] = list(set(context["files_changed"]))[:20]
+
+        # Snapshot before update
+        self.model.snapshot(trigger="observation")
+
+        # Ask AI to interpret changes
+        prompt = build_observation_prompt(self.model, context)
+        response = _run_llm(prompt, model)
+
+        if not response:
+            return None
+
+        result = self._parse_response(response)
+        if result and result.get("updates"):
+            self._apply_updates(result["updates"], "ai", context["files_changed"])
+
+        if result and result.get("summary"):
+            self.model.ai_summary = result["summary"]
+
+        self.model.version += 1
+        self.save()
+
+        return result
+
+    def process_instruction(
+        self,
+        selected_ids: list[str],
+        instruction: str,
+        model: str = "claude-cli-haiku",
+    ) -> dict | None:
+        """
+        Process a human instruction about selected elements.
+
+        This is the "draw a box and describe" interaction.
+        """
+        self.model.snapshot(trigger=f"instruction: {instruction[:50]}")
+
+        prompt = build_instruction_prompt(self.model, selected_ids, instruction)
+        response = _run_llm(prompt, model)
+
+        if not response:
+            return None
+
+        result = self._parse_response(response)
+        if result and result.get("updates"):
+            self._apply_updates(result["updates"], "human", [])
+
+        self.model.version += 1
+        self.save()
+
+        return result
+
+    def generate_focused_prompt(self, element_id: str, intent: str = "explore") -> str:
+        """Generate a focused prompt for a specific element."""
+        return build_focused_prompt(self.model, element_id, intent)
+
+    def get_timeline(self) -> list[dict]:
+        """Get version history for time travel UI."""
+        timeline = []
+        for snap in self.model.snapshots:
+            timeline.append({
+                "version": snap.version,
+                "timestamp": snap.timestamp.isoformat(),
+                "trigger": snap.trigger,
+                "element_count": len(snap.elements),
+                "summary": snap.ai_summary[:50] if snap.ai_summary else "",
+            })
+        timeline.append({
+            "version": self.model.version,
+            "timestamp": datetime.now().isoformat(),
+            "trigger": "current",
+            "element_count": len(self.model.elements),
+            "summary": self.model.ai_summary[:50] if self.model.ai_summary else "",
+        })
+        return timeline
+
+    def get_version(self, version: int) -> MentalModel | None:
+        """Get model state at a specific version."""
+        import copy
+
+        for snap in self.model.snapshots:
+            if snap.version == version:
+                model = MentalModel(
+                    version=snap.version,
+                    ai_summary=snap.ai_summary,
+                )
+                model.elements = copy.deepcopy(snap.elements)
+                model.relations = copy.deepcopy(snap.relations)
+                return model
+        if version == self.model.version:
+            return copy.deepcopy(self.model)
+        return None
+
+    def _parse_response(self, response: str) -> dict | None:
+        """Parse JSON from AI response."""
+        import re
+
+        json_match = re.search(r"```json\s*(.*?)\s*```", response, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            return None
+
+    def _apply_updates(self, updates: dict, created_by: str, files: list[str]) -> None:
+        """Apply updates to the model."""
+
+        # Remove elements
+        for eid in updates.get("remove_element_ids", []):
+            if eid in self.model.elements:
+                del self.model.elements[eid]
+                self.model.relations = [
+                    r
+                    for r in self.model.relations
+                    if r.source_id != eid and r.target_id != eid
+                ]
+
+        # Remove relations
+        for source_id, target_id in updates.get("remove_relations", []):
+            self.model.relations = [
+                r
+                for r in self.model.relations
+                if not (r.source_id == source_id and r.target_id == target_id)
+            ]
+
+        # Add elements
+        for elem_data in updates.get("add_elements", []):
+            elem = ModelElement(
+                id=elem_data["id"],
+                label=elem_data["label"],
+                shape=elem_data.get("shape", "box"),
+                color=elem_data.get("color"),
+                properties=elem_data.get("properties", {}),
+                created_by=created_by,
+                reasoning=elem_data.get("reasoning", ""),
+            )
+            self.model.elements[elem.id] = elem
+
+            # Associate files with new elements
+            if files:
+                if elem.id not in self.model.element_files:
+                    self.model.element_files[elem.id] = set()
+                self.model.element_files[elem.id].update(files)
+
+        # Modify elements
+        for mod in updates.get("modify_elements", []):
+            if mod["id"] in self.model.elements:
+                elem = self.model.elements[mod["id"]]
+                if "label" in mod:
+                    elem.label = mod["label"]
+                if "shape" in mod:
+                    elem.shape = mod["shape"]
+                if "color" in mod:
+                    elem.color = mod["color"]
+
+        # Add relations
+        for rel_data in updates.get("add_relations", []):
+            rel = ModelRelation(
+                source_id=rel_data["source_id"],
+                target_id=rel_data["target_id"],
+                label=rel_data.get("label", ""),
+                style=rel_data.get("style", "solid"),
+                properties=rel_data.get("properties", {}),
+                created_by=created_by,
+                reasoning=rel_data.get("reasoning", ""),
+            )
+            self.model.relations.append(rel)
+
+
+# Global instance (for integration with agentgit flow)
+_enhancer_instance: MentalModelEnhancer | None = None
+
+
+def get_mental_model_enhancer() -> MentalModelEnhancer:
+    """Get the global mental model enhancer instance."""
+    global _enhancer_instance
+    if _enhancer_instance is None:
+        _enhancer_instance = MentalModelEnhancer()
+    return _enhancer_instance
+
+
+# ============================================================================
+# Demo
+# ============================================================================
+
+if __name__ == "__main__":
+    # Demo: Direct manipulation of the model (no LLM needed)
+    print("=== Mental Model Enhancer Demo ===\n")
+
+    model = MentalModel()
+
+    # Simulate what AI would return for an e-commerce observation
+    print("Step 1: AI observes e-commerce codebase")
+    model.snapshot("initial observation")
+
+    model.elements["browse"] = ModelElement(
+        id="browse",
+        label="Product Discovery",
+        shape="stadium",
+        color="#e3f2fd",
+        reasoning="How users find products",
+        created_by="ai",
+    )
+    model.elements["cart"] = ModelElement(
+        id="cart",
+        label="Cart",
+        shape="rounded",
+        color="#fff3e0",
+        reasoning="Accumulates items before purchase",
+        created_by="ai",
+    )
+    model.elements["checkout"] = ModelElement(
+        id="checkout",
+        label="Purchase",
+        shape="hexagon",
+        color="#e8f5e9",
+        reasoning="Where transactions happen",
+        created_by="ai",
+    )
+    model.relations.append(
+        ModelRelation(source_id="browse", target_id="cart", label="add to")
+    )
+    model.relations.append(
+        ModelRelation(source_id="cart", target_id="checkout", label="proceed")
+    )
+    model.version = 1
+    model.ai_summary = "E-commerce platform for browsing and buying products"
+
+    print(f"AI summary: {model.ai_summary}")
+    print(f"\n{model.to_mermaid()}")
+
+    # Simulate human instruction: split checkout
+    print("\n" + "=" * 50)
+    print("Step 2: Human draws box around 'checkout' and says:")
+    print('         "This is actually three steps: shipping, payment, confirmation"')
+
+    model.snapshot("human instruction")
+
+    # Remove checkout
+    del model.elements["checkout"]
+    model.relations = [r for r in model.relations if r.target_id != "checkout"]
+
+    # Add the three steps
+    model.elements["shipping"] = ModelElement(
+        id="shipping",
+        label="Shipping",
+        shape="rounded",
+        color="#e8f5e9",
+        created_by="human",
+    )
+    model.elements["payment"] = ModelElement(
+        id="payment",
+        label="Payment",
+        shape="hexagon",
+        color="#ffebee",
+        created_by="human",
+    )
+    model.elements["confirm"] = ModelElement(
+        id="confirm",
+        label="Confirmation",
+        shape="rounded",
+        color="#e8f5e9",
+        created_by="human",
+    )
+    model.relations.append(
+        ModelRelation(source_id="cart", target_id="shipping", label="begin")
+    )
+    model.relations.append(
+        ModelRelation(source_id="shipping", target_id="payment", label="next")
+    )
+    model.relations.append(
+        ModelRelation(source_id="payment", target_id="confirm", label="complete")
+    )
+    model.version = 2
+
+    print(f"\n{model.to_mermaid()}")
+
+    # Show timeline
+    print("\n" + "=" * 50)
+    print("Timeline (for time travel):")
+    model.snapshot("current")
+    for snap in model.snapshots:
+        print(f"  v{snap.version}: {snap.trigger} ({len(snap.elements)} elements)")
+
+    # Show focused prompt
+    print("\n" + "=" * 50)
+    print("Focused prompt for 'payment' element:")
+    print(build_focused_prompt(model, "payment", "debug"))
