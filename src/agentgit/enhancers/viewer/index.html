@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reframe - Mental Model Viewer</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/react-force-graph-2d"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    #app { width: 100vw; height: 100vh; display: flex; }
+    #graph { flex: 1; }
+    #sidebar {
+      width: 300px;
+      background: #f5f5f5;
+      padding: 16px;
+      overflow-y: auto;
+      border-left: 1px solid #ddd;
+    }
+    .node-info { margin-bottom: 16px; }
+    .node-info h3 { margin-bottom: 8px; color: #333; }
+    .node-info p { color: #666; font-size: 14px; margin-bottom: 8px; }
+    .files-list { font-size: 12px; color: #888; }
+    .files-list li { margin: 4px 0; }
+    .legend { margin-top: 24px; }
+    .legend h4 { margin-bottom: 8px; font-size: 12px; color: #999; text-transform: uppercase; }
+    .legend-item { display: flex; align-items: center; margin: 4px 0; font-size: 13px; }
+    .legend-color { width: 16px; height: 16px; border-radius: 50%; margin-right: 8px; }
+    .summary { background: white; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
+    .summary h4 { font-size: 12px; color: #999; margin-bottom: 4px; }
+    .version { font-size: 11px; color: #bbb; margin-top: 8px; }
+    .drop-zone {
+      border: 2px dashed #ccc;
+      border-radius: 8px;
+      padding: 32px;
+      text-align: center;
+      color: #999;
+      margin-bottom: 16px;
+    }
+    .drop-zone.drag-over { border-color: #2196f3; background: #e3f2fd; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script>
+    const { useState, useEffect, useRef, useCallback } = React;
+    const ForceGraph2D = window.ForceGraph2D;
+
+    const GROUP_COLORS = {
+      box: '#90caf9',
+      rounded: '#a5d6a7',
+      circle: '#ffcc80',
+      diamond: '#ce93d8',
+      cylinder: '#80deea',
+      hexagon: '#f48fb1',
+      stadium: '#bcaaa4',
+      default: '#e0e0e0',
+    };
+
+    function transformModel(model) {
+      const nodes = Object.values(model.elements || {}).map(elem => ({
+        id: elem.id,
+        name: elem.label,
+        group: elem.properties?.group || elem.shape || 'default',
+        color: elem.color,
+        val: elem.properties?.size || 1,
+        description: elem.reasoning,
+        files: model.element_files?.[elem.id] || [],
+      }));
+
+      const links = (model.relations || []).map(rel => ({
+        source: rel.source_id,
+        target: rel.target_id,
+        label: rel.label,
+        style: rel.style,
+      }));
+
+      return { nodes, links, summary: model.ai_summary, version: model.version };
+    }
+
+    function App() {
+      const graphRef = useRef();
+      const [data, setData] = useState({ nodes: [], links: [] });
+      const [model, setModel] = useState(null);
+      const [selected, setSelected] = useState(null);
+      const [dragOver, setDragOver] = useState(false);
+
+      // Handle file drop
+      const handleDrop = useCallback((e) => {
+        e.preventDefault();
+        setDragOver(false);
+        const file = e.dataTransfer.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            try {
+              const model = JSON.parse(e.target.result);
+              setModel(model);
+              setData(transformModel(model));
+            } catch (err) {
+              alert('Invalid JSON file');
+            }
+          };
+          reader.readAsText(file);
+        }
+      }, []);
+
+      // Try to load from URL param or default path
+      useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        const modelPath = params.get('model') || '.agentgit/mental_model.json';
+
+        fetch(modelPath)
+          .then(res => res.json())
+          .then(model => {
+            setModel(model);
+            setData(transformModel(model));
+          })
+          .catch(() => console.log('No model found, drop a file to load'));
+      }, []);
+
+      const nodeColor = useCallback((node) => {
+        if (node.color) return node.color;
+        if (selected?.id === node.id) return '#ff5722';
+        return GROUP_COLORS[node.group] || GROUP_COLORS.default;
+      }, [selected]);
+
+      const handleNodeClick = useCallback((node) => {
+        setSelected(node);
+        graphRef.current?.centerAt(node.x, node.y, 1000);
+      }, []);
+
+      // Custom node rendering
+      const nodeCanvasObject = useCallback((node, ctx, globalScale) => {
+        const fontSize = 12 / globalScale;
+        const size = Math.sqrt(node.val || 1) * 5;
+
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, size, 0, 2 * Math.PI);
+        ctx.fillStyle = nodeColor(node);
+        ctx.fill();
+
+        if (selected?.id === node.id) {
+          ctx.strokeStyle = '#ff5722';
+          ctx.lineWidth = 2 / globalScale;
+          ctx.stroke();
+        }
+
+        ctx.font = `${fontSize}px Sans-Serif`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#333';
+        ctx.fillText(node.name, node.x, node.y + size + fontSize);
+      }, [nodeColor, selected]);
+
+      const groups = [...new Set(data.nodes.map(n => n.group))];
+
+      return React.createElement('div', { id: 'app' },
+        React.createElement('div', { id: 'graph' },
+          data.nodes.length === 0
+            ? React.createElement('div', {
+                className: `drop-zone ${dragOver ? 'drag-over' : ''}`,
+                style: { margin: 32 },
+                onDragOver: (e) => { e.preventDefault(); setDragOver(true); },
+                onDragLeave: () => setDragOver(false),
+                onDrop: handleDrop,
+              }, 'Drop mental_model.json here')
+            : React.createElement(ForceGraph2D, {
+                ref: graphRef,
+                graphData: data,
+                nodeColor: nodeColor,
+                nodeVal: n => n.val || 1,
+                nodeCanvasObject: nodeCanvasObject,
+                nodeCanvasObjectMode: () => 'replace',
+                linkDirectionalArrowLength: 6,
+                linkDirectionalArrowRelPos: 1,
+                linkColor: () => '#999',
+                onNodeClick: handleNodeClick,
+                cooldownTicks: 100,
+                onEngineStop: () => graphRef.current?.zoomToFit(400),
+              })
+        ),
+        React.createElement('div', { id: 'sidebar' },
+          model?.ai_summary && React.createElement('div', { className: 'summary' },
+            React.createElement('h4', null, 'Summary'),
+            React.createElement('p', null, model.ai_summary),
+            React.createElement('div', { className: 'version' }, `Version ${model.version || 0}`)
+          ),
+
+          selected && React.createElement('div', { className: 'node-info' },
+            React.createElement('h3', null, selected.name),
+            selected.description && React.createElement('p', null, selected.description),
+            selected.files?.length > 0 && React.createElement('div', null,
+              React.createElement('strong', null, 'Files:'),
+              React.createElement('ul', { className: 'files-list' },
+                selected.files.map(f => React.createElement('li', { key: f }, f))
+              )
+            )
+          ),
+
+          React.createElement('div', { className: 'legend' },
+            React.createElement('h4', null, 'Groups'),
+            groups.map(g => React.createElement('div', { key: g, className: 'legend-item' },
+              React.createElement('div', {
+                className: 'legend-color',
+                style: { background: GROUP_COLORS[g] || GROUP_COLORS.default }
+              }),
+              g
+            ))
+          )
+        )
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('app')).render(React.createElement(App));
+  </script>
+</body>
+</html>

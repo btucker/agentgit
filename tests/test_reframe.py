@@ -600,6 +600,100 @@ class TestMentalModel:
         assert "sequenceDiagram" in full
         assert "Client->>Server: Request" in full
 
+    def test_to_force_graph_empty(self):
+        """Empty model should produce empty nodes and links."""
+        model = MentalModel()
+        graph = model.to_force_graph()
+
+        assert graph["nodes"] == []
+        assert graph["links"] == []
+
+    def test_to_force_graph_with_elements(self):
+        """Should export elements as nodes."""
+        model = MentalModel()
+        model.elements["api"] = ModelElement(
+            id="api",
+            label="API Gateway",
+            shape="hexagon",
+            color="#e1f5fe",
+            reasoning="Entry point for all requests",
+        )
+        model.elements["db"] = ModelElement(
+            id="db",
+            label="Database",
+            shape="cylinder",
+            properties={"size": 2, "group": "storage"},
+        )
+
+        graph = model.to_force_graph()
+
+        assert len(graph["nodes"]) == 2
+
+        api_node = next(n for n in graph["nodes"] if n["id"] == "api")
+        assert api_node["name"] == "API Gateway"
+        assert api_node["group"] == "hexagon"  # falls back to shape
+        assert api_node["color"] == "#e1f5fe"
+        assert api_node["description"] == "Entry point for all requests"
+        assert api_node["val"] == 1  # default size
+
+        db_node = next(n for n in graph["nodes"] if n["id"] == "db")
+        assert db_node["name"] == "Database"
+        assert db_node["group"] == "storage"  # from properties
+        assert db_node["val"] == 2  # from properties.size
+
+    def test_to_force_graph_with_relations(self):
+        """Should export relations as links."""
+        model = MentalModel()
+        model.elements["a"] = ModelElement(id="a", label="A")
+        model.elements["b"] = ModelElement(id="b", label="B")
+        model.relations.append(ModelRelation(
+            source_id="a",
+            target_id="b",
+            label="calls",
+            style="dashed",
+            reasoning="A invokes B for processing",
+        ))
+
+        graph = model.to_force_graph()
+
+        assert len(graph["links"]) == 1
+        link = graph["links"][0]
+        assert link["source"] == "a"
+        assert link["target"] == "b"
+        assert link["label"] == "calls"
+        assert link["style"] == "dashed"
+        assert link["description"] == "A invokes B for processing"
+
+    def test_to_force_graph_includes_files(self):
+        """Should include associated files in nodes."""
+        model = MentalModel()
+        model.elements["auth"] = ModelElement(id="auth", label="Auth")
+        model.element_files["auth"] = {"src/auth.py", "src/auth_utils.py"}
+
+        graph = model.to_force_graph()
+
+        auth_node = graph["nodes"][0]
+        assert "files" in auth_node
+        assert set(auth_node["files"]) == {"src/auth.py", "src/auth_utils.py"}
+
+    def test_to_force_graph_omits_empty_fields(self):
+        """Should not include empty optional fields."""
+        model = MentalModel()
+        model.elements["simple"] = ModelElement(id="simple", label="Simple")
+        model.relations.append(ModelRelation(source_id="simple", target_id="simple"))
+
+        graph = model.to_force_graph()
+
+        node = graph["nodes"][0]
+        assert "color" not in node
+        assert "description" not in node
+        assert "files" not in node
+
+        link = graph["links"][0]
+        assert "label" not in link
+        assert "style" not in link
+        assert "description" not in link
+
 
 class TestMentalModelEnhancer:
     """Tests for MentalModelEnhancer class."""

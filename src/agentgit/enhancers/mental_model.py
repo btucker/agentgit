@@ -334,6 +334,58 @@ class MentalModel:
 
         return "\n".join(parts)
 
+    def to_force_graph(self) -> dict:
+        """Export model for react-force-graph visualization.
+
+        Returns a dict with 'nodes' and 'links' arrays compatible with
+        react-force-graph-2d/3d libraries.
+
+        Node properties:
+            - id: unique identifier
+            - name: display label
+            - group: for coloring/clustering (from properties or shape)
+            - color: explicit color if set
+            - val: node size (from properties.size or default 1)
+
+        Link properties:
+            - source: source node id
+            - target: target node id
+            - label: relationship label
+            - style: line style (solid, dashed, etc.)
+        """
+        nodes = []
+        for elem in self.elements.values():
+            node = {
+                "id": elem.id,
+                "name": elem.label,
+                "group": elem.properties.get("group", elem.shape),
+                "val": elem.properties.get("size", 1),
+            }
+            if elem.color:
+                node["color"] = elem.color
+            if elem.reasoning:
+                node["description"] = elem.reasoning
+            # Include associated files for context
+            if elem.id in self.element_files:
+                node["files"] = list(self.element_files[elem.id])
+            nodes.append(node)
+
+        links = []
+        for rel in self.relations:
+            link = {
+                "source": rel.source_id,
+                "target": rel.target_id,
+            }
+            if rel.label:
+                link["label"] = rel.label
+            if rel.style and rel.style != "solid":
+                link["style"] = rel.style
+            if rel.reasoning:
+                link["description"] = rel.reasoning
+            links.append(link)
+
+        return {"nodes": nodes, "links": links}
+
     @classmethod
     def from_dict(cls, data: dict) -> "MentalModel":
         model = cls(
