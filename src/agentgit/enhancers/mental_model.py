@@ -114,6 +114,111 @@ class ModelRelation:
 
 
 @dataclass
+class SequenceStep:
+    """A step in a sequence diagram."""
+
+    from_participant: str
+    to_participant: str
+    message: str
+    step_type: str = "sync"  # sync, async, reply, note
+    note: str | None = None
+
+
+@dataclass
+class SequenceDiagram:
+    """A sequence diagram showing interactions over time.
+
+    Useful for showing:
+    - Request/response flows
+    - Event propagation
+    - User journeys through the system
+    """
+
+    id: str
+    title: str
+    participants: list[str] = field(default_factory=list)
+    steps: list[SequenceStep] = field(default_factory=list)
+    description: str = ""
+    created_by: str = ""
+    trigger: str = ""  # What flow this represents (e.g., "user login")
+
+    def to_mermaid(self) -> str:
+        """Export as Mermaid sequence diagram."""
+        lines = ["sequenceDiagram"]
+
+        if self.title:
+            lines.append(f"    title {self.title}")
+
+        # Declare participants in order
+        for p in self.participants:
+            # Sanitize participant names for mermaid
+            safe_p = p.replace(" ", "_")
+            if p != safe_p:
+                lines.append(f"    participant {safe_p} as {p}")
+            else:
+                lines.append(f"    participant {p}")
+
+        # Add steps
+        for step in self.steps:
+            arrow = {
+                "sync": "->>",
+                "async": "-->>",
+                "reply": "-->>",
+                "create": "->>+",
+                "destroy": "->>-",
+            }.get(step.step_type, "->>")
+
+            from_p = step.from_participant.replace(" ", "_")
+            to_p = step.to_participant.replace(" ", "_")
+            lines.append(f"    {from_p}{arrow}{to_p}: {step.message}")
+
+            if step.note:
+                lines.append(f"    Note over {from_p},{to_p}: {step.note}")
+
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "participants": self.participants,
+            "steps": [
+                {
+                    "from": s.from_participant,
+                    "to": s.to_participant,
+                    "message": s.message,
+                    "type": s.step_type,
+                    "note": s.note,
+                }
+                for s in self.steps
+            ],
+            "description": self.description,
+            "created_by": self.created_by,
+            "trigger": self.trigger,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SequenceDiagram":
+        diagram = cls(
+            id=data.get("id", ""),
+            title=data.get("title", ""),
+            participants=data.get("participants", []),
+            description=data.get("description", ""),
+            created_by=data.get("created_by", ""),
+            trigger=data.get("trigger", ""),
+        )
+        for step_data in data.get("steps", []):
+            diagram.steps.append(SequenceStep(
+                from_participant=step_data["from"],
+                to_participant=step_data["to"],
+                message=step_data["message"],
+                step_type=step_data.get("type", "sync"),
+                note=step_data.get("note"),
+            ))
+        return diagram
+
+
+@dataclass
 class ModelSnapshot:
     """A point-in-time snapshot for time travel."""
 
@@ -127,10 +232,20 @@ class ModelSnapshot:
 
 @dataclass
 class MentalModel:
-    """The living mental model - structure emerges from AI observation."""
+    """The living mental model - structure emerges from AI observation.
 
+    Contains two types of diagrams:
+    1. Component diagram (elements + relations) - the "what"
+    2. Sequence diagrams - the "how" (flows, interactions)
+    """
+
+    # Component diagram
     elements: dict[str, ModelElement] = field(default_factory=dict)
     relations: list[ModelRelation] = field(default_factory=list)
+
+    # Sequence diagrams for showing flows
+    sequences: dict[str, SequenceDiagram] = field(default_factory=dict)
+
     version: int = 0
     ai_summary: str = ""
     snapshots: list[ModelSnapshot] = field(default_factory=list)
@@ -196,6 +311,7 @@ class MentalModel:
         return {
             "elements": {eid: e.to_dict() for eid, e in self.elements.items()},
             "relations": [r.to_dict() for r in self.relations],
+            "sequences": {sid: s.to_dict() for sid, s in self.sequences.items()},
             "version": self.version,
             "ai_summary": self.ai_summary,
             "element_files": {k: list(v) for k, v in self.element_files.items()},
@@ -203,6 +319,20 @@ class MentalModel:
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2)
+
+    def to_full_mermaid(self) -> str:
+        """Export both component diagram and sequence diagrams."""
+        parts = ["## Component Diagram\n", "```mermaid", self.to_mermaid(), "```"]
+
+        for seq_id, seq in self.sequences.items():
+            parts.append(f"\n## {seq.title or seq_id}\n")
+            if seq.description:
+                parts.append(f"{seq.description}\n")
+            parts.append("```mermaid")
+            parts.append(seq.to_mermaid())
+            parts.append("```")
+
+        return "\n".join(parts)
 
     @classmethod
     def from_dict(cls, data: dict) -> "MentalModel":
@@ -214,6 +344,8 @@ class MentalModel:
             model.elements[eid] = ModelElement.from_dict(edata)
         for rdata in data.get("relations", []):
             model.relations.append(ModelRelation.from_dict(rdata))
+        for sid, sdata in data.get("sequences", {}).items():
+            model.sequences[sid] = SequenceDiagram.from_dict(sdata)
         for eid, files in data.get("element_files", {}).items():
             model.element_files[eid] = set(files)
         return model

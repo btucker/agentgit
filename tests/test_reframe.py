@@ -10,6 +10,8 @@ from agentgit.enhancers.mental_model import (
     ModelElement,
     ModelRelation,
     ModelSnapshot,
+    SequenceStep,
+    SequenceDiagram,
     MentalModelEnhancer,
     build_observation_prompt,
     build_instruction_prompt,
@@ -148,6 +150,201 @@ class TestModelRelation:
         assert rel.source_id == "x"
         assert rel.target_id == "y"
         assert rel.label == "depends"
+
+
+class TestSequenceStep:
+    """Tests for SequenceStep dataclass."""
+
+    def test_step_creation(self):
+        """Should create step with required fields."""
+        step = SequenceStep(
+            from_participant="Client",
+            to_participant="Server",
+            message="GET /api/users",
+        )
+        assert step.from_participant == "Client"
+        assert step.to_participant == "Server"
+        assert step.message == "GET /api/users"
+        assert step.step_type == "sync"  # default
+        assert step.note is None
+
+    def test_step_with_all_fields(self):
+        """Should create step with all fields."""
+        step = SequenceStep(
+            from_participant="API",
+            to_participant="Database",
+            message="SELECT * FROM users",
+            step_type="async",
+            note="May take a while",
+        )
+        assert step.step_type == "async"
+        assert step.note == "May take a while"
+
+
+class TestSequenceDiagram:
+    """Tests for SequenceDiagram dataclass."""
+
+    def test_diagram_creation(self):
+        """Should create empty diagram."""
+        diagram = SequenceDiagram(id="login", title="User Login Flow")
+        assert diagram.id == "login"
+        assert diagram.title == "User Login Flow"
+        assert diagram.participants == []
+        assert diagram.steps == []
+
+    def test_diagram_with_participants(self):
+        """Should create diagram with participants."""
+        diagram = SequenceDiagram(
+            id="api-flow",
+            title="API Request",
+            participants=["Client", "API", "Database"],
+        )
+        assert len(diagram.participants) == 3
+        assert "API" in diagram.participants
+
+    def test_to_mermaid_basic(self):
+        """Should generate valid mermaid sequence diagram."""
+        diagram = SequenceDiagram(
+            id="test",
+            title="Test Flow",
+            participants=["Client", "Server"],
+        )
+        diagram.steps.append(SequenceStep(
+            from_participant="Client",
+            to_participant="Server",
+            message="Request",
+        ))
+
+        mermaid = diagram.to_mermaid()
+
+        assert "sequenceDiagram" in mermaid
+        assert "title Test Flow" in mermaid
+        assert "participant Client" in mermaid
+        assert "participant Server" in mermaid
+        assert "Client->>Server: Request" in mermaid
+
+    def test_to_mermaid_arrow_styles(self):
+        """Should use correct arrow styles for step types."""
+        diagram = SequenceDiagram(
+            id="test",
+            title="",
+            participants=["A", "B"],
+        )
+        diagram.steps.append(SequenceStep(
+            from_participant="A",
+            to_participant="B",
+            message="sync",
+            step_type="sync",
+        ))
+        diagram.steps.append(SequenceStep(
+            from_participant="B",
+            to_participant="A",
+            message="async",
+            step_type="async",
+        ))
+        diagram.steps.append(SequenceStep(
+            from_participant="A",
+            to_participant="B",
+            message="reply",
+            step_type="reply",
+        ))
+
+        mermaid = diagram.to_mermaid()
+
+        assert "A->>B: sync" in mermaid
+        assert "B-->>A: async" in mermaid
+        assert "A-->>B: reply" in mermaid
+
+    def test_to_mermaid_with_notes(self):
+        """Should include notes in mermaid output."""
+        diagram = SequenceDiagram(
+            id="test",
+            title="",
+            participants=["A", "B"],
+        )
+        diagram.steps.append(SequenceStep(
+            from_participant="A",
+            to_participant="B",
+            message="Request",
+            note="Important step",
+        ))
+
+        mermaid = diagram.to_mermaid()
+
+        assert "Note over A,B: Important step" in mermaid
+
+    def test_to_mermaid_sanitizes_spaces(self):
+        """Should sanitize participant names with spaces."""
+        diagram = SequenceDiagram(
+            id="test",
+            title="",
+            participants=["API Gateway"],
+        )
+        diagram.steps.append(SequenceStep(
+            from_participant="API Gateway",
+            to_participant="API Gateway",
+            message="Self call",
+        ))
+
+        mermaid = diagram.to_mermaid()
+
+        assert "participant API_Gateway as API Gateway" in mermaid
+        assert "API_Gateway->>API_Gateway: Self call" in mermaid
+
+    def test_to_dict(self):
+        """Should serialize to dictionary."""
+        diagram = SequenceDiagram(
+            id="login",
+            title="Login",
+            participants=["User", "Auth"],
+            description="User authentication flow",
+            created_by="ai",
+            trigger="user login",
+        )
+        diagram.steps.append(SequenceStep(
+            from_participant="User",
+            to_participant="Auth",
+            message="Login",
+            step_type="sync",
+            note="With credentials",
+        ))
+
+        d = diagram.to_dict()
+
+        assert d["id"] == "login"
+        assert d["title"] == "Login"
+        assert d["participants"] == ["User", "Auth"]
+        assert d["description"] == "User authentication flow"
+        assert len(d["steps"]) == 1
+        assert d["steps"][0]["from"] == "User"
+        assert d["steps"][0]["to"] == "Auth"
+        assert d["steps"][0]["message"] == "Login"
+        assert d["steps"][0]["type"] == "sync"
+        assert d["steps"][0]["note"] == "With credentials"
+
+    def test_from_dict(self):
+        """Should deserialize from dictionary."""
+        d = {
+            "id": "checkout",
+            "title": "Checkout Flow",
+            "participants": ["Cart", "Payment", "Order"],
+            "steps": [
+                {"from": "Cart", "to": "Payment", "message": "Pay", "type": "sync"},
+                {"from": "Payment", "to": "Order", "message": "Create", "type": "async", "note": "Background"},
+            ],
+            "description": "Purchase flow",
+            "created_by": "human",
+            "trigger": "checkout button",
+        }
+
+        diagram = SequenceDiagram.from_dict(d)
+
+        assert diagram.id == "checkout"
+        assert diagram.title == "Checkout Flow"
+        assert len(diagram.participants) == 3
+        assert len(diagram.steps) == 2
+        assert diagram.steps[0].from_participant == "Cart"
+        assert diagram.steps[1].note == "Background"
 
 
 class TestMentalModel:
@@ -313,6 +510,95 @@ class TestMentalModel:
         assert "relations" in d
         assert "version" in d
         assert d["version"] == 3
+
+    def test_sequences_in_model(self):
+        """Should support sequence diagrams."""
+        model = MentalModel()
+        diagram = SequenceDiagram(
+            id="login",
+            title="Login Flow",
+            participants=["User", "Auth", "DB"],
+        )
+        diagram.steps.append(SequenceStep(
+            from_participant="User",
+            to_participant="Auth",
+            message="Login",
+        ))
+        model.sequences["login"] = diagram
+
+        assert len(model.sequences) == 1
+        assert "login" in model.sequences
+        assert model.sequences["login"].title == "Login Flow"
+
+    def test_to_dict_includes_sequences(self):
+        """Should include sequences in to_dict."""
+        model = MentalModel()
+        model.sequences["test"] = SequenceDiagram(
+            id="test",
+            title="Test",
+            participants=["A", "B"],
+        )
+
+        d = model.to_dict()
+
+        assert "sequences" in d
+        assert "test" in d["sequences"]
+        assert d["sequences"]["test"]["title"] == "Test"
+
+    def test_from_dict_restores_sequences(self):
+        """Should restore sequences from dict."""
+        d = {
+            "elements": {},
+            "relations": [],
+            "sequences": {
+                "checkout": {
+                    "id": "checkout",
+                    "title": "Checkout",
+                    "participants": ["Cart", "Payment"],
+                    "steps": [
+                        {"from": "Cart", "to": "Payment", "message": "Pay", "type": "sync"}
+                    ],
+                }
+            },
+            "version": 1,
+            "ai_summary": "",
+        }
+
+        model = MentalModel.from_dict(d)
+
+        assert len(model.sequences) == 1
+        assert "checkout" in model.sequences
+        assert model.sequences["checkout"].title == "Checkout"
+        assert len(model.sequences["checkout"].steps) == 1
+
+    def test_to_full_mermaid(self):
+        """Should export both component and sequence diagrams."""
+        model = MentalModel()
+        model.elements["api"] = ModelElement(id="api", label="API")
+        model.sequences["flow"] = SequenceDiagram(
+            id="flow",
+            title="Request Flow",
+            participants=["Client", "Server"],
+            description="How requests work",
+        )
+        model.sequences["flow"].steps.append(SequenceStep(
+            from_participant="Client",
+            to_participant="Server",
+            message="Request",
+        ))
+
+        full = model.to_full_mermaid()
+
+        # Should have component diagram
+        assert "## Component Diagram" in full
+        assert "graph TD" in full
+        assert "API" in full
+
+        # Should have sequence diagram
+        assert "## Request Flow" in full
+        assert "How requests work" in full
+        assert "sequenceDiagram" in full
+        assert "Client->>Server: Request" in full
 
 
 class TestMentalModelEnhancer:
