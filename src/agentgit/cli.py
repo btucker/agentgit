@@ -796,7 +796,7 @@ def _run_process(
     Args:
         reprocess: If True, rebuild from scratch instead of incremental.
     """
-    from agentgit import build_repo_grouped, build_repo_scenes, parse_transcript
+    from agentgit import build_repo_from_prompts, parse_transcript
 
     output, effective_enhancer, effective_model, enhance_config = (
         _prepare_output_and_enhance_config(output, enhancer, enhance_model, transcripts)
@@ -844,8 +844,8 @@ def _run_process(
             try:
                 parsed = parse_transcript(transcript_path, plugin_type=plugin_type)
 
-                # Skip sessions with no prompts/rounds to process
-                if not parsed.prompt_responses and not parsed.conversation_rounds:
+                # Skip sessions with no prompts to process
+                if not parsed.prompts:
                     continue
 
                 # Extract agent name from format (e.g., "claude_code_jsonl" -> "claude-code")
@@ -944,34 +944,18 @@ def _run_process(
                     completed=i
                 )
 
-            # Build into session branch
-            # Prefer scenes (plugin-driven grouping) over conversation_rounds
+            # Build into session branch - one commit per user prompt
             parsed = session["parsed"]
-            if parsed.scenes:
-                repo, repo_path, _ = build_repo_scenes(
-                    scenes=parsed.scenes,
-                    transcript=parsed,
-                    output_dir=output,
-                    author_name=author,
-                    author_email=email,
-                    enhance_config=enhance_config,
-                    session_id=session["session_id"],
-                    agent_name=session["agent_name"],
-                    incremental=not reprocess,
-                )
-            else:
-                # Fallback to conversation_rounds if no scenes
-                repo, repo_path, _ = build_repo_grouped(
-                    conversation_rounds=parsed.conversation_rounds,
-                    transcript=parsed,
-                    output_dir=output,
-                    author_name=author,
-                    author_email=email,
-                    enhance_config=enhance_config,
-                    session_id=session["session_id"],
-                    agent_name=session["agent_name"],
-                    incremental=not reprocess,
-                )
+            repo, repo_path, _ = build_repo_from_prompts(
+                transcript=parsed,
+                output_dir=output,
+                author_name=author,
+                author_email=email,
+                enhance_config=enhance_config,
+                session_id=session["session_id"],
+                agent_name=session["agent_name"],
+                incremental=not reprocess,
+            )
 
             total_prompts += len(session["parsed"].prompts)
             total_operations += len(session["parsed"].operations)

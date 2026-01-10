@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 
 from agentgit.core import (
     AssistantContext,
@@ -24,6 +25,14 @@ from agentgit.utils import extract_deleted_paths
 
 # Format identifier for Claude Code JSONL transcripts
 FORMAT_CLAUDE_CODE_JSONL = "claude_code_jsonl"
+
+# Tools to skip when rendering commit messages
+# These are either implicit in the git diff (file operations) or internal mechanics
+SKIP_TOOLS = {
+    "Read", "Write", "Edit", "Glob", "Grep", "LSP",
+    "NotebookEdit", "NotebookRead",
+    "TodoWrite", "AskUserQuestion",
+}
 
 
 def get_last_timestamp_from_jsonl(file_path: Path) -> float | None:
@@ -572,6 +581,37 @@ class ClaudeCodePlugin:
             "name": "Claude",
             "email": "claude@anthropic.com",
         }
+
+    @hookimpl
+    def agentgit_format_tool(self, tool_name: str, tool_input: dict) -> str | None:
+        """Format a tool call as markdown for commit messages.
+
+        Renders Claude Code tool calls appropriately:
+        - Bash: as ```bash code blocks
+        - Task: as ### Agent: heading
+        - WebFetch/WebSearch: as markdown links
+        - File ops and internal tools: skipped (implicit in diff or not useful)
+        """
+        if tool_name in SKIP_TOOLS:
+            return None
+
+        if tool_name == "Bash":
+            cmd = tool_input.get("command", "")
+            return f"```bash\n{cmd}\n```"
+
+        if tool_name == "Task":
+            desc = tool_input.get("description", "")
+            return f"### Agent: {desc}"
+
+        if tool_name == "WebFetch":
+            url = tool_input.get("url", "")
+            return f"[{url}]({url})"
+
+        if tool_name == "WebSearch":
+            query = tool_input.get("query", "")
+            return f"[Search: {query}](https://google.com/search?q={quote_plus(query)})"
+
+        return None  # Skip unknown tools
 
     @hookimpl
     def agentgit_build_prompt_responses(

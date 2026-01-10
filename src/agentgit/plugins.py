@@ -239,6 +239,22 @@ class AgentGitSpec:
             can't provide author info.
         """
 
+    @hookspec(firstresult=True)
+    def agentgit_format_tool(self, tool_name: str, tool_input: dict) -> str | None:
+        """Format a tool call as markdown for commit messages.
+
+        Plugins implement this to render tool calls appropriately for their format.
+        Return None to skip the tool (e.g., for file operations that are implicit
+        in the git diff).
+
+        Args:
+            tool_name: The tool name (e.g., "Bash", "Task", "WebFetch").
+            tool_input: The tool's input parameters.
+
+        Returns:
+            Markdown string to include in commit message, or None to skip this tool.
+        """
+
     # Enhancement hooks
     @hookspec
     def agentgit_get_enhancer_info(self) -> dict[str, str] | None:

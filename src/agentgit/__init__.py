@@ -59,6 +59,7 @@ __all__ = [
     "build_repo",
     "build_repo_grouped",
     "build_repo_scenes",
+    "build_repo_from_prompts",
     "transcript_to_repo",
     "format_commit_message",
     "format_turn_commit_message",
@@ -327,6 +328,65 @@ def build_repo_scenes(
     )
     return builder.build_from_scenes(
         scenes=scenes,
+        transcript=transcript,
+        author_name=author_name,
+        author_email=author_email,
+        incremental=incremental,
+    )
+
+
+def build_repo_from_prompts(
+    transcript: "Transcript",
+    output_dir: Path | None = None,
+    author_name: str = "Agent",
+    author_email: str = "agent@local",
+    enhance_config: "EnhanceConfig | None" = None,
+    session_id: str | None = None,
+    agent_name: str | None = None,
+    incremental: bool = True,
+) -> tuple[Repo, Path, dict[str, str]]:
+    """Build a git repository with one commit per user prompt.
+
+    This is the simplified build method that creates exactly one commit
+    per user prompt, with all tool calls and reasoning rendered as markdown
+    in the commit body.
+
+    Args:
+        transcript: The parsed transcript.
+        output_dir: Directory for the git repo. If None, creates a temp dir.
+        author_name: Name for git commits.
+        author_email: Email for git commits.
+        enhance_config: Optional configuration for generating commit messages.
+        session_id: Optional session identifier. If provided, creates a session branch.
+        agent_name: Optional agent/format name for branch naming (e.g., 'claude-code').
+        incremental: If True, skip already-processed prompts. Default True.
+
+    Returns:
+        Tuple of (repo, repo_path, path_mapping).
+    """
+    # Generate session branch name if session_id is provided
+    session_branch_name = None
+    if session_id and transcript.prompts:
+        from agentgit.enhance import generate_session_branch_name
+
+        # Convert prompts to PromptResponse format for compatibility
+        prompt_responses_for_naming = []
+        for prompt in transcript.prompts:
+            from agentgit.core import PromptResponse
+
+            prompt_responses_for_naming.append(PromptResponse(prompt=prompt, turns=[]))
+
+        session_branch_name = generate_session_branch_name(
+            prompt_responses_for_naming, session_id, enhance_config, agent_name
+        )
+
+    builder = GitRepoBuilder(
+        output_dir=output_dir,
+        enhance_config=enhance_config,
+        session_branch_name=session_branch_name,
+        session_id=session_id,
+    )
+    return builder.build_from_prompts(
         transcript=transcript,
         author_name=author_name,
         author_email=author_email,

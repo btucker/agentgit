@@ -21,6 +21,8 @@ from agentgit.core import (
     PromptResponse,
     Scene,
     SourceCommit,
+    Transcript,
+    TranscriptEntry,
 )
 from agentgit.plugins import get_configured_plugin_manager
 
@@ -995,6 +997,296 @@ class GitRepoBuilder:
         # Scene is processed if ANY of its tool_ids have been processed
         return any(tool_id in self._processed_ops for tool_id in scene.tool_ids)
 
+    def build_from_prompts(
+        self,
+        transcript: Transcript,
+        author_name: str = "Agent",
+        author_email: str = "agent@local",
+        incremental: bool = True,
+    ) -> tuple[Repo, Path, dict[str, str]]:
+        """Build git repo with one commit per user prompt.
+
+        This is the simplified build method that creates exactly one commit
+        per user prompt, with all tool calls and reasoning rendered as markdown
+        in the commit body.
+
+        Args:
+            transcript: The parsed transcript.
+            author_name: Name for agent commits.
+            author_email: Email for agent commits.
+            incremental: If True, skip already-processed prompts.
+
+        Returns:
+            Tuple of (repo, repo_path, path_mapping).
+        """
+        self._setup_repo(incremental)
+
+        # Get author info from plugin if available
+        pm = get_configured_plugin_manager()
+        plugin_author_info = pm.hook.agentgit_get_author_info(transcript=transcript)
+
+        if plugin_author_info:
+            author_name = plugin_author_info.get("name", author_name)
+            author_email = plugin_author_info.get("email", author_email)
+
+        with self.repo.config_writer() as config:
+            config.set_value("user", "name", author_name)
+            config.set_value("user", "email", author_email)
+
+        # Collect all operations for path normalization
+        all_operations = [op for op in transcript.operations if op.operation_type != OperationType.DELETE]
+        _, self.path_mapping = normalize_file_paths(all_operations)
+
+        if not transcript.prompts:
+            return self.repo, self.output_dir, self.path_mapping
+
+        # Ensure we have an initial commit on main
+        if not self._has_commits():
+            self._create_initial_commit()
+
+        # Create or checkout session branch
+        if self.session_branch_name:
+            if self.session_branch_name in self.repo.heads:
+                self.repo.heads[self.session_branch_name].checkout()
+            else:
+                main_ref = self._get_main_branch_commit()
+                session_branch = self.repo.create_head(self.session_branch_name, main_ref)
+                session_branch.checkout()
+                logger.info("Created session branch: %s", self.session_branch_name)
+
+        # Group entries by prompt
+        prompt_groups = self._group_entries_by_prompt(transcript)
+
+        prev_assistant_text = ""
+        for prompt, entries in prompt_groups:
+            # Check if this prompt is already processed (by checking its operations)
+            ops = self._collect_operations_from_entries(entries, transcript)
+            if incremental and ops and all(self._is_operation_processed(op) for op in ops):
+                # Update prev_assistant_text even for skipped prompts
+                prev_assistant_text = self._get_final_assistant_text(entries)
+                continue
+
+            # Get commit subject (smart handling for short prompts)
+            subject = self._get_prompt_commit_subject(prompt, prev_assistant_text)
+
+            # Render body as markdown
+            body = self._render_prompt_response_markdown(prompt, entries)
+
+            # Apply all file operations from these entries
+            files_changed = []
+            for op in ops:
+                if self._apply_operation_no_commit(op):
+                    if op.operation_type != OperationType.DELETE:
+                        rel_path = self.path_mapping.get(op.file_path)
+                        if rel_path:
+                            files_changed.append(rel_path)
+
+            # Add trailers
+            trailers = [f"Prompt-Id: {prompt.prompt_id}"]
+            trailers.append(f"Timestamp: {prompt.timestamp}")
+            for op in ops:
+                if op.tool_id:
+                    trailers.append(f"Tool-Id: {op.tool_id}")
+
+            # Build full commit message
+            message = f"{subject}\n\n{body}\n\n" + "\n".join(trailers)
+
+            # Stage changed files
+            for rel_path in files_changed:
+                try:
+                    self.repo.index.add([rel_path])
+                except GitCommandError:
+                    pass
+
+            # Create commit
+            try:
+                if files_changed:
+                    self._commit_with_date(message, prompt.timestamp)
+                else:
+                    self._commit_with_date(message, prompt.timestamp, allow_empty=True)
+            except GitCommandError as e:
+                logger.warning("Failed to commit prompt: %s", e)
+
+            # Mark operations as processed
+            for op in ops:
+                self._processed_ops.add(self._get_operation_id(op))
+
+            # Track assistant text for next iteration
+            prev_assistant_text = self._get_final_assistant_text(entries)
+
+        # Create session ref if session_id is provided
+        if self.session_id and self.session_branch_name:
+            session_ref_path = self.output_dir / ".git" / "refs" / "sessions" / self.session_id
+            session_ref_path.parent.mkdir(parents=True, exist_ok=True)
+            session_ref_path.write_text(f"ref: refs/heads/{self.session_branch_name}\n")
+            logger.info("Created session ref: %s -> %s", f"refs/sessions/{self.session_id}", self.session_branch_name)
+
+        return self.repo, self.output_dir, self.path_mapping
+
+    def _group_entries_by_prompt(
+        self, transcript: Transcript
+    ) -> list[tuple[Prompt, list[TranscriptEntry]]]:
+        """Group transcript entries by their triggering prompt.
+
+        Returns a list of (prompt, entries) tuples where entries includes
+        all assistant responses until the next user prompt.
+        """
+        groups: list[tuple[Prompt, list[TranscriptEntry]]] = []
+        current_prompt: Prompt | None = None
+        current_entries: list[TranscriptEntry] = []
+
+        prompt_timestamps = {p.timestamp for p in transcript.prompts}
+
+        for entry in transcript.entries:
+            # Check if this is a user prompt (not tool result or meta)
+            if entry.entry_type == "user" and entry.timestamp in prompt_timestamps:
+                # Save previous group if we have one
+                if current_prompt is not None:
+                    groups.append((current_prompt, current_entries))
+
+                # Start new group - find the Prompt object for this entry
+                for p in transcript.prompts:
+                    if p.timestamp == entry.timestamp:
+                        current_prompt = p
+                        break
+
+                current_entries = [entry]
+            elif current_prompt is not None:
+                # Add to current group
+                current_entries.append(entry)
+
+        # Don't forget the last group
+        if current_prompt is not None and current_entries:
+            groups.append((current_prompt, current_entries))
+
+        return groups
+
+    def _get_prompt_commit_subject(self, prompt: Prompt, prev_assistant_text: str) -> str:
+        """Get commit subject line for a prompt.
+
+        If the prompt is short (<50 chars) and preceded by assistant text,
+        uses the final paragraph of the assistant text instead.
+        """
+        prompt_text = prompt.text.strip()
+
+        # Short prompt preceded by assistant? Use final paragraph of assistant
+        if len(prompt_text) < 50 and prev_assistant_text:
+            # Get final paragraph
+            paragraphs = prev_assistant_text.strip().split('\n\n')
+            final_para = paragraphs[-1].strip()
+            # Clean up and truncate
+            subject = final_para.replace('\n', ' ')[:80]
+            if len(final_para) > 80:
+                subject = subject.rsplit(' ', 1)[0] + "..."
+            return subject
+
+        # Otherwise use first line of prompt
+        first_line = prompt_text.split('\n')[0]
+        if len(first_line) > 80:
+            return first_line[:77] + "..."
+        return first_line
+
+    def _render_prompt_response_markdown(
+        self, prompt: Prompt, entries: list[TranscriptEntry]
+    ) -> str:
+        """Render prompt and response entries as markdown for commit body."""
+        pm = get_configured_plugin_manager()
+        parts = []
+
+        # Prompt section
+        parts.append(f"## Prompt\n\n{prompt.text}")
+
+        # Response section
+        parts.append("## Response")
+
+        for entry in entries:
+            if entry.entry_type != "assistant":
+                continue
+
+            content = entry.message.get("content", [])
+            if not isinstance(content, list):
+                continue
+
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+
+                block_type = block.get("type")
+
+                if block_type == "thinking":
+                    thinking = block.get("thinking", "")
+                    if thinking:
+                        parts.append(f"### Thinking\n\n{thinking}")
+
+                elif block_type == "text":
+                    text = block.get("text", "")
+                    if text:
+                        parts.append(text)
+
+                elif block_type == "tool_use":
+                    # Use plugin hook to format the tool call
+                    tool_name = block.get("name", "")
+                    tool_input = block.get("input", {})
+                    rendered = pm.hook.agentgit_format_tool(
+                        tool_name=tool_name, tool_input=tool_input
+                    )
+                    if rendered:
+                        parts.append(rendered)
+
+        return "\n\n".join(parts)
+
+    def _collect_operations_from_entries(
+        self, entries: list[TranscriptEntry], transcript: Transcript
+    ) -> list[FileOperation]:
+        """Collect all file operations from a list of entries."""
+        # Build tool_id -> operation mapping
+        tool_id_to_op: dict[str, FileOperation] = {}
+        for op in transcript.operations:
+            if op.tool_id:
+                tool_id_to_op[op.tool_id] = op
+
+        operations = []
+        for entry in entries:
+            if entry.entry_type != "assistant":
+                continue
+
+            content = entry.message.get("content", [])
+            if not isinstance(content, list):
+                continue
+
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+
+                tool_id = block.get("id", "")
+                if tool_id in tool_id_to_op:
+                    operations.append(tool_id_to_op[tool_id])
+
+        return operations
+
+    def _get_final_assistant_text(self, entries: list[TranscriptEntry]) -> str:
+        """Get the final assistant text from a list of entries.
+
+        Used to provide context for short user prompts like "yes" or "do it".
+        """
+        final_text = ""
+
+        for entry in entries:
+            if entry.entry_type != "assistant":
+                continue
+
+            content = entry.message.get("content", [])
+            if not isinstance(content, list):
+                continue
+
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text", "")
+                    if text:
+                        final_text = text
+
+        return final_text
+
     def _has_commits(self) -> bool:
         """Check if the repository has any commits."""
         try:
@@ -1227,7 +1519,14 @@ class GitRepoBuilder:
 
     def _apply_write_no_commit(self, operation: FileOperation) -> bool:
         """Apply a write operation without committing."""
-        rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
+        rel_path = self.path_mapping.get(operation.file_path)
+        if not rel_path:
+            # Path not in mapping - compute a reasonable relative path
+            # Use the basename to avoid writing outside the repo
+            rel_path = Path(operation.file_path).name
+            self.path_mapping[operation.file_path] = rel_path
+            logger.warning("Path not in mapping, using basename: %s -> %s", operation.file_path, rel_path)
+
         full_path = self.output_dir / rel_path
 
         full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1266,7 +1565,13 @@ class GitRepoBuilder:
 
     def _apply_edit_no_commit(self, operation: FileOperation) -> bool:
         """Apply an edit operation without committing."""
-        rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
+        rel_path = self.path_mapping.get(operation.file_path)
+        if not rel_path:
+            # Path not in mapping - compute a reasonable relative path
+            rel_path = Path(operation.file_path).name
+            self.path_mapping[operation.file_path] = rel_path
+            logger.warning("Path not in mapping, using basename: %s -> %s", operation.file_path, rel_path)
+
         full_path = self.output_dir / rel_path
 
         # Get or create initial content
