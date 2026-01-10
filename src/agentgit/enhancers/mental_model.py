@@ -255,13 +255,39 @@ def _truncate(text: str, max_len: int) -> str:
 # ============================================================================
 
 
-def build_observation_prompt(model: MentalModel, context: dict) -> str:
-    """Build prompt for AI to observe changes and update model."""
+def build_observation_prompt(
+    model: MentalModel,
+    context: dict,
+    accumulated_insights: str = "",
+) -> str:
+    """Build prompt for AI to observe changes and update model.
+
+    The AI receives:
+    - Current model structure (JSON/Mermaid)
+    - Code changes (files, intents, reasoning)
+    - Accumulated insights (previous AI + human observations)
+
+    And outputs:
+    - Updated model structure
+    - New insight to append to the insights document
+    """
 
     current_diagram = model.to_mermaid() if model.elements else "(empty)"
 
-    return f"""You are maintaining a "mental model" diagram for a codebase.
-This represents the CONCEPTUAL structure - not files, but how the system works.
+    insights_section = ""
+    if accumulated_insights:
+        # Truncate if too long, keeping most recent
+        if len(accumulated_insights) > 3000:
+            accumulated_insights = "...(earlier insights truncated)...\n" + accumulated_insights[-3000:]
+        insights_section = f"""
+## Accumulated Insights
+These are previous observations and refinements from both AI and human:
+
+{accumulated_insights}
+"""
+
+    return f"""You are maintaining a "mental model" of a codebase - a conceptual diagram
+of how the system works, not its file structure.
 
 ## Current Mental Model
 ```mermaid
@@ -269,22 +295,32 @@ This represents the CONCEPTUAL structure - not files, but how the system works.
 ```
 
 {f"Current understanding: {model.ai_summary}" if model.ai_summary else ""}
+{insights_section}
 
-## Recent Changes
+## Recent Code Changes
 {json.dumps(context, indent=2)}
 
 ## Your Task
-Decide how to update the mental model. You have COMPLETE FREEDOM in structure:
-- Choose whatever elements/relationships capture the system best
-- Pick appropriate shapes (box, rounded, circle, diamond, cylinder, hexagon, stadium)
-- Use colors to indicate groupings or importance
-- The abstraction level should emerge from what you observe
+
+1. **Review** the accumulated insights - they contain important context from
+   previous observations and human refinements.
+
+2. **Analyze** how these code changes affect the conceptual structure.
+
+3. **Update** the model if needed. You have complete freedom in structure:
+   - Choose whatever elements/relationships capture the system best
+   - Pick shapes (box, rounded, circle, diamond, cylinder, hexagon, stadium)
+   - Use colors to indicate groupings or importance
+   - Let the right abstraction level emerge from what you observe
+
+4. **Document** your insight - what did you learn about the system?
+   This will be added to the insights document for future reference.
 
 Respond with JSON:
 ```json
 {{
-    "thinking": "Your reasoning about the system structure",
-    "summary": "1-2 sentence description of what this system does",
+    "insight": "What you learned or observed about the system (1-3 sentences). This gets appended to the insights document.",
+    "summary": "1-2 sentence description of what this system does (updated if needed)",
     "updates": {{
         "add_elements": [
             {{"id": "unique_id", "label": "Name", "shape": "box", "color": "#hex", "reasoning": "why"}}
@@ -299,7 +335,8 @@ Respond with JSON:
 }}
 ```
 
-If no changes needed: {{"thinking": "...", "summary": "...", "updates": null}}
+If no structural changes needed, still provide an insight:
+{{"insight": "...", "summary": "...", "updates": null}}
 """
 
 
@@ -439,44 +476,68 @@ class MentalModelEnhancer:
             self.model_path.parent.mkdir(parents=True, exist_ok=True)
             self.model_path.write_text(self.model.to_json())
 
-    def save_mermaid(self) -> Path | None:
-        """Save a human-readable Mermaid diagram alongside the JSON.
+    def save_insights(self, new_insight: str | None = None) -> Path | None:
+        """Append insights to the collaborative insights document.
 
-        Returns the path to the .md file, or None if no repo configured.
+        The insights file is a living document where both AI and human
+        contribute understanding. On each update, the AI reads this file
+        along with the JSON and code diff to inform its interpretation.
+
+        Args:
+            new_insight: New insight to append (from AI or human).
+
+        Returns:
+            Path to the insights file, or None if no repo configured.
         """
         if not self._repo_path:
             return None
 
-        md_path = self._repo_path / ".agentgit" / "mental_model.md"
-        md_path.parent.mkdir(parents=True, exist_ok=True)
+        insights_path = self._repo_path / ".agentgit" / "mental_model.md"
+        insights_path.parent.mkdir(parents=True, exist_ok=True)
 
-        content = f"""# Mental Model
+        # Initialize file if it doesn't exist
+        if not insights_path.exists():
+            initial_content = """# Mental Model Insights
 
-{self.model.ai_summary}
+This document captures the evolving understanding of this system's architecture.
+Both AI observations and human refinements accumulate here, creating a shared
+mental model that improves over time.
 
-```mermaid
-{self.model.to_mermaid()}
-```
+---
 
-## Elements
-
-| ID | Label | Created By | Reasoning |
-|----|-------|------------|-----------|
 """
-        for elem in self.model.elements.values():
-            content += f"| {elem.id} | {elem.label} | {elem.created_by} | {elem.reasoning[:50]}... |\n"
+            insights_path.write_text(initial_content)
 
-        content += f"""
-## Version History
+        # Append new insight if provided
+        if new_insight:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            with open(insights_path, "a") as f:
+                f.write(f"\n## {timestamp}\n\n{new_insight}\n")
 
-| Version | Trigger | Elements |
-|---------|---------|----------|
-"""
-        for snap in self.model.snapshots:
-            content += f"| v{snap.version} | {snap.trigger[:30]} | {len(snap.elements)} |\n"
+        return insights_path
 
-        md_path.write_text(content)
-        return md_path
+    def load_insights(self) -> str:
+        """Load the accumulated insights for context.
+
+        Returns:
+            The contents of the insights file, or empty string if not found.
+        """
+        if not self._repo_path:
+            return ""
+
+        insights_path = self._repo_path / ".agentgit" / "mental_model.md"
+        if insights_path.exists():
+            return insights_path.read_text()
+        return ""
+
+    def add_human_insight(self, insight: str) -> None:
+        """Add a human-provided insight to the document.
+
+        Use this when the human wants to correct or refine the model's
+        understanding without making structural changes.
+        """
+        self.save_insights(f"**Human insight:**\n\n{insight}")
 
     @hookimpl
     def agentgit_get_enhancer_info(self) -> dict[str, str]:
@@ -494,6 +555,15 @@ class MentalModelEnhancer:
         Observe code changes and update the mental model.
 
         This is the main entry point - call after processing a transcript.
+
+        The AI receives:
+        - Current model structure
+        - Code changes (files, intents, reasoning)
+        - Accumulated insights from previous observations + human input
+
+        The AI outputs:
+        - Updated model structure
+        - New insight to append to the insights document
         """
         # Build context from changes
         context = {"prompts": [], "files_changed": [], "reasoning": []}
@@ -508,22 +578,31 @@ class MentalModelEnhancer:
 
         context["files_changed"] = list(set(context["files_changed"]))[:20]
 
+        # Load accumulated insights for context
+        accumulated_insights = self.load_insights()
+
         # Snapshot before update
         self.model.snapshot(trigger="observation")
 
-        # Ask AI to interpret changes
-        prompt = build_observation_prompt(self.model, context)
+        # Ask AI to interpret changes (with insights as context)
+        prompt = build_observation_prompt(self.model, context, accumulated_insights)
         response = _run_llm(prompt, model)
 
         if not response:
             return None
 
         result = self._parse_response(response)
+
+        # Apply structural updates
         if result and result.get("updates"):
             self._apply_updates(result["updates"], "ai", context["files_changed"])
 
         if result and result.get("summary"):
             self.model.ai_summary = result["summary"]
+
+        # Save new insight to the insights document
+        if result and result.get("insight"):
+            self.save_insights(f"**AI observation:**\n\n{result['insight']}")
 
         self.model.version += 1
         self.save()
@@ -715,6 +794,10 @@ def update_mental_model_after_build(
     This is the main integration point - call after GitRepoBuilder.build()
     to update the mental model with what was built.
 
+    The result is stored in the repo at:
+    - .agentgit/mental_model.json  (structural data)
+    - .agentgit/mental_model.md    (accumulated insights)
+
     Args:
         repo_path: Path to the agentgit output repo.
         prompt_responses: The prompt responses that were processed.
@@ -727,12 +810,12 @@ def update_mental_model_after_build(
 
     result = enhancer.observe_changes(prompt_responses, model)
     if result:
-        enhancer.save()
-        enhancer.save_mermaid()
+        # Note: observe_changes already saves the model and insights
         logger.info(
-            "Mental model updated: v%d with %d elements",
+            "Mental model updated: v%d with %d elements, insight: %s",
             enhancer.model.version,
             len(enhancer.model.elements),
+            result.get("insight", "")[:50] + "..." if result.get("insight") else "none",
         )
         return enhancer.model
 
