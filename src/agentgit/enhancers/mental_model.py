@@ -1,14 +1,20 @@
-"""Mental Model Enhancer - AI-driven semantic visualization.
+"""Reframe - A living mental model that evolves with your codebase.
 
-This enhancer maintains a "living mental model" that evolves as code changes.
-It integrates with the agentgit enhancer system to:
+Reframe maintains a semantic visualization of your system that automatically
+adapts as code changes. It's not a file tree or class diagram - it's how
+you and an AI collaboratively understand what the system *does*.
 
-1. Observe code changes and update the model (AI decides the structure)
-2. Process human instructions to reshape the model
-3. Generate interactive visualizations with time travel
+Core concepts:
+- AI observes code changes and proposes model updates
+- Human can "draw a box and describe" to reshape understanding
+- Insights accumulate over time, creating shared context
+- Time travel through how understanding evolved
 
-The mental model is NOT prescribed - the AI decides what level of abstraction
-and what types of elements/relationships make sense for the codebase.
+The model structure is NOT prescribed - the AI decides what abstraction
+level and relationships best capture the system.
+
+Name origin: "Reframe" - to see something through a different frame/lens.
+From cognitive psychology, where reframing means shifting your mental model.
 """
 
 from __future__ import annotations
@@ -497,11 +503,14 @@ class MentalModelEnhancer:
 
         # Initialize file if it doesn't exist
         if not insights_path.exists():
-            initial_content = """# Mental Model Insights
+            initial_content = """# Reframe Insights
 
 This document captures the evolving understanding of this system's architecture.
 Both AI observations and human refinements accumulate here, creating a shared
 mental model that improves over time.
+
+Edit this file directly to add your own insights - they'll be read by the AI
+on the next update to inform its understanding.
 
 ---
 
@@ -784,15 +793,16 @@ def get_mental_model_enhancer(repo_path: Path | None = None) -> MentalModelEnhan
     return _enhancer_instance
 
 
-def update_mental_model_after_build(
+def reframe(
     repo_path: Path,
     prompt_responses: list["PromptResponse"],
     model: str = "claude-cli-haiku",
+    verbose: bool = False,
 ) -> MentalModel | None:
-    """Update the mental model after a build completes.
+    """Reframe the mental model based on recent code changes.
 
-    This is the main integration point - call after GitRepoBuilder.build()
-    to update the mental model with what was built.
+    This is the main entry point - call after processing a transcript
+    to evolve the mental model.
 
     The result is stored in the repo at:
     - .agentgit/mental_model.json  (structural data)
@@ -802,24 +812,36 @@ def update_mental_model_after_build(
         repo_path: Path to the agentgit output repo.
         prompt_responses: The prompt responses that were processed.
         model: LLM model to use for interpretation.
+        verbose: If True, print progress.
 
     Returns:
         The updated MentalModel, or None if update failed.
     """
     enhancer = get_mental_model_enhancer(repo_path)
 
+    if verbose:
+        print("Reframing...", flush=True)
+
     result = enhancer.observe_changes(prompt_responses, model)
     if result:
         # Note: observe_changes already saves the model and insights
+        if verbose:
+            print(f"  Model: v{enhancer.model.version} ({len(enhancer.model.elements)} elements)")
+            if result.get("insight"):
+                print(f"  Insight: {result['insight'][:60]}...")
+
         logger.info(
-            "Mental model updated: v%d with %d elements, insight: %s",
+            "Reframed: v%d with %d elements",
             enhancer.model.version,
             len(enhancer.model.elements),
-            result.get("insight", "")[:50] + "..." if result.get("insight") else "none",
         )
         return enhancer.model
 
     return None
+
+
+# Alias for backwards compatibility
+update_mental_model_after_build = reframe
 
 
 def load_mental_model(repo_path: Path) -> MentalModel | None:
@@ -843,7 +865,7 @@ def load_mental_model(repo_path: Path) -> MentalModel | None:
 
 if __name__ == "__main__":
     # Demo: Direct manipulation of the model (no LLM needed)
-    print("=== Mental Model Enhancer Demo ===\n")
+    print("=== Reframe Demo ===\n")
 
     model = MentalModel()
 
