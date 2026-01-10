@@ -394,23 +394,89 @@ def build_focused_prompt(model: MentalModel, element_id: str, intent: str) -> st
 
 
 class MentalModelEnhancer:
-    """Enhancer that maintains a living mental model of the codebase."""
+    """Enhancer that maintains a living mental model of the codebase.
 
-    def __init__(self):
+    The mental model is stored in the agentgit output repository at:
+    .agentgit/mental_model.json
+
+    This keeps it alongside the git history, making it part of the
+    artifact that agentgit produces.
+    """
+
+    # Standard location within agentgit repos
+    MODEL_FILENAME = ".agentgit/mental_model.json"
+
+    def __init__(self, repo_path: Path | None = None):
+        """Initialize the enhancer.
+
+        Args:
+            repo_path: Path to the agentgit output repo. If provided,
+                      loads existing model from .agentgit/mental_model.json
+        """
         self.model = MentalModel()
-        self._model_path: Path | None = None
+        self._repo_path: Path | None = None
 
-    def set_model_path(self, path: Path) -> None:
-        """Set path for model persistence."""
-        self._model_path = path
-        if path.exists():
-            self.model = MentalModel.from_dict(json.loads(path.read_text()))
+        if repo_path:
+            self.set_repo_path(repo_path)
+
+    def set_repo_path(self, repo_path: Path) -> None:
+        """Set the agentgit repo path and load existing model if present."""
+        self._repo_path = repo_path
+        model_path = repo_path / self.MODEL_FILENAME
+        if model_path.exists():
+            self.model = MentalModel.from_dict(json.loads(model_path.read_text()))
+
+    @property
+    def model_path(self) -> Path | None:
+        """Get the full path to the mental model file."""
+        if self._repo_path:
+            return self._repo_path / self.MODEL_FILENAME
+        return None
 
     def save(self) -> None:
-        """Save model to configured path."""
-        if self._model_path:
-            self._model_path.parent.mkdir(parents=True, exist_ok=True)
-            self._model_path.write_text(self.model.to_json())
+        """Save model to the agentgit repo."""
+        if self.model_path:
+            self.model_path.parent.mkdir(parents=True, exist_ok=True)
+            self.model_path.write_text(self.model.to_json())
+
+    def save_mermaid(self) -> Path | None:
+        """Save a human-readable Mermaid diagram alongside the JSON.
+
+        Returns the path to the .md file, or None if no repo configured.
+        """
+        if not self._repo_path:
+            return None
+
+        md_path = self._repo_path / ".agentgit" / "mental_model.md"
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+
+        content = f"""# Mental Model
+
+{self.model.ai_summary}
+
+```mermaid
+{self.model.to_mermaid()}
+```
+
+## Elements
+
+| ID | Label | Created By | Reasoning |
+|----|-------|------------|-----------|
+"""
+        for elem in self.model.elements.values():
+            content += f"| {elem.id} | {elem.label} | {elem.created_by} | {elem.reasoning[:50]}... |\n"
+
+        content += f"""
+## Version History
+
+| Version | Trigger | Elements |
+|---------|---------|----------|
+"""
+        for snap in self.model.snapshots:
+            content += f"| v{snap.version} | {snap.trigger[:30]} | {len(snap.elements)} |\n"
+
+        md_path.write_text(content)
+        return md_path
 
     @hookimpl
     def agentgit_get_enhancer_info(self) -> dict[str, str]:
@@ -617,12 +683,75 @@ class MentalModelEnhancer:
 _enhancer_instance: MentalModelEnhancer | None = None
 
 
-def get_mental_model_enhancer() -> MentalModelEnhancer:
-    """Get the global mental model enhancer instance."""
+def get_mental_model_enhancer(repo_path: Path | None = None) -> MentalModelEnhancer:
+    """Get the mental model enhancer, optionally bound to a repo.
+
+    Args:
+        repo_path: Path to agentgit output repo. If provided and different
+                  from current instance, creates new instance bound to that repo.
+
+    Returns:
+        MentalModelEnhancer instance.
+    """
     global _enhancer_instance
-    if _enhancer_instance is None:
+
+    if repo_path:
+        # Create new instance for this repo
+        if _enhancer_instance is None or _enhancer_instance._repo_path != repo_path:
+            _enhancer_instance = MentalModelEnhancer(repo_path)
+    elif _enhancer_instance is None:
         _enhancer_instance = MentalModelEnhancer()
+
     return _enhancer_instance
+
+
+def update_mental_model_after_build(
+    repo_path: Path,
+    prompt_responses: list["PromptResponse"],
+    model: str = "claude-cli-haiku",
+) -> MentalModel | None:
+    """Update the mental model after a build completes.
+
+    This is the main integration point - call after GitRepoBuilder.build()
+    to update the mental model with what was built.
+
+    Args:
+        repo_path: Path to the agentgit output repo.
+        prompt_responses: The prompt responses that were processed.
+        model: LLM model to use for interpretation.
+
+    Returns:
+        The updated MentalModel, or None if update failed.
+    """
+    enhancer = get_mental_model_enhancer(repo_path)
+
+    result = enhancer.observe_changes(prompt_responses, model)
+    if result:
+        enhancer.save()
+        enhancer.save_mermaid()
+        logger.info(
+            "Mental model updated: v%d with %d elements",
+            enhancer.model.version,
+            len(enhancer.model.elements),
+        )
+        return enhancer.model
+
+    return None
+
+
+def load_mental_model(repo_path: Path) -> MentalModel | None:
+    """Load a mental model from an agentgit repo.
+
+    Args:
+        repo_path: Path to the agentgit output repo.
+
+    Returns:
+        The MentalModel if found, None otherwise.
+    """
+    model_path = repo_path / MentalModelEnhancer.MODEL_FILENAME
+    if model_path.exists():
+        return MentalModel.from_dict(json.loads(model_path.read_text()))
+    return None
 
 
 # ============================================================================
