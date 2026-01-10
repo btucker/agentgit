@@ -236,6 +236,89 @@ class PromptResponse:
 
 
 @dataclass
+class Scene:
+    """A logical unit of work that becomes one commit.
+
+    Scenes are the fundamental grouping unit for agentgit. Each scene represents
+    a coherent piece of work - multiple file operations grouped by their logical
+    purpose rather than by raw transcript entries.
+
+    Plugin-specific signals determine scene boundaries:
+    - Claude Code: TodoWrite (in_progress → completed), Task tool calls
+    - Codex: functions.update_plan step boundaries
+    - Fallback: One scene per assistant turn with file operations
+
+    The "scene" metaphor reflects that agentgit tells the story of how code was
+    written - each scene has a purpose (summary), characters (files), and
+    dialogue (context/thinking).
+    """
+
+    operations: list[FileOperation] = field(default_factory=list)
+    prompt: Optional[Prompt] = None
+    timestamp: str = ""
+
+    # Commit message content
+    summary: str = ""  # Commit subject line
+    context: str = ""  # Aggregated reasoning/explanation (commit body)
+    thinking: str = ""  # Extended thinking blocks
+
+    # Plugin-specific metadata
+    todo_item: Optional[str] = None  # If grouped by TodoWrite
+    plan_step: Optional[str] = None  # If grouped by update_plan
+    task_description: Optional[str] = None  # If grouped by Task tool
+
+    # Tracking
+    tool_ids: list[str] = field(default_factory=list)
+    sequence: int = 0  # Order within the prompt
+
+    @property
+    def files_modified(self) -> list[str]:
+        """List of files modified in this scene."""
+        return [op.filename for op in self.operations if op.operation_type == OperationType.EDIT]
+
+    @property
+    def files_created(self) -> list[str]:
+        """List of files created in this scene."""
+        return [op.filename for op in self.operations if op.operation_type == OperationType.WRITE]
+
+    @property
+    def files_deleted(self) -> list[str]:
+        """List of files deleted in this scene."""
+        return [op.filename for op in self.operations if op.operation_type == OperationType.DELETE]
+
+    @property
+    def commit_subject(self) -> str:
+        """Generate commit subject line.
+
+        Priority:
+        1. todo_item (with ✓ prefix)
+        2. plan_step (with ✓ prefix)
+        3. task_description
+        4. summary
+        5. Generated from operations
+        """
+        if self.todo_item:
+            return f"✓ {self.todo_item}"
+        if self.plan_step:
+            return f"✓ {self.plan_step}"
+        if self.task_description:
+            return self.task_description
+        if self.summary:
+            first_line = self.summary.split("\n")[0].strip()
+            if len(first_line) > 72:
+                return first_line[:69] + "..."
+            return first_line
+        # Fall back to describing the operations
+        if len(self.operations) == 1:
+            op = self.operations[0]
+            verb = {"write": "Create", "edit": "Edit", "delete": "Delete"}.get(
+                op.operation_type.value, "Modify"
+            )
+            return f"{verb} {op.filename}"
+        return f"Update {len(self.operations)} files"
+
+
+@dataclass
 class Transcript:
     """A complete parsed transcript with all entries and extracted operations."""
 
@@ -245,7 +328,8 @@ class Transcript:
 
     # Grouped structures for git history
     prompt_responses: list[PromptResponse] = field(default_factory=list)  # Legacy
-    conversation_rounds: list[ConversationRound] = field(default_factory=list)  # New
+    conversation_rounds: list[ConversationRound] = field(default_factory=list)  # Verbose mode
+    scenes: list[Scene] = field(default_factory=list)  # Preferred: plugin-driven grouping
 
     source_path: Optional[str] = None
     source_format: str = ""

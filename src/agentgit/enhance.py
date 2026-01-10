@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from agentgit.plugins import get_configured_plugin_manager
 
@@ -232,9 +232,14 @@ def generate_session_branch_name(
     return f"sessions/{agent_part}/{int(time.time())}"
 
 
+# Type alias for progress callbacks
+ProgressCallback = Callable[[int, int, int], None] | None
+
+
 def preprocess_batch_enhancement(
     prompt_responses: list["PromptResponse"],
     config: EnhanceConfig | None = None,
+    progress_callback: ProgressCallback = None,
 ) -> None:
     """Pre-process all prompt responses for batch enhancement.
 
@@ -247,6 +252,8 @@ def preprocess_batch_enhancement(
     Args:
         prompt_responses: List of PromptResponse objects to process.
         config: Optional configuration for enhancement.
+        progress_callback: Optional callback(batch_num, total_batches, items_in_batch)
+            called after each batch is processed.
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -264,5 +271,7 @@ def preprocess_batch_enhancement(
     if config.enhancer == "llm":
         from agentgit.enhancers.llm import batch_enhance_prompt_responses
 
-        result = batch_enhance_prompt_responses(prompt_responses, config.model)
+        result = batch_enhance_prompt_responses(
+            prompt_responses, config.model, progress_callback=progress_callback
+        )
         logger.info("Batch processing completed, cache size: %d", len(result))

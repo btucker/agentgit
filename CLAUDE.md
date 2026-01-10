@@ -45,6 +45,8 @@ Key hooks in `src/agentgit/plugins.py`:
 
 Plugins implement hooks with `@hookimpl` decorator. See `formats/claude_code.py` for the reference implementation.
 
+Everything agent format-specific should go in the respective plugin.
+
 **See [AGENT_PLUGINS.md](AGENT_PLUGINS.md) for the complete guide to creating agent plugins.**
 
 ### Core Data Flow

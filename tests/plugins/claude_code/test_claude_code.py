@@ -96,6 +96,66 @@ class TestClaudeCodePlugin:
         result = plugin.agentgit_detect_format(jsonl_file)
         assert result is None
 
+    def test_detect_format_with_file_history_snapshot_prefix(self, plugin, tmp_path):
+        """Should detect Claude Code format when file-history-snapshot is first entry.
+
+        Newer Claude Code sessions start with metadata entries like file-history-snapshot
+        before the actual user/assistant entries. The format detection should skip these
+        metadata entries and look for actual conversation content.
+        """
+        content = [
+            {"type": "file-history-snapshot", "data": {}},
+            {"type": "user", "timestamp": "2025-01-01T10:00:00.000Z", "message": {"content": "Hello"}},
+            {"type": "assistant", "timestamp": "2025-01-01T10:00:05.000Z", "message": {"content": "Hi"}},
+        ]
+
+        jsonl_path = tmp_path / "session.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        result = plugin.agentgit_detect_format(jsonl_path)
+        assert result == "claude_code_jsonl"
+
+    def test_detect_format_with_summary_prefix(self, plugin, tmp_path):
+        """Should detect Claude Code format when summary is first entry."""
+        content = [
+            {"type": "summary", "summary": "Previous conversation summary"},
+            {"type": "user", "timestamp": "2025-01-01T10:00:00.000Z", "message": {"content": "Continue"}},
+        ]
+
+        jsonl_path = tmp_path / "session.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        result = plugin.agentgit_detect_format(jsonl_path)
+        assert result == "claude_code_jsonl"
+
+    def test_detect_format_rejects_pure_api_call_session(self, plugin, tmp_path):
+        """Should reject sessions that are purely API calls (no interactive content).
+
+        API call sessions from the llm enhancer typically have:
+        1. queue-operation: dequeue as first entry
+        2. A single-shot prompt/response pattern
+        3. Content indicating it's a name generation request
+        """
+        content = [
+            {"type": "queue-operation", "operation": "dequeue", "timestamp": "2025-01-01T10:00:00.000Z"},
+            {"type": "user", "timestamp": "2025-01-01T10:00:01.000Z",
+             "message": {"content": "Generate concise, descriptive names for these coding sessions."}},
+            {"type": "assistant", "timestamp": "2025-01-01T10:00:02.000Z",
+             "message": {"content": [{"type": "text", "text": "[\"session-name\"]"}]}},
+        ]
+
+        jsonl_path = tmp_path / "session.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        result = plugin.agentgit_detect_format(jsonl_path)
+        assert result is None
+
     def test_parse_transcript(self, plugin, sample_jsonl):
         """Should parse transcript correctly."""
         transcript = plugin.agentgit_parse_transcript(sample_jsonl, "claude_code_jsonl")
@@ -786,6 +846,44 @@ class TestPromptNeedsContext:
         )
 
 
+class TestIsContinuationPrompt:
+    """Tests for _is_continuation_prompt method."""
+
+    def test_detects_continuation_prompt(self, plugin):
+        """Should detect session continuation messages."""
+        continuation_text = """This session is being continued from a previous conversation that ran out of context. The conversation is summarized below:
+
+Analysis:
+Let me analyze the conversation...
+
+Summary:
+1. User asked to implement feature X
+2. We were working on file Y"""
+
+        assert plugin._is_continuation_prompt(continuation_text) is True
+
+    def test_detects_partial_continuation_markers(self, plugin):
+        """Should detect any continuation marker."""
+        assert plugin._is_continuation_prompt(
+            "This session is being continued from a previous conversation"
+        ) is True
+        assert plugin._is_continuation_prompt(
+            "Some text about conversation that ran out of context here"
+        ) is True
+        assert plugin._is_continuation_prompt(
+            "The conversation is summarized below:"
+        ) is True
+
+    def test_normal_prompts_not_continuation(self, plugin):
+        """Normal user prompts should not be detected as continuation."""
+        assert plugin._is_continuation_prompt("Add a new feature") is False
+        assert plugin._is_continuation_prompt("Fix the bug in auth.py") is False
+        assert plugin._is_continuation_prompt("yes") is False
+        assert plugin._is_continuation_prompt(
+            "Please continue working on the previous task"
+        ) is False
+
+
 class TestGetLastTimestamp:
     """Tests for get_last_timestamp_from_jsonl helper function."""
 
@@ -952,3 +1050,222 @@ class TestClaudeCodeAuthorInfo:
         result = plugin.agentgit_get_author_info(transcript)
 
         assert result is None
+
+
+class TestTaskToolGrouping:
+    """Tests for grouping operations by Task tool calls."""
+
+    def test_task_tool_creates_scene_grouping(self, plugin, tmp_path):
+        """Task tool calls should create scenes that group subsequent operations.
+
+        When a Task tool is called, all file operations from that subagent's work
+        should be grouped into a single scene, rather than individual commits.
+        """
+        # Create transcript with Task tool call followed by operations
+        content = [
+            {
+                "type": "user",
+                "timestamp": "2025-01-01T10:00:00.000Z",
+                "message": {"content": "Research the codebase structure"},
+                "sessionId": "test-session",
+                "cwd": "/test/project",
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2025-01-01T10:00:05.000Z",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "I'll use the Task tool to explore the codebase."},
+                        {
+                            "type": "tool_use",
+                            "id": "task_001",
+                            "name": "Task",
+                            "input": {
+                                "description": "Explore codebase",
+                                "prompt": "Search for main entry points",
+                                "subagent_type": "Explore",
+                            },
+                        },
+                    ]
+                },
+            },
+            # Tool result from Task
+            {
+                "type": "user",
+                "timestamp": "2025-01-01T10:00:10.000Z",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "task_001",
+                            "content": "Found main.py as the entry point",
+                        }
+                    ]
+                },
+            },
+            # Assistant reads files as part of the task's work
+            {
+                "type": "assistant",
+                "timestamp": "2025-01-01T10:00:15.000Z",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "Based on the exploration, let me create a summary file."},
+                        {
+                            "type": "tool_use",
+                            "id": "write_001",
+                            "name": "Write",
+                            "input": {
+                                "file_path": "/test/project/ARCHITECTURE.md",
+                                "content": "# Architecture\n\nMain entry: main.py",
+                            },
+                        },
+                    ]
+                },
+            },
+            # Tool result
+            {
+                "type": "user",
+                "timestamp": "2025-01-01T10:00:20.000Z",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "write_001",
+                            "content": "File written successfully",
+                        }
+                    ]
+                },
+            },
+            # Another write as part of the same task
+            {
+                "type": "assistant",
+                "timestamp": "2025-01-01T10:00:25.000Z",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "Also creating a README."},
+                        {
+                            "type": "tool_use",
+                            "id": "write_002",
+                            "name": "Write",
+                            "input": {
+                                "file_path": "/test/project/README.md",
+                                "content": "# Project\n\nSee ARCHITECTURE.md for details.",
+                            },
+                        },
+                    ]
+                },
+            },
+        ]
+
+        jsonl_path = tmp_path / "session.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        # Parse the transcript
+        transcript = plugin.agentgit_parse_transcript(jsonl_path, "claude_code_jsonl")
+
+        # Extract operations and assign to transcript (required for scene building)
+        operations = plugin.agentgit_extract_operations(transcript)
+        transcript.operations = operations  # Must set this for agentgit_build_scenes to work
+        assert len(operations) == 2, "Should have 2 write operations"
+
+        # Build scenes - this should group operations by Task tool boundaries
+        scenes = plugin.agentgit_build_scenes(transcript)
+
+        # The key assertion: Task tool should create scene grouping
+        # All operations after the Task call should be grouped into one scene
+        assert len(scenes) > 0, "Should create at least one scene for Task tool work"
+
+        # Find the scene with operations
+        scenes_with_ops = [s for s in scenes if s.operations]
+        assert len(scenes_with_ops) == 1, (
+            "All operations from Task subagent work should be in a single scene, "
+            f"but got {len(scenes_with_ops)} scenes with operations"
+        )
+
+        # The scene should have both operations grouped together
+        scene = scenes_with_ops[0]
+        assert len(scene.operations) == 2, (
+            f"Scene should contain both operations (got {len(scene.operations)})"
+        )
+
+        # Scene should have the task description
+        assert scene.task_description is not None, "Scene should have task_description set"
+        assert "Explore" in scene.task_description or "codebase" in scene.task_description.lower()
+
+
+class TestBuildScenesHookIntegration:
+    """Tests for agentgit_build_scenes hook integration with plugin manager.
+
+    Verifies that the hook correctly returns scenes when multiple plugins are
+    registered, handling the firstresult=True semantics properly.
+    """
+
+    def test_build_scenes_returns_scenes_via_plugin_manager(self, tmp_path):
+        """Plugin manager hook should return scenes for claude_code_jsonl format.
+
+        This tests the integration between the plugin manager and plugins.
+        With firstresult=True, plugins must return None (not []) when they
+        don't handle a format, otherwise an empty list from one plugin blocks
+        other plugins from providing results.
+        """
+        from agentgit.plugins import get_configured_plugin_manager
+
+        # Create a simple transcript with file operations
+        content = [
+            {
+                "type": "user",
+                "timestamp": "2025-01-01T10:00:00.000Z",
+                "message": {"content": "Create a test file"},
+                "sessionId": "test-session",
+                "cwd": "/test/project",
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2025-01-01T10:00:05.000Z",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "Creating test file."},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_001",
+                            "name": "Write",
+                            "input": {
+                                "file_path": "/test/project/test.py",
+                                "content": "# test file",
+                            },
+                        },
+                    ]
+                },
+            },
+        ]
+
+        jsonl_path = tmp_path / "session.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        pm = get_configured_plugin_manager()
+
+        # Detect format and parse
+        format = pm.hook.agentgit_detect_format(path=jsonl_path)
+        assert format == "claude_code_jsonl"
+
+        transcript = pm.hook.agentgit_parse_transcript(path=jsonl_path, format=format)
+
+        # Extract and assign operations
+        operations = []
+        for ops in pm.hook.agentgit_extract_operations(transcript=transcript):
+            operations.extend(ops)
+        transcript.operations = operations
+        assert len(operations) == 1, "Should have 1 write operation"
+
+        # Build scenes via plugin manager hook
+        scenes = pm.hook.agentgit_build_scenes(transcript=transcript)
+
+        # Key assertion: scenes should be built even with multiple plugins registered
+        assert len(scenes) == 1, (
+            f"Expected 1 scene from plugin manager hook, got {len(scenes)}. "
+            "This may indicate a plugin returning [] instead of None for unhandled formats."
+        )

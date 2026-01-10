@@ -287,6 +287,37 @@ class TestGitRepoBuilder:
 
         assert not (tmp_path / "hello.py").exists()
 
+    def test_delete_operation_with_absolute_path_not_in_mapping(self, tmp_path):
+        """DELETE operations with paths not in path_mapping should not error.
+
+        This tests the case where a DELETE operation is for a path that wasn't
+        included in the path_mapping (which only contains non-DELETE ops).
+        The DELETE operation should succeed without ValueError from index.add().
+        """
+        # First create a file
+        ops = [
+            FileOperation(
+                file_path="/project/hello.py",
+                operation_type=OperationType.WRITE,
+                timestamp="2025-01-01T00:00:00Z",
+                content="print('hello')",
+            ),
+            # DELETE with a path that differs from the WRITE path
+            # (simulates absolute path not in path_mapping)
+            FileOperation(
+                file_path="/different/absolute/path/hello.py",
+                operation_type=OperationType.DELETE,
+                timestamp="2025-01-01T00:00:01Z",
+            ),
+        ]
+
+        builder = GitRepoBuilder(output_dir=tmp_path)
+        # Should not raise ValueError about absolute path
+        builder.build(ops)
+
+        # File from first op should still exist (DELETE was for different path)
+        assert (tmp_path / "hello.py").exists()
+
     def test_creates_commits(self, tmp_path):
         """Should create commits for each operation."""
         prompt = Prompt(text="Add hello function", timestamp="2025-01-01T00:00:00Z")

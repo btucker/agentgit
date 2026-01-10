@@ -176,6 +176,27 @@ class TestCodexPlugin:
         assert info["name"] == "codex"
         assert "Codex" in info["description"]
 
+    def test_get_session_id_from_path_codex_format(self, plugin, tmp_path):
+        """Should extract UUID from Codex filename format."""
+        codex_path = tmp_path / "rollout-2026-01-06T19-18-12-019b9608-6a5d-7212-beb9-b97edb538adf.jsonl"
+        codex_path.touch()
+        result = plugin.agentgit_get_session_id_from_path(codex_path)
+        assert result == "019b9608-6a5d-7212-beb9-b97edb538adf"
+
+    def test_get_session_id_from_path_uuid_only(self, plugin, tmp_path):
+        """Should extract UUID from simple UUID filename."""
+        uuid_path = tmp_path / "f3d29046-1b89-42ae-9da0-96cda9dd8c90.jsonl"
+        uuid_path.touch()
+        result = plugin.agentgit_get_session_id_from_path(uuid_path)
+        assert result == "f3d29046-1b89-42ae-9da0-96cda9dd8c90"
+
+    def test_get_session_id_from_path_no_uuid(self, plugin, tmp_path):
+        """Should return None for paths without UUID."""
+        plain_path = tmp_path / "session.jsonl"
+        plain_path.touch()
+        result = plugin.agentgit_get_session_id_from_path(plain_path)
+        assert result is None
+
     def test_detect_format_jsonl(self, plugin, sample_jsonl):
         """Should detect Codex JSONL format."""
         result = plugin.agentgit_detect_format(sample_jsonl)

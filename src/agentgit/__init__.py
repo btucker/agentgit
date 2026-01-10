@@ -13,6 +13,7 @@ from agentgit.core import (
     OperationType,
     Prompt,
     PromptResponse,
+    Scene,
     SourceCommit,
     Transcript,
     TranscriptEntry,
@@ -21,6 +22,7 @@ from agentgit.git_builder import (
     GitRepoBuilder,
     format_commit_message,
     format_prompt_merge_message,
+    format_scene_commit_message,
     format_turn_commit_message,
 )
 from agentgit.plugins import get_configured_plugin_manager, hookimpl, hookspec
@@ -42,6 +44,7 @@ __all__ = [
     "AssistantContext",
     "AssistantTurn",
     "PromptResponse",
+    "Scene",
     "TranscriptEntry",
     "Transcript",
     "OperationType",
@@ -55,10 +58,12 @@ __all__ = [
     "parse_transcripts",
     "build_repo",
     "build_repo_grouped",
+    "build_repo_scenes",
     "transcript_to_repo",
     "format_commit_message",
     "format_turn_commit_message",
     "format_prompt_merge_message",
+    "format_scene_commit_message",
     "discover_transcripts",
     "discover_transcripts_enriched",
     "find_git_root",
@@ -114,6 +119,11 @@ def parse_transcript(path: Path | str, plugin_type: str | None = None) -> Transc
     # Build conversation_rounds structure for conversational git history
     for conversation_rounds in pm.hook.agentgit_build_conversation_rounds(transcript=transcript):
         transcript.conversation_rounds.extend(conversation_rounds)
+
+    # Build scenes structure for plugin-driven commit grouping
+    scenes = pm.hook.agentgit_build_scenes(transcript=transcript)
+    if scenes:
+        transcript.scenes.extend(scenes)
 
     return transcript
 
@@ -250,6 +260,73 @@ def build_repo_grouped(
     )
     return builder.build_from_conversation_rounds(
         conversation_rounds=conversation_rounds,
+        transcript=transcript,
+        author_name=author_name,
+        author_email=author_email,
+        incremental=incremental,
+    )
+
+
+def build_repo_scenes(
+    scenes: list[Scene],
+    transcript: "Transcript",
+    output_dir: Path | None = None,
+    author_name: str = "Agent",
+    author_email: str = "agent@local",
+    enhance_config: "EnhanceConfig | None" = None,
+    session_id: str | None = None,
+    agent_name: str | None = None,
+    incremental: bool = True,
+) -> tuple[Repo, Path, dict[str, str]]:
+    """Build a git repository from scenes (logical work units).
+
+    Each scene becomes one commit. Scenes are the preferred grouping unit
+    for agentgit, determined by agent-specific signals (TodoWrite, Task, etc).
+
+    Args:
+        scenes: List of Scene objects from plugin's agentgit_build_scenes hook.
+        transcript: The full transcript (needed for author info lookup).
+        output_dir: Directory for the git repo. If None, creates a temp dir.
+        author_name: Name for git commits.
+        author_email: Email for git commits.
+        enhance_config: Optional configuration for generating commit messages.
+        session_id: Optional session identifier. If provided, creates a session branch.
+        agent_name: Optional agent/format name for branch naming (e.g., 'claude-code').
+        incremental: If True, skip already-processed scenes. Default True.
+
+    Returns:
+        Tuple of (repo, repo_path, path_mapping).
+    """
+    # Generate session branch name if session_id is provided
+    session_branch_name = None
+    if session_id and scenes:
+        from agentgit.enhance import generate_session_branch_name
+
+        # Use scenes to get prompts for session naming
+        # Convert to PromptResponse format for compatibility with existing function
+        prompt_responses_for_naming = []
+        seen_prompts = set()
+        for scene in scenes:
+            if scene.prompt and scene.prompt.prompt_id not in seen_prompts:
+                from agentgit.core import PromptResponse
+
+                prompt_responses_for_naming.append(
+                    PromptResponse(prompt=scene.prompt, turns=[])
+                )
+                seen_prompts.add(scene.prompt.prompt_id)
+
+        session_branch_name = generate_session_branch_name(
+            prompt_responses_for_naming, session_id, enhance_config, agent_name
+        )
+
+    builder = GitRepoBuilder(
+        output_dir=output_dir,
+        enhance_config=enhance_config,
+        session_branch_name=session_branch_name,
+        session_id=session_id,
+    )
+    return builder.build_from_scenes(
+        scenes=scenes,
         transcript=transcript,
         author_name=author_name,
         author_email=author_email,

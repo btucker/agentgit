@@ -19,6 +19,7 @@ from agentgit.core import (
     OperationType,
     Prompt,
     PromptResponse,
+    Scene,
     SourceCommit,
 )
 from agentgit.plugins import get_configured_plugin_manager
@@ -336,6 +337,94 @@ def format_prompt_merge_message(
     trailers_str = "\n".join(trailers)
 
     return f"{subject}\n\n{body}\n\n{trailers_str}"
+
+
+def format_scene_commit_message(
+    scene: Scene,
+    enhance_config: Optional["EnhanceConfig"] = None,
+) -> str:
+    """Format a commit message for a scene (logical work unit).
+
+    Structure:
+    - Subject line: todo item, plan step, task description, or summary
+    - Blank line
+    - Files modified/created/deleted
+    - Blank line
+    - Thinking block (if available)
+    - Blank line
+    - Context/explanation (if available)
+    - Blank line
+    - Trailers
+
+    Args:
+        scene: The scene to format.
+        enhance_config: Optional AI config for generating smarter commit messages.
+    """
+    # Try AI-generated subject if configured
+    subject = None
+    if enhance_config and enhance_config.enabled:
+        try:
+            from agentgit.enhance import generate_scene_summary
+
+            subject = generate_scene_summary(scene, enhance_config)
+        except ImportError:
+            # generate_scene_summary not yet implemented
+            pass
+
+    # Fall back to default format (uses Scene.commit_subject property)
+    if not subject:
+        subject = scene.commit_subject
+
+    body_parts = []
+
+    # List of files changed
+    file_lists = []
+    if scene.files_created:
+        file_lists.append(f"Created: {', '.join(scene.files_created)}")
+    if scene.files_modified:
+        file_lists.append(f"Modified: {', '.join(scene.files_modified)}")
+    if scene.files_deleted:
+        file_lists.append(f"Deleted: {', '.join(scene.files_deleted)}")
+    if file_lists:
+        body_parts.append("\n".join(file_lists))
+
+    # Thinking block (extended reasoning)
+    if scene.thinking:
+        body_parts.append(f"## Thinking\n{scene.thinking}")
+
+    # Context (aggregated explanation)
+    if scene.context:
+        body_parts.append(f"## Context\n{scene.context}")
+
+    body = "\n\n".join(body_parts) if body_parts else ""
+
+    # Trailers
+    trailers = []
+
+    if scene.prompt:
+        trailers.append(f"Prompt-Id: {scene.prompt.prompt_id}")
+
+    if scene.todo_item:
+        trailers.append(f"Todo-Item: {scene.todo_item}")
+
+    if scene.plan_step:
+        trailers.append(f"Plan-Step: {scene.plan_step}")
+
+    if scene.task_description:
+        trailers.append(f"Task-Description: {scene.task_description}")
+
+    if scene.timestamp:
+        trailers.append(f"Timestamp: {scene.timestamp}")
+
+    for tool_id in scene.tool_ids:
+        trailers.append(f"Tool-Id: {tool_id}")
+
+    trailers_str = "\n".join(trailers)
+
+    if body:
+        return f"{subject}\n\n{body}\n\n{trailers_str}"
+    else:
+        return f"{subject}\n\n{trailers_str}"
 
 
 def normalize_file_paths(operations: list[FileOperation]) -> tuple[str, dict[str, str]]:
@@ -799,6 +888,113 @@ class GitRepoBuilder:
 
         return self.repo, self.output_dir, self.path_mapping
 
+    def build_from_scenes(
+        self,
+        scenes: list[Scene],
+        transcript: "Transcript",
+        author_name: str = "Agent",
+        author_email: str = "agent@local",
+        incremental: bool = True,
+    ) -> tuple[Repo, Path, dict[str, str]]:
+        """Build git repo from scenes (logical work units).
+
+        Each scene becomes one commit. Scenes are the preferred grouping unit
+        for agentgit, determined by agent-specific signals (TodoWrite, Task, etc).
+
+        Args:
+            scenes: List of Scene objects from plugin.
+            transcript: The full transcript for author info lookup.
+            author_name: Name for agent commits.
+            author_email: Email for agent commits.
+            incremental: If True, skip already-processed scenes.
+
+        Returns:
+            Tuple of (repo, repo_path, path_mapping).
+        """
+        self._setup_repo(incremental)
+
+        # Get author info from plugin if available
+        pm = get_configured_plugin_manager()
+        plugin_author_info = pm.hook.agentgit_get_author_info(transcript=transcript)
+
+        if plugin_author_info:
+            author_name = plugin_author_info.get("name", author_name)
+            author_email = plugin_author_info.get("email", author_email)
+
+        # Store author info for agent commits
+        self._agent_author_name = author_name
+        self._agent_author_email = author_email
+
+        # Get user author info from code repo for merge commits
+        self._user_author_name, self._user_author_email = self._get_code_repo_author()
+
+        with self.repo.config_writer() as config:
+            config.set_value("user", "name", author_name)
+            config.set_value("user", "email", author_email)
+
+        # Collect all operations for path normalization
+        all_operations = []
+        for scene in scenes:
+            all_operations.extend([op for op in scene.operations if op.operation_type != OperationType.DELETE])
+        _, self.path_mapping = normalize_file_paths(all_operations)
+
+        if not scenes:
+            return self.repo, self.output_dir, self.path_mapping
+
+        # Ensure we have an initial commit on main
+        if not self._has_commits():
+            self._create_initial_commit()
+
+        # Create or checkout session branch
+        if self.session_branch_name:
+            if self.session_branch_name in self.repo.heads:
+                self.repo.heads[self.session_branch_name].checkout()
+            else:
+                # Create new session branch from main (not HEAD!)
+                main_ref = self._get_main_branch_commit()
+                session_branch = self.repo.create_head(self.session_branch_name, main_ref)
+                session_branch.checkout()
+                logger.info("Created session branch: %s", self.session_branch_name)
+
+        # Group scenes by prompt for merge commits
+        scenes_by_prompt: dict[str, list[Scene]] = {}
+        for scene in scenes:
+            prompt_id = scene.prompt.prompt_id if scene.prompt else "unknown"
+            if prompt_id not in scenes_by_prompt:
+                scenes_by_prompt[prompt_id] = []
+            scenes_by_prompt[prompt_id].append(scene)
+
+        # Process each prompt's scenes
+        for prompt_id, prompt_scenes in scenes_by_prompt.items():
+            # Skip if all scenes in this prompt are already processed
+            if incremental and all(self._is_scene_processed(s) for s in prompt_scenes):
+                continue
+
+            # Apply each scene as a commit
+            for scene in prompt_scenes:
+                if incremental and self._is_scene_processed(scene):
+                    continue
+                self._apply_scene(scene)
+                # Mark scene as processed
+                for tool_id in scene.tool_ids:
+                    self._processed_ops.add(tool_id)
+
+        # Create session ref if session_id is provided
+        if self.session_id and self.session_branch_name:
+            session_ref_path = self.output_dir / ".git" / "refs" / "sessions" / self.session_id
+            session_ref_path.parent.mkdir(parents=True, exist_ok=True)
+            session_ref_path.write_text(f"ref: refs/heads/{self.session_branch_name}\n")
+            logger.info("Created session ref: %s -> %s", f"refs/sessions/{self.session_id}", self.session_branch_name)
+
+        return self.repo, self.output_dir, self.path_mapping
+
+    def _is_scene_processed(self, scene: Scene) -> bool:
+        """Check if a scene has already been processed."""
+        if not scene.tool_ids:
+            return False
+        # Scene is processed if ANY of its tool_ids have been processed
+        return any(tool_id in self._processed_ops for tool_id in scene.tool_ids)
+
     def _has_commits(self) -> bool:
         """Check if the repository has any commits."""
         try:
@@ -972,6 +1168,48 @@ class GitRepoBuilder:
                 self._commit_with_date(commit_msg, turn.timestamp, allow_empty=True)
             except GitCommandError as e:
                 logger.warning("Failed to create empty commit for turn: %s", e)
+
+    def _apply_scene(self, scene: Scene) -> None:
+        """Apply all operations in a scene and create a single commit.
+
+        Args:
+            scene: The scene to apply.
+        """
+        files_changed = []
+        files_deleted = []
+
+        # Apply all file operations
+        for operation in scene.operations:
+            changed = self._apply_operation_no_commit(operation)
+            if changed:
+                rel_path = self.path_mapping.get(operation.file_path, operation.file_path)
+                if operation.operation_type == OperationType.DELETE:
+                    files_deleted.append(rel_path)
+                else:
+                    files_changed.append(rel_path)
+
+        # Create commit message
+        commit_msg = format_scene_commit_message(scene, self.enhance_config)
+
+        if files_changed or files_deleted:
+            # Add changed files (not deleted ones)
+            for rel_path in files_changed:
+                try:
+                    self.repo.index.add([rel_path])
+                except GitCommandError:
+                    pass
+
+            # Create regular commit with file changes
+            try:
+                self._commit_with_date(commit_msg, scene.timestamp)
+            except GitCommandError as e:
+                logger.warning("Failed to commit scene: %s", e)
+        else:
+            # No file changes - create an empty commit to preserve the scene
+            try:
+                self._commit_with_date(commit_msg, scene.timestamp, allow_empty=True)
+            except GitCommandError as e:
+                logger.warning("Failed to create empty commit for scene: %s", e)
 
     def _apply_operation_no_commit(self, operation: FileOperation) -> bool:
         """Apply a single operation without creating a commit.
@@ -1327,8 +1565,15 @@ class GitRepoBuilder:
         files_changed = []
         for op in operations:
             if self._apply_operation_no_commit(op):
-                rel_path = self.path_mapping.get(op.file_path, op.file_path)
-                files_changed.append(rel_path)
+                # DELETE operations are already handled by _apply_delete_no_commit
+                # which calls repo.index.remove() directly. Skip them here.
+                if op.operation_type == OperationType.DELETE:
+                    # Just mark that we have changes, but don't add to files_changed
+                    # since there's nothing to index.add()
+                    files_changed.append(None)  # Placeholder to trigger commit
+                else:
+                    rel_path = self.path_mapping.get(op.file_path, op.file_path)
+                    files_changed.append(rel_path)
 
         # Generate entry ID for tracking
         entry_id = self._get_entry_id(entry)
@@ -1339,10 +1584,14 @@ class GitRepoBuilder:
         # Create commit (may be empty if no file changes)
         if files_changed:
             for rel_path in files_changed:
+                if rel_path is None:
+                    # DELETE operation - index already updated
+                    continue
                 try:
                     self.repo.index.add([rel_path])
-                except (GitCommandError, FileNotFoundError, OSError):
+                except (GitCommandError, FileNotFoundError, OSError, ValueError):
                     # File may not exist (deleted, renamed, etc.)
+                    # ValueError for absolute paths outside repo
                     pass
             try:
                 self._commit_with_date(commit_msg, entry.timestamp)

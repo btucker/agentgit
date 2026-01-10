@@ -9,9 +9,11 @@ from typing import Any
 
 from agentgit.core import (
     AssistantContext,
+    ConversationRound,
     FileOperation,
     OperationType,
     Prompt,
+    Scene,
     Transcript,
     TranscriptEntry,
 )
@@ -42,6 +44,26 @@ class CodexPlugin:
             "name": "codex",
             "description": "OpenAI Codex CLI JSONL transcripts",
         }
+
+    @hookimpl
+    def agentgit_get_session_id_from_path(self, path: Path) -> str | None:
+        """Extract session ID (UUID) from Codex filename.
+
+        Codex filenames follow the pattern:
+        rollout-YYYY-MM-DDTHH-MM-SS-UUID.jsonl
+
+        Returns the UUID portion if present.
+        """
+        filename = path.stem
+        # Look for UUID pattern at end of filename
+        uuid_match = re.search(
+            r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$',
+            filename,
+            re.IGNORECASE
+        )
+        if uuid_match:
+            return uuid_match.group(1)
+        return None
 
     @hookimpl
     def agentgit_detect_format(self, path: Path) -> str | None:
@@ -121,8 +143,132 @@ class CodexPlugin:
                     continue
 
                 event_type = obj.get("type", "")
+                timestamp = obj.get("timestamp", "")
 
-                # Extract session_id from thread.started
+                # Handle new Codex format: session_meta
+                if event_type == "session_meta":
+                    payload = obj.get("payload", {})
+                    session_id = payload.get("id")
+                    session_cwd = payload.get("cwd")
+                    entry = TranscriptEntry(
+                        entry_type="session_meta",
+                        timestamp=timestamp,
+                        message=payload,
+                        raw_entry=obj,
+                    )
+                    entries.append(entry)
+                    continue
+
+                # Handle new Codex format: response_item (wraps messages, function_calls, etc.)
+                if event_type == "response_item":
+                    payload = obj.get("payload", {})
+                    payload_type = payload.get("type", "")
+
+                    # User message inside response_item
+                    if payload_type == "message" and payload.get("role") == "user":
+                        content = payload.get("content", [])
+                        text, cwd = self._extract_user_text_and_cwd(content)
+
+                        if cwd and not session_cwd:
+                            session_cwd = cwd
+
+                        entry = TranscriptEntry(
+                            entry_type="user",
+                            timestamp=timestamp,
+                            message={"content": content},
+                            raw_entry=obj,
+                        )
+                        entries.append(entry)
+
+                        if text:
+                            prompts.append(
+                                Prompt(
+                                    text=text,
+                                    timestamp=timestamp,
+                                    raw_entry=obj,
+                                )
+                            )
+                        continue
+
+                    # Assistant message inside response_item
+                    if payload_type == "message" and payload.get("role") == "assistant":
+                        entry = TranscriptEntry(
+                            entry_type="assistant",
+                            timestamp=timestamp,
+                            message=payload,
+                            raw_entry=obj,
+                        )
+                        entries.append(entry)
+                        continue
+
+                    # Function call inside response_item
+                    if payload_type == "function_call":
+                        entry = TranscriptEntry(
+                            entry_type="function_call",
+                            timestamp=timestamp,
+                            message=payload,
+                            raw_entry=obj,
+                        )
+                        entries.append(entry)
+                        continue
+
+                    # Function call output inside response_item
+                    if payload_type == "function_call_output":
+                        entry = TranscriptEntry(
+                            entry_type="function_call_output",
+                            timestamp=timestamp,
+                            message=payload,
+                            raw_entry=obj,
+                        )
+                        entries.append(entry)
+                        continue
+
+                    # Reasoning inside response_item
+                    if payload_type == "reasoning":
+                        entry = TranscriptEntry(
+                            entry_type="reasoning",
+                            timestamp=timestamp,
+                            message=payload,
+                            raw_entry=obj,
+                        )
+                        entries.append(entry)
+                        continue
+
+                    # Generic response_item - store with payload type
+                    entry = TranscriptEntry(
+                        entry_type=f"response_{payload_type}" if payload_type else "response_item",
+                        timestamp=timestamp,
+                        message=payload,
+                        raw_entry=obj,
+                    )
+                    entries.append(entry)
+                    continue
+
+                # Handle new Codex format: event_msg
+                if event_type == "event_msg":
+                    payload = obj.get("payload", {})
+                    entry = TranscriptEntry(
+                        entry_type="event_msg",
+                        timestamp=timestamp,
+                        message=payload,
+                        raw_entry=obj,
+                    )
+                    entries.append(entry)
+                    continue
+
+                # Handle new Codex format: turn_context
+                if event_type == "turn_context":
+                    payload = obj.get("payload", {})
+                    entry = TranscriptEntry(
+                        entry_type="turn_context",
+                        timestamp=timestamp,
+                        message=payload,
+                        raw_entry=obj,
+                    )
+                    entries.append(entry)
+                    continue
+
+                # Extract session_id from thread.started (old format)
                 if event_type == "thread.started":
                     session_id = obj.get("thread_id")
                     entry = TranscriptEntry(
@@ -247,6 +393,102 @@ class CodexPlugin:
                 operations.extend(ops)
 
         return operations
+
+    @hookimpl
+    def agentgit_build_conversation_rounds(
+        self, transcript: Transcript
+    ) -> list[ConversationRound]:
+        """Build conversation rounds grouping ALL entries by user prompt."""
+        if transcript.source_format != FORMAT_CODEX_JSONL:
+            return []
+
+        rounds: list[ConversationRound] = []
+        current_prompt: Prompt | None = None
+        current_entries: list[TranscriptEntry] = []
+        sequence = 0
+
+        for entry in transcript.entries:
+            # New user prompt starts a new round
+            if entry.entry_type == "user":
+                # Extract text from the entry
+                text = self._extract_text_from_entry(entry)
+
+                # Only start a new round if there's actual user text
+                if text:
+                    # Save previous round if it exists
+                    if current_prompt is not None and current_entries:
+                        rounds.append(ConversationRound(
+                            prompt=current_prompt,
+                            entries=current_entries,
+                            sequence=sequence
+                        ))
+
+                    # Start new round
+                    sequence += 1
+
+                    # Find or create the Prompt object for this entry
+                    current_prompt = None
+                    for p in transcript.prompts:
+                        if p.timestamp == entry.timestamp:
+                            current_prompt = p
+                            break
+
+                    if current_prompt is None:
+                        # Create Prompt if not found in transcript.prompts
+                        current_prompt = Prompt(
+                            text=text,
+                            timestamp=entry.timestamp,
+                            raw_entry=entry.raw_entry
+                        )
+
+                    # Initialize with this user entry
+                    current_entries = [entry]
+                else:
+                    # No text - add to current round if we have one
+                    if current_prompt is not None:
+                        current_entries.append(entry)
+            else:
+                # Add all other entries to current round
+                if current_prompt is not None:
+                    current_entries.append(entry)
+
+        # Don't forget the last round
+        if current_prompt is not None and current_entries:
+            rounds.append(ConversationRound(
+                prompt=current_prompt,
+                entries=current_entries,
+                sequence=sequence
+            ))
+
+        return rounds
+
+    def _extract_text_from_entry(self, entry: TranscriptEntry) -> str:
+        """Extract plain text from a user entry."""
+        content = entry.message.get("content", [])
+        if isinstance(content, str):
+            return content
+
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict):
+                # Handle input_text type (Codex format)
+                if item.get("type") == "input_text":
+                    text = item.get("text", "")
+                    # Skip environment context and instructions
+                    if text.startswith("<environment_context>"):
+                        continue
+                    if text.startswith("# AGENTS.md"):
+                        continue
+                    if text.startswith("<INSTRUCTIONS>"):
+                        continue
+                    text_parts.append(text)
+                # Handle text type
+                elif item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+            elif isinstance(item, str):
+                text_parts.append(item)
+
+        return "\n".join(text_parts).strip()
 
     def _extract_from_function_call(
         self, entry: TranscriptEntry
@@ -690,3 +932,222 @@ class CodexPlugin:
         # Sort by modification time, most recent first
         transcripts.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return transcripts
+
+    @hookimpl
+    def agentgit_build_scenes(self, transcript: Transcript) -> list[Scene] | None:
+        """Build scenes from Codex transcript using update_plan boundaries.
+
+        Codex uses functions.update_plan to track task progress with statuses:
+        - pending: Task not yet started
+        - in_progress: Currently working on task
+        - completed: Task finished
+
+        When no update_plan calls exist, falls back to grouping by turn boundaries.
+
+        Returns None (not []) for non-Codex formats so other plugins can handle them.
+        """
+        if transcript.source_format != FORMAT_CODEX_JSONL:
+            return None
+
+        # Try to find update_plan calls for grouping
+        plan_events = self._find_update_plan_events(transcript)
+
+        if plan_events:
+            return self._group_by_plan_steps(transcript, plan_events)
+        else:
+            # Fallback: group by turn boundaries
+            return self._group_by_turns(transcript)
+
+    def _find_update_plan_events(
+        self, transcript: Transcript
+    ) -> list[dict[str, Any]]:
+        """Find update_plan function calls in the transcript.
+
+        Returns list of dicts with:
+        - entry: The TranscriptEntry
+        - step_index: Index of the step being updated
+        - step_text: Text description of the step
+        - status: New status (pending, in_progress, completed)
+        - timestamp: When the update happened
+        """
+        events = []
+
+        for entry in transcript.entries:
+            if entry.entry_type != "function_call":
+                continue
+
+            raw = entry.raw_entry
+            name = raw.get("name", "")
+
+            # Look for update_plan function calls
+            if name != "update_plan":
+                continue
+
+            try:
+                arguments = json.loads(raw.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                continue
+
+            # Extract the step being updated
+            # update_plan typically has: step_index, status, (optionally) explanation
+            step_index = arguments.get("step_index", -1)
+            status = arguments.get("status", "")
+            explanation = arguments.get("explanation", "")
+
+            # Get the step text from the plan if available
+            step_text = arguments.get("step_text", f"Step {step_index}")
+
+            if status in ("pending", "in_progress", "completed"):
+                events.append({
+                    "entry": entry,
+                    "step_index": step_index,
+                    "step_text": step_text,
+                    "status": status,
+                    "timestamp": entry.timestamp,
+                    "explanation": explanation,
+                })
+
+        return events
+
+    def _group_by_plan_steps(
+        self,
+        transcript: Transcript,
+        plan_events: list[dict[str, Any]],
+    ) -> list[Scene]:
+        """Group operations into scenes using update_plan step boundaries.
+
+        Each step that transitions to in_progress → completed becomes a scene.
+        """
+        scenes = []
+        current_scene: Scene | None = None
+        current_step_index: int | None = None
+
+        # Build a map of operations by timestamp for quick lookup
+        ops_by_timestamp: dict[str, list[FileOperation]] = {}
+        for op in transcript.operations:
+            if op.timestamp not in ops_by_timestamp:
+                ops_by_timestamp[op.timestamp] = []
+            ops_by_timestamp[op.timestamp].append(op)
+
+        # Track which operations have been assigned to scenes
+        assigned_ops: set[str] = set()
+
+        for event in plan_events:
+            status = event["status"]
+            step_index = event["step_index"]
+            step_text = event["step_text"]
+            timestamp = event["timestamp"]
+            explanation = event.get("explanation", "")
+
+            if status == "in_progress":
+                # Start a new scene
+                if current_scene is not None:
+                    scenes.append(current_scene)
+
+                current_scene = Scene(
+                    plan_step=step_text,
+                    timestamp=timestamp,
+                    context=explanation,
+                    prompt=self._find_prompt_for_timestamp(transcript, timestamp),
+                )
+                current_step_index = step_index
+
+            elif status == "completed" and current_scene is not None:
+                # Complete the current scene
+                # Find all operations between in_progress and completed timestamps
+                for entry in transcript.entries:
+                    if entry.timestamp < current_scene.timestamp:
+                        continue
+                    if entry.timestamp > timestamp:
+                        break
+
+                    # Check if this entry has operations
+                    if entry.timestamp in ops_by_timestamp:
+                        for op in ops_by_timestamp[entry.timestamp]:
+                            op_id = op.tool_id or f"ts:{op.timestamp}"
+                            if op_id not in assigned_ops:
+                                current_scene.operations.append(op)
+                                current_scene.tool_ids.append(op.tool_id)
+                                assigned_ops.add(op_id)
+
+                scenes.append(current_scene)
+                current_scene = None
+                current_step_index = None
+
+        # Don't forget the last scene if it wasn't completed
+        if current_scene is not None and current_scene.operations:
+            scenes.append(current_scene)
+
+        # Set sequence numbers
+        for i, scene in enumerate(scenes, start=1):
+            scene.sequence = i
+
+        return scenes
+
+    def _group_by_turns(self, transcript: Transcript) -> list[Scene]:
+        """Fallback: group operations by turn boundaries.
+
+        Each turn.completed creates a scene containing all operations
+        from that turn.
+        """
+        scenes = []
+        current_scene: Scene | None = None
+        current_prompt: Prompt | None = None
+
+        # Track which operations have been assigned
+        assigned_ops: set[str] = set()
+
+        for entry in transcript.entries:
+            # Track the current prompt
+            if entry.entry_type == "user":
+                for prompt in transcript.prompts:
+                    if prompt.timestamp == entry.timestamp:
+                        current_prompt = prompt
+                        break
+
+            # Turn boundaries
+            if entry.entry_type == "turn.started":
+                current_scene = Scene(
+                    timestamp=entry.timestamp,
+                    prompt=current_prompt,
+                )
+
+            elif entry.entry_type == "turn.completed" and current_scene is not None:
+                # Collect any operations from this turn
+                for op in transcript.operations:
+                    op_id = op.tool_id or f"ts:{op.timestamp}"
+                    if op_id in assigned_ops:
+                        continue
+
+                    # Check if operation falls within this turn
+                    if current_scene.timestamp <= op.timestamp <= entry.timestamp:
+                        current_scene.operations.append(op)
+                        current_scene.tool_ids.append(op.tool_id)
+                        assigned_ops.add(op_id)
+
+                # Only add scene if it has operations
+                if current_scene.operations:
+                    # Generate a summary from context if available
+                    if not current_scene.summary:
+                        current_scene.summary = f"Update {len(current_scene.operations)} files"
+                    scenes.append(current_scene)
+
+                current_scene = None
+
+        # Set sequence numbers
+        for i, scene in enumerate(scenes, start=1):
+            scene.sequence = i
+
+        return scenes
+
+    def _find_prompt_for_timestamp(
+        self, transcript: Transcript, timestamp: str
+    ) -> Prompt | None:
+        """Find the most recent prompt before the given timestamp."""
+        result = None
+        for prompt in transcript.prompts:
+            if prompt.timestamp <= timestamp:
+                result = prompt
+            else:
+                break
+        return result

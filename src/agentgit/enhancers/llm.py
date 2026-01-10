@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from agentgit.core import OperationType
 from agentgit.plugins import hookimpl
@@ -172,28 +172,35 @@ def _build_operation_context(operation: "FileOperation", max_length: int = 2000)
 
 
 def _build_turn_context(turn: "AssistantTurn", max_length: int = 3000) -> str:
-    """Build context string for an assistant turn."""
+    """Build context string for a scene (assistant turn).
+
+    Prioritizes the assistant's reasoning/thinking to help understand WHY
+    the changes were made, not just what changed.
+    """
     parts = []
 
-    # List files changed
-    if turn.files_created:
-        parts.append(f"Created: {', '.join(turn.files_created)}")
-    if turn.files_modified:
-        parts.append(f"Modified: {', '.join(turn.files_modified)}")
-    if turn.files_deleted:
-        parts.append(f"Deleted: {', '.join(turn.files_deleted)}")
-
-    # Include assistant reasoning if available
+    # FIRST: Include assistant reasoning - this is the key to understanding WHY
+    # Give it more space since it contains the motivation
     if turn.context and turn.context.summary:
-        reasoning = _truncate_text(turn.context.summary, 1000)
-        parts.append(f"\nAssistant reasoning:\n{reasoning}")
+        reasoning = _truncate_text(turn.context.summary, 1500)
+        parts.append(f"Assistant's reasoning (WHY):\n{reasoning}")
 
-    # Include details of operations
-    for op in turn.operations[:5]:  # Limit to first 5 operations
-        parts.append(f"\n{_build_operation_context(op, 400)}")
+    # Then list files changed (the WHAT)
+    if turn.files_created:
+        parts.append(f"\nFiles created: {', '.join(turn.files_created)}")
+    if turn.files_modified:
+        parts.append(f"Files modified: {', '.join(turn.files_modified)}")
+    if turn.files_deleted:
+        parts.append(f"Files deleted: {', '.join(turn.files_deleted)}")
 
-    if len(turn.operations) > 5:
-        parts.append(f"\n... and {len(turn.operations) - 5} more operations")
+    # Include operation details only if we need more context
+    remaining_length = max_length - len("\n".join(parts))
+    if remaining_length > 500:
+        for op in turn.operations[:3]:  # Limit to first 3 operations
+            parts.append(f"\n{_build_operation_context(op, 300)}")
+
+        if len(turn.operations) > 3:
+            parts.append(f"\n... and {len(turn.operations) - 3} more operations")
 
     return _truncate_text("\n".join(parts), max_length)
 
@@ -217,9 +224,14 @@ def _get_turn_key(turn: "AssistantTurn") -> str:
     return f"turn:{turn.timestamp}"
 
 
+# Type alias for progress callbacks
+ProgressCallback = Callable[[int, int, int], None] | None
+
+
 def batch_enhance_prompt_responses(
     prompt_responses: list["PromptResponse"],
     model: str = DEFAULT_MODEL,
+    progress_callback: ProgressCallback = None,
 ) -> dict[str, str]:
     """Batch process all prompt responses to generate commit messages efficiently.
 
@@ -233,6 +245,8 @@ def batch_enhance_prompt_responses(
     Args:
         prompt_responses: List of PromptResponse objects to process.
         model: The model ID to use.
+        progress_callback: Optional callback(batch_num, total_batches, items_in_batch)
+            called after each batch is processed.
 
     Returns:
         Dictionary mapping cache keys to generated commit messages.
@@ -305,6 +319,10 @@ def batch_enhance_prompt_responses(
     # Calculate total chunks for progress
     total_chunks = (len(items) + MAX_BATCH_SIZE - 1) // MAX_BATCH_SIZE
 
+    # Signal start of processing so CLI can set up progress bar
+    if progress_callback:
+        progress_callback(0, total_chunks, 0)
+
     # Process items in chunks to avoid context limits
     for chunk_num, chunk_start in enumerate(range(0, len(items), MAX_BATCH_SIZE), 1):
         chunk_end = min(chunk_start + MAX_BATCH_SIZE, len(items))
@@ -312,21 +330,26 @@ def batch_enhance_prompt_responses(
         chunk_keys = item_keys[chunk_start:chunk_end]
         chunk_metadata = item_metadata[chunk_start:chunk_end]
 
-        # Progress indicator
-        print(f"  Processing batch {chunk_num}/{total_chunks} ({len(chunk_items)} items)...", flush=True)
-
         # Build the batch prompt for this chunk
-        batch_prompt = """Generate commit message content for these items.
+        batch_prompt = """Generate scene summaries for these items.
 
 For "merge" items: The user prompt is referential (like "yes" or "do it").
 Summarize what they were agreeing to in ~30-50 chars.
 
-For "turn" items: Summarize what the assistant did in ~50-70 chars.
+For "scene" items: Explain WHY this change was made, not just what changed.
+Focus on the reasoning, goal, or problem being solved (~50-70 chars).
 
-Examples:
-- merge prompt "yes" with JWT context → "Add JWT authentication"
-- merge prompt "go ahead" with refactor context → "Refactor database layer"
-- turn with auth files → "Implement login and session handling"
+Good examples (focus on WHY - the motivation/problem):
+- "Sessions had no branch → only file operations committed"
+- "Web sessions missing sessionId → extract from filename"
+- "Blame scanned wrong branch → use --all for orphan branches"
+- "Referential prompts unclear → add context from assistant"
+- "Index rebuilt on each run → use git native operations"
+
+Bad examples (just WHAT was done - missing motivation):
+- "Fix web session ID" ← why was it broken?
+- "Update blame.py" ← what problem does this solve?
+- "Add --all flag" ← why was this needed?
 
 Items:
 """
@@ -335,11 +358,11 @@ Items:
             if item["type"] == "merge":
                 batch_prompt += f'\n[{idx}] (merge) User said: "{item["prompt"]}"\nContext: {item["context"]}\n'
             else:
-                batch_prompt += f"\n[{idx}] (turn)\n{item['context']}\n"
+                batch_prompt += f"\n[{idx}] (scene)\n{item['context']}\n"
 
         batch_prompt += """
 Respond with a JSON object mapping item IDs to the summary text:
-{"1": "Add JWT authentication", "2": "Implement login flow", ...}
+{"1": "User needed auth → add JWT tokens", "2": "Slow queries → add indexes", ...}
 
 ONLY respond with the JSON object, nothing else."""
 
@@ -350,7 +373,7 @@ ONLY respond with the JSON object, nothing else."""
         for idx in range(1, len(chunk_items) + 1):
             properties[str(idx)] = {
                 "type": "string",
-                "description": f"Commit message summary for item {idx}"
+                "description": f"Scene summary explaining WHY for item {idx}"
             }
             required.append(str(idx))
 
@@ -394,15 +417,20 @@ ONLY respond with the JSON object, nothing else."""
                             _message_cache[key] = _clean_message(summary)
 
                 # Success - processed this chunk
-                print(f"  ✓ Batch {chunk_num}/{total_chunks} complete ({len(messages)} messages)", flush=True)
+                if progress_callback:
+                    progress_callback(chunk_num, total_chunks, len(chunk_items))
 
             except json.JSONDecodeError as e:
                 logger.warning("Failed to parse batch response as JSON: %s", e)
                 logger.debug("Response was: %s", response[:500])
-                print(f"  ✗ Batch {chunk_num}/{total_chunks} failed to parse", flush=True)
+                # Still report progress even on failure
+                if progress_callback:
+                    progress_callback(chunk_num, total_chunks, len(chunk_items))
         else:
             logger.warning("LLM returned no response for chunk %d-%d", chunk_start, chunk_end)
-            print(f"  ✗ Batch {chunk_num}/{total_chunks} got no response", flush=True)
+            # Still report progress even on no response
+            if progress_callback:
+                progress_callback(chunk_num, total_chunks, len(chunk_items))
 
     logger.info("Batch enhancement complete. Total cache entries: %d", len(_message_cache))
     return _message_cache
@@ -457,18 +485,25 @@ class LLMEnhancerPlugin:
 
         context = "\n".join(context_parts)
 
-        ai_prompt = f"""Generate a concise git commit message subject line (max 72 characters) for this set of file changes.
+        ai_prompt = f"""Generate a scene summary (max 72 chars) explaining WHY this change was made.
 
-Examples of good commit messages:
-- "Implement OAuth2 login flow"
-- "Fix form validation across signup pages"
-- "Refactor database queries to use connection pooling"
-- "Configure ESLint rules for TypeScript"
+Focus on the REASONING behind the change, not just what changed.
+Good format: "problem/need → solution" or "goal: approach"
+
+Good examples (WHY - include the motivation/problem):
+- "Sessions had no branch → only file operations committed"
+- "Web sessions missing sessionId → extract from filename"
+- "Blame scanned wrong branch → use --all for orphan branches"
+- "Tool output hard to read → add rich markdown formatting"
+
+Bad examples (just WHAT - missing motivation):
+- "Fix session ID" ← why was it broken?
+- "Update cli.py" ← what problem does this solve?
 
 Context:
 {context}
 
-Respond with ONLY the commit message subject line, nothing else."""
+Respond with ONLY the scene summary, nothing else."""
 
         message = _run_llm(ai_prompt, model)
         if message:
@@ -689,6 +724,7 @@ def batch_generate_session_names(
     sessions: list[tuple[str, list["PromptResponse"]]],
     model: str = DEFAULT_MODEL,
     batch_size: int = 20,
+    progress_callback: ProgressCallback = None,
 ) -> dict[str, str]:
     """Batch generate names for multiple sessions in chunks.
 
@@ -699,6 +735,8 @@ def batch_generate_session_names(
         sessions: List of (session_id, prompt_responses) tuples.
         model: The model ID to use.
         batch_size: Number of sessions to process per LLM call (default 20).
+        progress_callback: Optional callback(batch_num, total_batches, items_in_batch)
+            called after each batch is processed.
 
     Returns:
         Dictionary mapping session_id to generated name.
@@ -709,9 +747,14 @@ def batch_generate_session_names(
         return {}
 
     all_results = {}
+    total_batches = (len(sessions) + batch_size - 1) // batch_size
+
+    # Signal start of processing so CLI can set up progress bar
+    if progress_callback:
+        progress_callback(0, total_batches, 0)
 
     # Process in chunks
-    for chunk_start in range(0, len(sessions), batch_size):
+    for batch_num, chunk_start in enumerate(range(0, len(sessions), batch_size), 1):
         chunk = sessions[chunk_start:chunk_start + batch_size]
         logger.info("Processing session name batch %d-%d of %d",
                    chunk_start + 1, min(chunk_start + batch_size, len(sessions)), len(sessions))
@@ -812,6 +855,10 @@ Example: ["add-auth", "fix-bugs", "implement-feature"]"""
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning("Failed to parse session names from LLM response: %s", e)
             logger.debug("LLM response was: %s", result)
+
+        # Report progress after each batch
+        if progress_callback:
+            progress_callback(batch_num, total_batches, len(chunk))
 
     logger.info("Total batch generated %d session names", len(all_results))
     return all_results

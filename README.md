@@ -6,7 +6,17 @@ After a session with Claude Code or Codex, you can diff to see *what* changed—
 
 agentgit transforms raw agent transcripts into a **structured transcript**—a separate git history that preserves the full story without touching your codebase.
 
-**Each coding session becomes its own branch.** Each user prompt becomes a merge commit, with the agent's individual turns (thinking + changes) as child commits:
+## How agentgit structures history
+
+**User prompts become merge commits** — each prompt groups all the work done to address it.
+
+**Scenes become feature commits** — each logical unit of work becomes one commit. What constitutes a "scene" depends on the agent:
+
+- **Claude Code**: Uses `TodoWrite` boundaries when available. Each todo item marked in_progress → completed becomes a commit.
+- **Codex**: Uses `functions.update_plan` step boundaries. Each plan step becomes a commit.
+- **Fallback**: If no planning tool is used, groups by assistant turns.
+
+**Context flows forward** — if the agent says "I'll refactor the auth module..." in one message and then edits files in the next, both messages' context appears in the commit.
 
 ```
 Your agentgit repo:
@@ -16,49 +26,56 @@ Your agentgit repo:
    └─── session/claude-code/add-user-auth
    │     │
    │     ├─ [MERGE] Prompt: "Add user authentication"
-   │     │   ├─ Create auth.py with JWT utilities
-   │     │   │  Context: I'll implement JWT token generation...
-   │     │   ├─ Add authentication middleware
-   │     │   │  Context: Creating middleware to verify tokens...
-   │     │   └─ Update login component with auth flow
-   │     │      Context: Integrating the auth into the UI...
+   │     │   │
+   │     │   ├─ ✓ Implement JWT authentication
+   │     │   │    (creates auth.py, middleware.py)
+   │     │   │    Thinking: I'll add JWT-based auth with protected routes...
+   │     │   │
+   │     │   └─ ✓ Add login form with validation
+   │     │        (modifies login.tsx, adds validation.ts)
+   │     │        Thinking: Adding client-side validation before API calls...
    │     │
    │     └─ [MERGE] Prompt: "Add password reset"
-   │         ├─ Create reset token generator
-   │         └─ Add reset email template
-   │
-   └─── session/claude-code/fix-database-bugs
-   │     │
-   │     └─ [MERGE] Prompt: "Fix connection timeout"
-   │         ├─ Debug connection pool settings
-   │         │  Context: Found the pool size was too small...
-   │         └─ Add retry logic with exponential backoff
-   │            Context: Implementing retries to handle transient failures...
+   │         │
+   │         └─ ✓ Implement password reset flow
+   │              (creates reset.py, email_templates/reset.html)
    │
    └─── session/codex/refactor-api
          │
          └─ [MERGE] Prompt: "Refactor payment endpoints"
-             ├─ Extract payment handlers to separate module
-             ├─ Consolidate error handling
-             └─ Add request validation middleware
+             │
+             ├─ ✓ Extract payment handlers to separate module
+             └─ ✓ Add request validation middleware
 ```
 
 Each commit preserves the agent's reasoning and the full context:
 
 ```
 $ agentgit log session/claude-code/add-user-auth --oneline
-a1b2c3d Update login component
-x9y8z7w Add middleware for protected routes
-f3e4d5c Implement JWT authentication
+a1b2c3d (HEAD) Prompt: "Add user authentication"
+f3e4d5c ✓ Add login form with validation
+x9y8z7w ✓ Implement JWT authentication
 
-$ agentgit show a1b2c3d
-commit a1b2c3d
-Prompt: "Add user authentication"
+$ agentgit show x9y8z7w
+commit x9y8z7w
+✓ Implement JWT authentication
 
-    Implement auth module (auth.py, middleware.py)
+I'll add JWT-based authentication with middleware to protect the API routes.
 
-    Context: I'll add JWT-based authentication with
-    middleware to protect the API routes...
+## Thinking
+The user wants authentication. I should:
+1. Create a JWT utilities module for token generation/validation
+2. Add middleware to protect routes
+
+Created: auth.py, middleware.py
+Modified: login.tsx
+
+User Prompt: "Add user authentication"
+---
+Prompt-Id: a1b2c3d4
+Todo-Item: Implement JWT authentication
+Tool-Id: toolu_01ABC, toolu_01DEF
+Timestamp: 2025-01-01T10:30:00Z
 ```
 
 **Use `agentgit blame` to see which session and why:**
@@ -203,34 +220,40 @@ This approach uses git's built-in line-tracking capabilities rather than custom 
 - Claude Code: `~/.claude/projects/`
 - Codex: `~/.codex/sessions/`
 
-**Git structure** (prompts as merge commits):
+**Git structure** (prompts as merge commits, scenes as feature commits):
 
 ```
 ○ Merge: "Add user authentication" [prompt #a1b2c3d4]
 |\
-| ○ Implement auth module (auth.py, middleware.py)
-| ○ Add login templates (login.html, styles.css)
+| ○ ✓ Add login form with validation
+| ○ ✓ Implement JWT authentication
 |/
 ○ Merge: "Fix database connection bug" [prompt #x9y8z7w6]
 |\
-| ○ Fix connection pooling (db.py)
+| ○ ✓ Fix connection pooling with retry logic
 |/
 ○ Initial commit
 ```
 
-**Transcript entries include full context:**
+**Scene commits include full context:**
 
 ```
-Refactor auth to use dependency injection
+✓ Implement JWT authentication
 
-Modified: auth.py, middleware.py
-Created: injection.py
+I'll add JWT-based authentication with middleware to protect the API routes.
 
-Context:
-I'll refactor the auth module to use dependency injection for better testability.
+## Thinking
+The user wants authentication. I should create a JWT utilities module
+for token generation/validation, then add middleware to protect routes.
 
-Prompt-Id: a1b2c3d4e5f67890abcdef1234567890
-Tool-Id: toolu_abc123
+Created: auth.py, middleware.py
+Modified: login.tsx
+
+User Prompt: "Add user authentication"
+---
+Prompt-Id: a1b2c3d4
+Todo-Item: Implement JWT authentication
+Tool-Id: toolu_01ABC, toolu_01DEF
 Timestamp: 2025-01-01T10:30:00Z
 ```
 

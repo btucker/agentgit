@@ -12,7 +12,7 @@ import pluggy
 from agentgit.settings import CONFIG_PATH, get_config, save_config
 
 if TYPE_CHECKING:
-    from agentgit.core import AssistantTurn, ConversationRound, FileOperation, Prompt, PromptResponse, Transcript
+    from agentgit.core import AssistantTurn, ConversationRound, FileOperation, Prompt, PromptResponse, Scene, Transcript
 
 hookspec = pluggy.HookspecMarker("agentgit")
 hookimpl = pluggy.HookimplMarker("agentgit")
@@ -40,6 +40,23 @@ class AgentGitSpec:
         Returns:
             Format identifier string (e.g., "claude_code_jsonl") if detected,
             None if this plugin cannot handle the file.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_get_session_id_from_path(self, path: Path) -> str | None:
+        """Extract session ID from a transcript file path.
+
+        Plugins can implement this to extract session IDs from filenames
+        that differ from the standard format. For example, Codex files are
+        named like 'rollout-2026-01-06T19-18-12-UUID.jsonl' where the
+        session ID is the UUID at the end.
+
+        Args:
+            path: Path to the transcript file.
+
+        Returns:
+            Session ID string if extractable from the path, None otherwise.
+            If None, the filename stem will be used as the session ID.
         """
 
     @hookspec(firstresult=True)
@@ -120,6 +137,29 @@ class AgentGitSpec:
 
         Returns:
             List of ConversationRound objects with grouped entries.
+        """
+
+    @hookspec(firstresult=True)
+    def agentgit_build_scenes(self, transcript: Transcript) -> list[Scene]:
+        """Build scenes (logical work units) from a transcript.
+
+        Scenes are the preferred grouping unit for agentgit. Each scene becomes
+        one commit, representing a coherent piece of work. Plugin-specific signals
+        determine scene boundaries:
+
+        - Claude Code: TodoWrite boundaries (in_progress → completed), Task tool calls
+        - Codex: functions.update_plan step boundaries
+        - Fallback: One scene per assistant turn with file operations
+
+        The "scene" metaphor reflects that agentgit tells the story of how code
+        was written - each scene has a purpose (summary), characters (files),
+        and dialogue (context/thinking).
+
+        Args:
+            transcript: The parsed transcript with operations and entries.
+
+        Returns:
+            List of Scene objects, each becoming one commit.
         """
 
     @hookspec

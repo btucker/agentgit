@@ -15,6 +15,7 @@ from agentgit.core import (
     OperationType,
     Prompt,
     PromptResponse,
+    Scene,
     Transcript,
     TranscriptEntry,
 )
@@ -161,7 +162,8 @@ class ClaudeCodePlugin:
 
                 if entry_type == "user" and not entry.is_meta:
                     text = self._extract_text_from_content(message.get("content", ""))
-                    if text:
+                    # Skip continuation prompts (system-generated session resumption messages)
+                    if text and not self._is_continuation_prompt(text):
                         prompts.append(
                             Prompt(
                                 text=text,
@@ -452,6 +454,27 @@ class ClaudeCodePlugin:
 
         return False
 
+    def _is_continuation_prompt(self, text: str) -> bool:
+        """Check if a prompt is a system-generated session continuation message.
+
+        These prompts are injected when Claude Code continues from a previous
+        conversation that ran out of context. They should not be treated as
+        regular user prompts.
+
+        Returns True if the prompt is a continuation message.
+        """
+        continuation_markers = [
+            "This session is being continued from a previous conversation",
+            "conversation that ran out of context",
+            "The conversation is summarized below",
+        ]
+
+        for marker in continuation_markers:
+            if marker in text:
+                return True
+
+        return False
+
     @hookimpl
     def agentgit_get_project_name(self, transcript_path: Path) -> str | None:
         """Get the project name from a Claude Code transcript.
@@ -704,6 +727,454 @@ class ClaudeCodePlugin:
             ))
 
         return rounds
+
+    @hookimpl
+    def agentgit_build_scenes(self, transcript: Transcript) -> list[Scene] | None:
+        """Build scenes using TodoWrite and Task tool boundaries.
+
+        Priority order for grouping:
+        1. TodoWrite boundaries (explicit task tracking)
+        2. Task tool calls (subagent work)
+        3. Fall back to assistant-turn grouping
+
+        Returns None (not []) for non-Claude Code formats so other plugins can handle them.
+        """
+        if transcript.source_format != FORMAT_CLAUDE_CODE_JSONL:
+            return None
+
+        # Build mapping of tool_id -> operation
+        tool_id_to_op: dict[str, FileOperation] = {}
+        for op in transcript.operations:
+            if op.tool_id:
+                tool_id_to_op[op.tool_id] = op
+
+        # Find TodoWrite and Task tool calls
+        todo_events = self._find_todo_events(transcript)
+        task_events = self._find_task_events(transcript)
+
+        if todo_events:
+            return self._group_by_todos(transcript, todo_events, tool_id_to_op)
+        elif task_events:
+            return self._group_by_tasks(transcript, task_events, tool_id_to_op)
+        else:
+            return self._group_by_turns(transcript, tool_id_to_op)
+
+    def _find_todo_events(self, transcript: Transcript) -> list[dict[str, Any]]:
+        """Find TodoWrite tool calls that signal task boundaries.
+
+        Returns list of events with:
+        - timestamp: when the TodoWrite was called
+        - action: 'start' or 'complete'
+        - todo_item: the todo text
+        - tool_id: the tool call id
+        """
+        events: list[dict[str, Any]] = []
+
+        for entry in transcript.entries:
+            if entry.entry_type != "assistant":
+                continue
+
+            content = entry.message.get("content", [])
+            if not isinstance(content, list):
+                continue
+
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+
+                if block.get("name") != "TodoWrite":
+                    continue
+
+                tool_input = block.get("input", {})
+                todos = tool_input.get("todos", [])
+
+                for todo in todos:
+                    status = todo.get("status")
+                    todo_text = todo.get("content", "")
+
+                    if status == "in_progress":
+                        events.append({
+                            "timestamp": entry.timestamp,
+                            "action": "start",
+                            "todo_item": todo_text,
+                            "tool_id": block.get("id", ""),
+                        })
+                    elif status == "completed":
+                        events.append({
+                            "timestamp": entry.timestamp,
+                            "action": "complete",
+                            "todo_item": todo_text,
+                            "tool_id": block.get("id", ""),
+                        })
+
+        return events
+
+    def _find_task_events(self, transcript: Transcript) -> list[dict[str, Any]]:
+        """Find Task tool calls that represent subagent work.
+
+        Returns list of events with:
+        - timestamp: when the Task was called
+        - description: the task description
+        - tool_id: the tool call id
+        """
+        events: list[dict[str, Any]] = []
+
+        for entry in transcript.entries:
+            if entry.entry_type != "assistant":
+                continue
+
+            content = entry.message.get("content", [])
+            if not isinstance(content, list):
+                continue
+
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+
+                if block.get("name") != "Task":
+                    continue
+
+                tool_input = block.get("input", {})
+                events.append({
+                    "timestamp": entry.timestamp,
+                    "description": tool_input.get("description", "Task"),
+                    "prompt": tool_input.get("prompt", ""),
+                    "tool_id": block.get("id", ""),
+                })
+
+        return events
+
+    def _group_by_todos(
+        self,
+        transcript: Transcript,
+        todo_events: list[dict[str, Any]],
+        tool_id_to_op: dict[str, FileOperation],
+    ) -> list[Scene]:
+        """Group operations by TodoWrite task boundaries."""
+        scenes: list[Scene] = []
+
+        # Track current state
+        current_todo: str | None = None
+        current_prompt: Prompt | None = None
+        current_ops: list[FileOperation] = []
+        current_context: list[str] = []
+        current_thinking: list[str] = []
+        current_tool_ids: list[str] = []
+        current_timestamp: str = ""
+        sequence = 0
+
+        # Create a timeline of all events (todo transitions + operations)
+        # This is simpler: iterate through entries and watch for todo changes
+        for entry in transcript.entries:
+            # Track current prompt (skip continuation prompts)
+            if entry.entry_type == "user" and not entry.is_meta:
+                text = self._extract_text_from_content(entry.message.get("content", ""))
+                if text and not self._is_continuation_prompt(text):
+                    for p in transcript.prompts:
+                        if p.timestamp == entry.timestamp:
+                            current_prompt = p
+                            break
+                    if current_prompt is None:
+                        current_prompt = Prompt(
+                            text=text, timestamp=entry.timestamp, raw_entry=entry.raw_entry
+                        )
+
+            if entry.entry_type != "assistant":
+                continue
+
+            content = entry.message.get("content", [])
+            if not isinstance(content, list):
+                continue
+
+            # Collect context from this entry
+            entry_context = ""
+            entry_thinking = ""
+            entry_ops: list[FileOperation] = []
+            entry_tool_ids: list[str] = []
+
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+
+                block_type = block.get("type")
+                if block_type == "text":
+                    entry_context = block.get("text", "")
+                elif block_type == "thinking":
+                    entry_thinking = block.get("thinking", "")
+                elif block_type == "tool_use":
+                    tool_name = block.get("name", "")
+                    tool_id = block.get("id", "")
+
+                    # Check for TodoWrite status changes
+                    if tool_name == "TodoWrite":
+                        tool_input = block.get("input", {})
+                        for todo in tool_input.get("todos", []):
+                            status = todo.get("status")
+                            todo_text = todo.get("content", "")
+
+                            if status == "in_progress" and todo_text != current_todo:
+                                # Save current scene if we have operations
+                                if current_ops and current_todo:
+                                    sequence += 1
+                                    scenes.append(Scene(
+                                        operations=current_ops,
+                                        prompt=current_prompt,
+                                        timestamp=current_timestamp,
+                                        summary="\n".join(current_context) if current_context else "",
+                                        context="\n".join(current_context) if current_context else "",
+                                        thinking="\n".join(current_thinking) if current_thinking else "",
+                                        todo_item=current_todo,
+                                        tool_ids=current_tool_ids,
+                                        sequence=sequence,
+                                    ))
+                                # Start new scene
+                                current_todo = todo_text
+                                current_ops = []
+                                current_context = []
+                                current_thinking = []
+                                current_tool_ids = []
+                                current_timestamp = entry.timestamp
+
+                            elif status == "completed" and todo_text == current_todo:
+                                # Complete current scene
+                                if current_ops or entry_ops:
+                                    current_ops.extend(entry_ops)
+                                    current_tool_ids.extend(entry_tool_ids)
+                                    sequence += 1
+                                    scenes.append(Scene(
+                                        operations=current_ops,
+                                        prompt=current_prompt,
+                                        timestamp=current_timestamp or entry.timestamp,
+                                        summary="\n".join(current_context) if current_context else "",
+                                        context="\n".join(current_context) if current_context else "",
+                                        thinking="\n".join(current_thinking) if current_thinking else "",
+                                        todo_item=current_todo,
+                                        tool_ids=current_tool_ids,
+                                        sequence=sequence,
+                                    ))
+                                    entry_ops = []
+                                    entry_tool_ids = []
+                                # Reset for next todo
+                                current_todo = None
+                                current_ops = []
+                                current_context = []
+                                current_thinking = []
+                                current_tool_ids = []
+                                current_timestamp = ""
+
+                    # Collect file operations
+                    elif tool_id in tool_id_to_op:
+                        entry_ops.append(tool_id_to_op[tool_id])
+                        entry_tool_ids.append(tool_id)
+
+            # Add entry data to current scene
+            if entry_context:
+                current_context.append(entry_context)
+            if entry_thinking:
+                current_thinking.append(entry_thinking)
+            current_ops.extend(entry_ops)
+            current_tool_ids.extend(entry_tool_ids)
+            if not current_timestamp and (entry_ops or current_todo):
+                current_timestamp = entry.timestamp
+
+        # Don't forget remaining operations
+        if current_ops:
+            sequence += 1
+            scenes.append(Scene(
+                operations=current_ops,
+                prompt=current_prompt,
+                timestamp=current_timestamp,
+                summary="\n".join(current_context) if current_context else "",
+                context="\n".join(current_context) if current_context else "",
+                thinking="\n".join(current_thinking) if current_thinking else "",
+                todo_item=current_todo,
+                tool_ids=current_tool_ids,
+                sequence=sequence,
+            ))
+
+        return scenes
+
+    def _group_by_tasks(
+        self,
+        transcript: Transcript,
+        task_events: list[dict[str, Any]],
+        tool_id_to_op: dict[str, FileOperation],
+    ) -> list[Scene]:
+        """Group operations by Task tool call boundaries."""
+        scenes: list[Scene] = []
+
+        # Track current state
+        current_task: str | None = None
+        current_prompt: Prompt | None = None
+        current_ops: list[FileOperation] = []
+        current_context: list[str] = []
+        current_thinking: list[str] = []
+        current_tool_ids: list[str] = []
+        current_timestamp: str = ""
+        sequence = 0
+
+        for entry in transcript.entries:
+            # Track current prompt (skip continuation prompts)
+            if entry.entry_type == "user" and not entry.is_meta:
+                text = self._extract_text_from_content(entry.message.get("content", ""))
+                if text and not self._is_continuation_prompt(text):
+                    for p in transcript.prompts:
+                        if p.timestamp == entry.timestamp:
+                            current_prompt = p
+                            break
+                    if current_prompt is None:
+                        current_prompt = Prompt(
+                            text=text, timestamp=entry.timestamp, raw_entry=entry.raw_entry
+                        )
+
+            if entry.entry_type != "assistant":
+                continue
+
+            content = entry.message.get("content", [])
+            if not isinstance(content, list):
+                continue
+
+            entry_context = ""
+            entry_thinking = ""
+            entry_ops: list[FileOperation] = []
+            entry_tool_ids: list[str] = []
+
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+
+                block_type = block.get("type")
+                if block_type == "text":
+                    entry_context = block.get("text", "")
+                elif block_type == "thinking":
+                    entry_thinking = block.get("thinking", "")
+                elif block_type == "tool_use":
+                    tool_name = block.get("name", "")
+                    tool_id = block.get("id", "")
+
+                    if tool_name == "Task":
+                        # Save current scene
+                        if current_ops:
+                            sequence += 1
+                            scenes.append(Scene(
+                                operations=current_ops,
+                                prompt=current_prompt,
+                                timestamp=current_timestamp,
+                                summary="\n".join(current_context) if current_context else "",
+                                context="\n".join(current_context) if current_context else "",
+                                thinking="\n".join(current_thinking) if current_thinking else "",
+                                task_description=current_task,
+                                tool_ids=current_tool_ids,
+                                sequence=sequence,
+                            ))
+
+                        # Start new scene for this Task
+                        tool_input = block.get("input", {})
+                        current_task = tool_input.get("description", "Task")
+                        current_ops = []
+                        current_context = []
+                        current_thinking = []
+                        current_tool_ids = [tool_id]
+                        current_timestamp = entry.timestamp
+
+                    elif tool_id in tool_id_to_op:
+                        entry_ops.append(tool_id_to_op[tool_id])
+                        entry_tool_ids.append(tool_id)
+
+            # Add entry data to current scene
+            if entry_context:
+                current_context.append(entry_context)
+            if entry_thinking:
+                current_thinking.append(entry_thinking)
+            current_ops.extend(entry_ops)
+            current_tool_ids.extend(entry_tool_ids)
+            if not current_timestamp and entry_ops:
+                current_timestamp = entry.timestamp
+
+        # Don't forget remaining operations
+        if current_ops:
+            sequence += 1
+            scenes.append(Scene(
+                operations=current_ops,
+                prompt=current_prompt,
+                timestamp=current_timestamp,
+                summary="\n".join(current_context) if current_context else "",
+                context="\n".join(current_context) if current_context else "",
+                thinking="\n".join(current_thinking) if current_thinking else "",
+                task_description=current_task,
+                tool_ids=current_tool_ids,
+                sequence=sequence,
+            ))
+
+        return scenes
+
+    def _group_by_turns(
+        self,
+        transcript: Transcript,
+        tool_id_to_op: dict[str, FileOperation],
+    ) -> list[Scene]:
+        """Fallback: group operations by assistant turn (one scene per turn with ops)."""
+        scenes: list[Scene] = []
+
+        current_prompt: Prompt | None = None
+        sequence = 0
+
+        for entry in transcript.entries:
+            # Track current prompt (skip continuation prompts)
+            if entry.entry_type == "user" and not entry.is_meta:
+                text = self._extract_text_from_content(entry.message.get("content", ""))
+                if text and not self._is_continuation_prompt(text):
+                    for p in transcript.prompts:
+                        if p.timestamp == entry.timestamp:
+                            current_prompt = p
+                            break
+                    if current_prompt is None:
+                        current_prompt = Prompt(
+                            text=text, timestamp=entry.timestamp, raw_entry=entry.raw_entry
+                        )
+
+            if entry.entry_type != "assistant":
+                continue
+
+            content = entry.message.get("content", [])
+            if not isinstance(content, list):
+                continue
+
+            entry_context = ""
+            entry_thinking = ""
+            entry_ops: list[FileOperation] = []
+            entry_tool_ids: list[str] = []
+
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+
+                block_type = block.get("type")
+                if block_type == "text":
+                    entry_context = block.get("text", "")
+                elif block_type == "thinking":
+                    entry_thinking = block.get("thinking", "")
+                elif block_type == "tool_use":
+                    tool_id = block.get("id", "")
+                    if tool_id in tool_id_to_op:
+                        entry_ops.append(tool_id_to_op[tool_id])
+                        entry_tool_ids.append(tool_id)
+
+            # Create scene if this entry has operations
+            if entry_ops:
+                sequence += 1
+                scenes.append(Scene(
+                    operations=entry_ops,
+                    prompt=current_prompt,
+                    timestamp=entry.timestamp,
+                    summary=entry_context,
+                    context=entry_context,
+                    thinking=entry_thinking,
+                    tool_ids=entry_tool_ids,
+                    sequence=sequence,
+                ))
+
+        return scenes
 
     def _build_assistant_turn(
         self, entry: TranscriptEntry, tool_id_to_op: dict[str, FileOperation]
