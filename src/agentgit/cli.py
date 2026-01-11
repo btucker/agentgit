@@ -833,6 +833,7 @@ def _run_process(
     parsed_sessions = []
     parse_errors = []
     skipped_sessions = []
+    skipped_no_prompts = []
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
@@ -846,6 +847,7 @@ def _run_process(
 
                 # Skip sessions with no prompts to process
                 if not parsed.prompts:
+                    skipped_no_prompts.append(transcript_path.name)
                     continue
 
                 # Extract agent name from format (e.g., "claude_code_jsonl" -> "claude-code")
@@ -893,6 +895,10 @@ def _run_process(
         console.print(f"[yellow]Warning: Skipped {len(parse_errors)} transcript(s) due to errors[/yellow]")
         for path, error in parse_errors[:3]:  # Show first 3 errors
             console.print(f"  [dim]{path.name}: {error}[/dim]")
+
+    # Report sessions with no prompts
+    if skipped_no_prompts:
+        console.print(f"[dim]Skipped {len(skipped_no_prompts)} session(s) with no prompts[/dim]")
 
     # Report skipped sessions
     if skipped_sessions:
@@ -1133,6 +1139,10 @@ def sessions(
             )
             return
 
+    # Sort transcripts by mtime ascending (oldest first) so numbers stay constant
+    # as new sessions are added (old sessions keep their numbers, new ones get higher numbers)
+    transcripts = sorted(transcripts, key=lambda x: x.mtime)
+
     # Display header
     console.print(
         Panel(f"[bold]agentgit sessions[/bold] - {header_path}", border_style="blue")
@@ -1142,12 +1152,18 @@ def sessions(
     # Build unified table - compact format
     count_label = "session" if len(transcripts) == 1 else "sessions"
     table = Table(title=f"{len(transcripts)} {count_label}")
-    table.add_column("#", style="dim", justify="right")
+    table.add_column("#", style="cyan", justify="right", no_wrap=True)
     table.add_column("Date", style="green", no_wrap=True)
     table.add_column("Size", style="yellow", justify="right", no_wrap=True)
     table.add_column("Name", style="cyan", no_wrap=True, overflow="ellipsis", max_width=50)
     table.add_column("Agent", style="magenta", no_wrap=True)
     table.add_column("Branch", style="blue")
+
+    # Track session refs to create
+    session_refs: list[tuple[Path, str, int]] = []  # (output_dir, branch_name, number)
+
+    # Build rows with stable numbering (oldest=1), but we'll display in reverse order
+    rows: list[tuple[str, str, str, str, str, str]] = []
 
     for i, t in enumerate(transcripts, 1):
         # Use display name if available, otherwise path
@@ -1185,6 +1201,8 @@ def sessions(
                     ref_content = session_ref_path.read_text().strip()
                     if ref_content.startswith("ref: refs/heads/"):
                         full_branch = ref_content[len("ref: refs/heads/") :]
+                        # Track for creating session/N refs
+                        session_refs.append((output_dir, full_branch, i))
                         # Show only the date+name part (after "sessions/agent/")
                         # e.g. "sessions/claude_code/260104-my-session" -> "260104-my-session"
                         parts = full_branch.split("/")
@@ -1209,10 +1227,35 @@ def sessions(
         except (OSError, IOError):
             size_str = "-"
 
-        table.add_row(str(i), date_str, size_str, name, t.plugin_name, branch)
+        rows.append((str(i), date_str, size_str, name, t.plugin_name, branch))
+
+    # Add rows in reverse order (newest first) for display
+    for row in reversed(rows):
+        table.add_row(*row)
 
     console.print(table)
     console.print()
+
+    # Create session/N refs for easy access (e.g., `git checkout session/1`)
+    # Group refs by output_dir since all sessions for a project share the same repo
+    refs_by_repo: dict[Path, list[tuple[str, int]]] = {}
+    for output_dir, branch_name, num in session_refs:
+        if output_dir not in refs_by_repo:
+            refs_by_repo[output_dir] = []
+        refs_by_repo[output_dir].append((branch_name, num))
+
+    for output_dir, refs in refs_by_repo.items():
+        try:
+            for branch_name, num in refs:
+                ref_path = output_dir / ".git" / "refs" / "session" / str(num)
+                ref_path.parent.mkdir(parents=True, exist_ok=True)
+                # Write the commit SHA that the branch points to
+                branch_ref_path = output_dir / ".git" / "refs" / "heads" / branch_name
+                if branch_ref_path.exists():
+                    sha = branch_ref_path.read_text().strip()
+                    ref_path.write_text(sha + "\n")
+        except (OSError, IOError):
+            pass  # Silently ignore ref creation failures
 
     # If list-only mode, stop here
     if list_only:

@@ -12,7 +12,7 @@ import pluggy
 from agentgit.settings import CONFIG_PATH, get_config, save_config
 
 if TYPE_CHECKING:
-    from agentgit.core import AssistantTurn, ConversationRound, FileOperation, Prompt, PromptResponse, Scene, Transcript
+    from agentgit.core import AssistantTurn, FileOperation, Prompt, PromptResponse, Transcript
 
 hookspec = pluggy.HookspecMarker("agentgit")
 hookimpl = pluggy.HookimplMarker("agentgit")
@@ -104,63 +104,8 @@ class AgentGitSpec:
             The enriched FileOperation (may be same object, modified in place).
         """
 
-    @hookspec
-    def agentgit_build_prompt_responses(
-        self, transcript: Transcript
-    ) -> list[PromptResponse]:
-        """Build the prompt-response structure from a transcript.
-
-        Groups operations by assistant message and organizes them under their
-        triggering prompts. This structure is used for creating the merge-based
-        git history.
-
-        Args:
-            transcript: The parsed transcript with operations.
-
-        Returns:
-            List of PromptResponse objects containing grouped AssistantTurns.
-        """
-
-    @hookspec
-    def agentgit_build_conversation_rounds(
-        self, transcript: Transcript
-    ) -> list[ConversationRound]:
-        """Build conversation rounds from a transcript.
-
-        Groups ALL transcript entries (user, assistant, tool results, etc.) by
-        user prompts. Each round contains a prompt and all entries until the
-        next prompt. This structure creates a conversational git history where
-        each prompt gets its own branch with commits for every entry.
-
-        Args:
-            transcript: The parsed transcript with all entries.
-
-        Returns:
-            List of ConversationRound objects with grouped entries.
-        """
-
-    @hookspec(firstresult=True)
-    def agentgit_build_scenes(self, transcript: Transcript) -> list[Scene]:
-        """Build scenes (logical work units) from a transcript.
-
-        Scenes are the preferred grouping unit for agentgit. Each scene becomes
-        one commit, representing a coherent piece of work. Plugin-specific signals
-        determine scene boundaries:
-
-        - Claude Code: TodoWrite boundaries (in_progress → completed), Task tool calls
-        - Codex: functions.update_plan step boundaries
-        - Fallback: One scene per assistant turn with file operations
-
-        The "scene" metaphor reflects that agentgit tells the story of how code
-        was written - each scene has a purpose (summary), characters (files),
-        and dialogue (context/thinking).
-
-        Args:
-            transcript: The parsed transcript with operations and entries.
-
-        Returns:
-            List of Scene objects, each becoming one commit.
-        """
+    # Old hookspecs deleted: agentgit_build_prompt_responses, agentgit_build_conversation_rounds,
+    # agentgit_build_scenes (replaced by simpler build_from_prompts approach)
 
     @hookspec
     def agentgit_discover_transcripts(

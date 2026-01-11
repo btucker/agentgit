@@ -7,7 +7,6 @@ from agentgit.core import (
     FileOperation,
     OperationType,
     Prompt,
-    SourceCommit,
     Transcript,
     TranscriptEntry,
 )
@@ -139,19 +138,4 @@ class TestTranscriptEntry:
         assert entry.is_continuation is False
         assert entry.is_meta is False
 
-
-class TestSourceCommit:
-    """Tests for SourceCommit dataclass."""
-
-    def test_source_commit_creation(self):
-        """Should create source commit with required fields."""
-        commit = SourceCommit(
-            sha="abc1234",
-            message="Fix bug",
-            timestamp="2025-01-01T00:00:00Z",
-            author="Test Author",
-        )
-        assert commit.sha == "abc1234"
-        assert commit.message == "Fix bug"
-        assert commit.author == "Test Author"
-        assert commit.files_changed == []
+# TestSourceCommit deleted - SourceCommit class removed
