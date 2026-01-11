@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -50,11 +49,16 @@ class AssistantContext:
     """Context from assistant messages preceding a file operation.
 
     Captures the reasoning/thinking that explains why a change was made.
+    Includes both the immediate context (thinking/text in the same message
+    as the tool call) and the previous message context (the explanatory
+    message that came before).
     """
 
     thinking: Optional[str] = None
     text: Optional[str] = None
     timestamp: str = ""
+    # Context from the previous assistant message (not the one with tool_use)
+    previous_message_text: Optional[str] = None
 
     @property
     def summary(self) -> str:
@@ -63,6 +67,26 @@ class AssistantContext:
             return self.thinking
         if self.text:
             return self.text
+        return ""
+
+    @property
+    def contextual_summary(self) -> str:
+        """Get beginning of previous message for subject line.
+
+        Returns the first line of the previous assistant message,
+        truncated to 72 chars for git subject line.
+        """
+        if self.previous_message_text:
+            first_line = self.previous_message_text.split('\n')[0].strip()
+            if len(first_line) > 72:
+                return first_line[:69] + "..."
+            return first_line
+        # Fallback to first line of summary
+        if self.summary:
+            first_line = self.summary.split('\n')[0].strip()
+            if len(first_line) > 72:
+                return first_line[:69] + "..."
+            return first_line
         return ""
 
 
@@ -114,34 +138,6 @@ class TranscriptEntry:
 
     is_continuation: bool = False
     is_meta: bool = False  # e.g., skill expansions
-
-
-@dataclass
-class ConversationRound:
-    """A user prompt and all entries until the next prompt.
-
-    This becomes a feature branch in the git structure, with each entry
-    becoming a commit on that branch, then merged back to the session branch.
-    """
-
-    prompt: Prompt
-    entries: list[TranscriptEntry] = field(default_factory=list)
-    sequence: int = 0  # 1-based sequence number for branch naming
-
-    @property
-    def short_summary(self) -> str:
-        """Generate short summary for branch name (50 chars max)."""
-        # Extract first line of prompt
-        text = self.prompt.text.split('\n')[0].strip()
-        # Sanitize for git branch (remove special chars, spaces to dashes)
-        safe_text = re.sub(r'[^\w\s-]', '', text.lower())
-        safe_text = re.sub(r'[\s_]+', '-', safe_text)
-        return safe_text[:50].strip('-')
-
-    @property
-    def branch_name(self) -> str:
-        """Full branch name: {sequence:03d}-{short-summary}"""
-        return f"{self.sequence:03d}-{self.short_summary}"
 
 
 @dataclass
@@ -218,9 +214,8 @@ class Transcript:
     prompts: list[Prompt] = field(default_factory=list)
     operations: list[FileOperation] = field(default_factory=list)
 
-    # Grouped structures for git history
-    prompt_responses: list[PromptResponse] = field(default_factory=list)  # Legacy
-    conversation_rounds: list[ConversationRound] = field(default_factory=list)  # New
+    # Kept for backward compatibility with enhance.py
+    prompt_responses: list[PromptResponse] = field(default_factory=list)
 
     source_path: Optional[str] = None
     source_format: str = ""
@@ -235,24 +230,6 @@ class Transcript:
                 return prompt
         return None
 
-    @property
-    def all_turns(self) -> list[AssistantTurn]:
-        """All assistant turns across all prompts."""
-        turns = []
-        for pr in self.prompt_responses:
-            turns.extend(pr.turns)
-        return turns
-
-
-@dataclass
-class SourceCommit:
-    """A commit from the source repository."""
-
-    sha: str
-    message: str
-    timestamp: str
-    author: str
-    author_email: str = ""
     files_changed: list[str] = field(default_factory=list)
 
 
@@ -270,6 +247,7 @@ class DiscoveredTranscript:
     size_bytes: int
     project_name: Optional[str] = None  # Project name from plugin
     display_name: Optional[str] = None  # Display name from plugin
+    has_file_ops: Optional[bool] = None  # Whether session has file-modifying operations
 
     @property
     def size_human(self) -> str:

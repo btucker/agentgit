@@ -6,7 +6,17 @@ After a session with Claude Code or Codex, you can diff to see *what* changed—
 
 agentgit transforms raw agent transcripts into a **structured transcript**—a separate git history that preserves the full story without touching your codebase.
 
-**Each coding session becomes its own branch.** Each user prompt becomes a merge commit, with the agent's individual turns (thinking + changes) as child commits:
+## How agentgit structures history
+
+**User prompts become merge commits** — each prompt groups all the work done to address it.
+
+**Scenes become feature commits** — each logical unit of work becomes one commit. What constitutes a "scene" depends on the agent:
+
+- **Claude Code**: Uses `TodoWrite` boundaries when available. Each todo item marked in_progress → completed becomes a commit.
+- **Codex**: Uses `functions.update_plan` step boundaries. Each plan step becomes a commit.
+- **Fallback**: If no planning tool is used, groups by assistant turns.
+
+**Context flows forward** — if the agent says "I'll refactor the auth module..." in one message and then edits files in the next, both messages' context appears in the commit.
 
 ```
 Your agentgit repo:
@@ -16,49 +26,56 @@ Your agentgit repo:
    └─── session/claude-code/add-user-auth
    │     │
    │     ├─ [MERGE] Prompt: "Add user authentication"
-   │     │   ├─ Create auth.py with JWT utilities
-   │     │   │  Context: I'll implement JWT token generation...
-   │     │   ├─ Add authentication middleware
-   │     │   │  Context: Creating middleware to verify tokens...
-   │     │   └─ Update login component with auth flow
-   │     │      Context: Integrating the auth into the UI...
+   │     │   │
+   │     │   ├─ ✓ Implement JWT authentication
+   │     │   │    (creates auth.py, middleware.py)
+   │     │   │    Thinking: I'll add JWT-based auth with protected routes...
+   │     │   │
+   │     │   └─ ✓ Add login form with validation
+   │     │        (modifies login.tsx, adds validation.ts)
+   │     │        Thinking: Adding client-side validation before API calls...
    │     │
    │     └─ [MERGE] Prompt: "Add password reset"
-   │         ├─ Create reset token generator
-   │         └─ Add reset email template
-   │
-   └─── session/claude-code/fix-database-bugs
-   │     │
-   │     └─ [MERGE] Prompt: "Fix connection timeout"
-   │         ├─ Debug connection pool settings
-   │         │  Context: Found the pool size was too small...
-   │         └─ Add retry logic with exponential backoff
-   │            Context: Implementing retries to handle transient failures...
+   │         │
+   │         └─ ✓ Implement password reset flow
+   │              (creates reset.py, email_templates/reset.html)
    │
    └─── session/codex/refactor-api
          │
          └─ [MERGE] Prompt: "Refactor payment endpoints"
-             ├─ Extract payment handlers to separate module
-             ├─ Consolidate error handling
-             └─ Add request validation middleware
+             │
+             ├─ ✓ Extract payment handlers to separate module
+             └─ ✓ Add request validation middleware
 ```
 
 Each commit preserves the agent's reasoning and the full context:
 
 ```
 $ agentgit log session/claude-code/add-user-auth --oneline
-a1b2c3d Update login component
-x9y8z7w Add middleware for protected routes
-f3e4d5c Implement JWT authentication
+a1b2c3d (HEAD) Prompt: "Add user authentication"
+f3e4d5c ✓ Add login form with validation
+x9y8z7w ✓ Implement JWT authentication
 
-$ agentgit show a1b2c3d
-commit a1b2c3d
-Prompt: "Add user authentication"
+$ agentgit show x9y8z7w
+commit x9y8z7w
+✓ Implement JWT authentication
 
-    Implement auth module (auth.py, middleware.py)
+I'll add JWT-based authentication with middleware to protect the API routes.
 
-    Context: I'll add JWT-based authentication with
-    middleware to protect the API routes...
+## Thinking
+The user wants authentication. I should:
+1. Create a JWT utilities module for token generation/validation
+2. Add middleware to protect routes
+
+Created: auth.py, middleware.py
+Modified: login.tsx
+
+User Prompt: "Add user authentication"
+---
+Prompt-Id: a1b2c3d4
+Todo-Item: Implement JWT authentication
+Tool-Id: toolu_01ABC, toolu_01DEF
+Timestamp: 2025-01-01T10:30:00Z
 ```
 
 **Use `agentgit blame` to see which session and why:**
@@ -86,7 +103,7 @@ $ agentgit blame auth.py --session session/claude-code/add-user-auth
 $ agentgit blame auth.py -L 10,20
 ```
 
-**How it works:** agentgit blames your actual code repo, then maps each line to its session branch using blob SHA matching. Since both repos share git's object store via alternates, identical file content produces identical blob SHAs. agentgit builds an index of all blob SHAs in session branches, then looks up each blamed line's blob SHA to find the matching session and agent context—all inline, no extra commands needed.
+**How it works:** agentgit uses git's native blame on each session branch to find which commits wrote which lines. For each line in your code, it finds the earliest commit across all sessions that introduced that exact line content. Since both repos share git's object store via alternates, this is fast and accurate.
 
 View all sessions with `agentgit branch`, compare approaches with `git diff session/A session/B`, or explore individual session histories.
 
@@ -186,74 +203,57 @@ It creates a **separate repository** that shares content with your code repo:
 
 The repos share git's object store via git alternates. **Same content = same blob SHA = automatic correlation between your code and its history.**
 
-### How Blame Works: Line-Level Matching
+### How Blame Works: Native Git Blame
 
-Git stores file content as **blobs** - binary objects representing entire file snapshots. When you commit a file, git creates a blob with that file's content and assigns it a SHA hash. If the content changes, a new blob is created with a new SHA.
+When you run `agentgit blame`:
 
-Traditional approach: match entire file blobs between repos. Problem: files evolve—even if an agent wrote specific lines, other parts might change (imports, formatting, etc.), causing blob SHAs to differ.
+1. **Blame each session branch** using git's native blame algorithm (Myers diff)
+2. **Collect all line attributions** - which commit in which session wrote each line
+3. **Find the earliest** - for each line in your code, return the oldest commit that wrote it
+4. **Display inline** with session name and agent context
 
-**agentgit's solution: match individual lines, not entire files.**
+This approach uses git's built-in line-tracking capabilities rather than custom indexing. Git's blame algorithm already handles whitespace normalization, move detection, and accurate line provenance.
 
-Inspired by how `git diff` uses the Myers algorithm to compare files line-by-line, agentgit builds a searchable index of every line from every session:
-
-```
-refs/heads/agentgit-index/
-└── .agentgit/lines/
-    ├── src_agentgit_cli.py      # Line mappings for this file
-    └── src_agentgit_core.py     # Line mappings for this file
-```
-
-Each mapping file contains:
-```
-line_hash|session_name|commit_sha|context
-abc123def|session/cc/add-auth|xyz789|Adding JWT authentication with HS256
-def456ghi|session/cc/fix-bug|abc123|Fixed token expiration timestamp
-```
-
-**When you run `agentgit blame`:**
-
-1. Blame your code repo to get each line's content
-2. Hash each line: `sha256(line.rstrip('\n'))`
-3. Use `git grep` to search the index: `git grep "^{line_hash}" refs/heads/agentgit-index`
-4. Parse the result to get session name, commit SHA, and context
-5. Display inline with the code
-
-**Why git grep?** It's optimized to search git's object database at millions of lines per second, without needing to load the entire index into memory.
-
-**Why this works:** Even when files evolve and full blob SHAs differ, individual lines often remain identical. The agent wrote `def foo():` and that exact line exists in your code—we can match it, even if the surrounding imports changed.
+**Why this works:** Even when files evolve across sessions, git blame correctly tracks which commit introduced each line. By blaming all session branches and finding the earliest timestamp, we identify the original agent session that wrote each line of code.
 
 **Source transcripts** are read from standard locations:
 - Claude Code: `~/.claude/projects/`
 - Codex: `~/.codex/sessions/`
 
-**Git structure** (prompts as merge commits):
+**Git structure** (prompts as merge commits, scenes as feature commits):
 
 ```
 ○ Merge: "Add user authentication" [prompt #a1b2c3d4]
 |\
-| ○ Implement auth module (auth.py, middleware.py)
-| ○ Add login templates (login.html, styles.css)
+| ○ ✓ Add login form with validation
+| ○ ✓ Implement JWT authentication
 |/
 ○ Merge: "Fix database connection bug" [prompt #x9y8z7w6]
 |\
-| ○ Fix connection pooling (db.py)
+| ○ ✓ Fix connection pooling with retry logic
 |/
 ○ Initial commit
 ```
 
-**Transcript entries include full context:**
+**Scene commits include full context:**
 
 ```
-Refactor auth to use dependency injection
+✓ Implement JWT authentication
 
-Modified: auth.py, middleware.py
-Created: injection.py
+I'll add JWT-based authentication with middleware to protect the API routes.
 
-Context:
-I'll refactor the auth module to use dependency injection for better testability.
+## Thinking
+The user wants authentication. I should create a JWT utilities module
+for token generation/validation, then add middleware to protect routes.
 
-Prompt-Id: a1b2c3d4e5f67890abcdef1234567890
-Tool-Id: toolu_abc123
+Created: auth.py, middleware.py
+Modified: login.tsx
+
+User Prompt: "Add user authentication"
+---
+Prompt-Id: a1b2c3d4
+Todo-Item: Implement JWT authentication
+Tool-Id: toolu_01ABC, toolu_01DEF
 Timestamp: 2025-01-01T10:30:00Z
 ```
 

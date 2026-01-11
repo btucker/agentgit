@@ -145,12 +145,68 @@ def _summarize_files(files: list[str], max_files: int = 3) -> str:
         return f"{names[0]} and {len(names) - 1} other files"
 
 
+def _extract_reasoning_summary(reasoning: str, max_length: int = 50) -> str | None:
+    """Try to extract a concise WHY from assistant reasoning text.
+
+    Looks for patterns that indicate reasoning/motivation, focusing on
+    problem → solution patterns found in real agentgit sessions.
+    """
+    # Patterns that indicate root cause analysis (common in debugging)
+    root_cause_patterns = [
+        r"(?:found|found the)\s+(?:root cause|issue|problem|bug):\s*(.{10,80})",
+        r"(?:the issue|the problem|the bug)\s+(?:is|was)\s+(?:that\s+)?(.{10,80})",
+        r"(?:this happens|this occurred|this failed)\s+because\s+(.{10,80})",
+    ]
+
+    # Patterns that indicate need/motivation
+    need_patterns = [
+        r"(?:need(?:s|ed)?|want(?:s|ed)?|should|must)\s+(?:to\s+)?(.{10,60})",
+        r"(?:because|since|so that)\s+(.{10,60})",
+        r"(?:to\s+)?(?:fix|solve|address|handle)\s+(?:the\s+)?(.{10,60})",
+        r"(?:improve|enhance|optimize)\s+(.{10,60})",
+    ]
+
+    # Patterns for insight blocks (found in agentgit sessions)
+    insight_patterns = [
+        r"★\s*Insight[^★]*?\n([^★]{10,100})",
+        r"\*\*(?:Root Cause|Issue|Problem)\*\*:\s*(.{10,80})",
+    ]
+
+    all_patterns = root_cause_patterns + need_patterns + insight_patterns
+
+    for pattern in all_patterns:
+        match = re.search(pattern, reasoning, re.IGNORECASE)
+        if match:
+            extracted = match.group(1).strip()
+            # Clean up common prefixes
+            extracted = re.sub(r"^(that\s+|the\s+)", "", extracted, flags=re.IGNORECASE)
+            if len(extracted) <= max_length:
+                return extracted
+            return extracted[: max_length - 3] + "..."
+
+    return None
+
+
 def _generate_from_context(
     operation: "FileOperation | None" = None,
     turn: "AssistantTurn | None" = None,
     prompt: "Prompt | None" = None,
 ) -> str | None:
-    """Generate a commit message using context from operation/turn/prompt."""
+    """Generate a scene summary using context from operation/turn/prompt.
+
+    Focuses on the WHY (reasoning) when available, falls back to WHAT.
+    """
+    # First, try to extract WHY from assistant reasoning
+    if turn and turn.context and turn.context.summary:
+        why = _extract_reasoning_summary(turn.context.summary)
+        if why:
+            # Build "why → what" format
+            all_files = turn.files_created + turn.files_modified + turn.files_deleted
+            if all_files:
+                what = _summarize_files(all_files[:3])
+                return f"{why} → {what}"[:72]
+            return why
+
     # Try to get verb from prompt
     verb = None
     if prompt and not _prompt_needs_context(prompt.text):

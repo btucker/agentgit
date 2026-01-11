@@ -44,6 +44,26 @@ class CodexPlugin:
         }
 
     @hookimpl
+    def agentgit_get_session_id_from_path(self, path: Path) -> str | None:
+        """Extract session ID (UUID) from Codex filename.
+
+        Codex filenames follow the pattern:
+        rollout-YYYY-MM-DDTHH-MM-SS-UUID.jsonl
+
+        Returns the UUID portion if present.
+        """
+        filename = path.stem
+        # Look for UUID pattern at end of filename
+        uuid_match = re.search(
+            r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$',
+            filename,
+            re.IGNORECASE
+        )
+        if uuid_match:
+            return uuid_match.group(1)
+        return None
+
+    @hookimpl
     def agentgit_detect_format(self, path: Path) -> str | None:
         """Detect Codex JSONL format.
 
@@ -121,8 +141,132 @@ class CodexPlugin:
                     continue
 
                 event_type = obj.get("type", "")
+                timestamp = obj.get("timestamp", "")
 
-                # Extract session_id from thread.started
+                # Handle new Codex format: session_meta
+                if event_type == "session_meta":
+                    payload = obj.get("payload", {})
+                    session_id = payload.get("id")
+                    session_cwd = payload.get("cwd")
+                    entry = TranscriptEntry(
+                        entry_type="session_meta",
+                        timestamp=timestamp,
+                        message=payload,
+                        raw_entry=obj,
+                    )
+                    entries.append(entry)
+                    continue
+
+                # Handle new Codex format: response_item (wraps messages, function_calls, etc.)
+                if event_type == "response_item":
+                    payload = obj.get("payload", {})
+                    payload_type = payload.get("type", "")
+
+                    # User message inside response_item
+                    if payload_type == "message" and payload.get("role") == "user":
+                        content = payload.get("content", [])
+                        text, cwd = self._extract_user_text_and_cwd(content)
+
+                        if cwd and not session_cwd:
+                            session_cwd = cwd
+
+                        entry = TranscriptEntry(
+                            entry_type="user",
+                            timestamp=timestamp,
+                            message={"content": content},
+                            raw_entry=obj,
+                        )
+                        entries.append(entry)
+
+                        if text:
+                            prompts.append(
+                                Prompt(
+                                    text=text,
+                                    timestamp=timestamp,
+                                    raw_entry=obj,
+                                )
+                            )
+                        continue
+
+                    # Assistant message inside response_item
+                    if payload_type == "message" and payload.get("role") == "assistant":
+                        entry = TranscriptEntry(
+                            entry_type="assistant",
+                            timestamp=timestamp,
+                            message=payload,
+                            raw_entry=obj,
+                        )
+                        entries.append(entry)
+                        continue
+
+                    # Function call inside response_item
+                    if payload_type == "function_call":
+                        entry = TranscriptEntry(
+                            entry_type="function_call",
+                            timestamp=timestamp,
+                            message=payload,
+                            raw_entry=obj,
+                        )
+                        entries.append(entry)
+                        continue
+
+                    # Function call output inside response_item
+                    if payload_type == "function_call_output":
+                        entry = TranscriptEntry(
+                            entry_type="function_call_output",
+                            timestamp=timestamp,
+                            message=payload,
+                            raw_entry=obj,
+                        )
+                        entries.append(entry)
+                        continue
+
+                    # Reasoning inside response_item
+                    if payload_type == "reasoning":
+                        entry = TranscriptEntry(
+                            entry_type="reasoning",
+                            timestamp=timestamp,
+                            message=payload,
+                            raw_entry=obj,
+                        )
+                        entries.append(entry)
+                        continue
+
+                    # Generic response_item - store with payload type
+                    entry = TranscriptEntry(
+                        entry_type=f"response_{payload_type}" if payload_type else "response_item",
+                        timestamp=timestamp,
+                        message=payload,
+                        raw_entry=obj,
+                    )
+                    entries.append(entry)
+                    continue
+
+                # Handle new Codex format: event_msg
+                if event_type == "event_msg":
+                    payload = obj.get("payload", {})
+                    entry = TranscriptEntry(
+                        entry_type="event_msg",
+                        timestamp=timestamp,
+                        message=payload,
+                        raw_entry=obj,
+                    )
+                    entries.append(entry)
+                    continue
+
+                # Handle new Codex format: turn_context
+                if event_type == "turn_context":
+                    payload = obj.get("payload", {})
+                    entry = TranscriptEntry(
+                        entry_type="turn_context",
+                        timestamp=timestamp,
+                        message=payload,
+                        raw_entry=obj,
+                    )
+                    entries.append(entry)
+                    continue
+
+                # Extract session_id from thread.started (old format)
                 if event_type == "thread.started":
                     session_id = obj.get("thread_id")
                     entry = TranscriptEntry(
@@ -247,6 +391,9 @@ class CodexPlugin:
                 operations.extend(ops)
 
         return operations
+
+    # Old hook deleted: agentgit_build_conversation_rounds
+    # (replaced by simpler build_from_prompts approach)
 
     def _extract_from_function_call(
         self, entry: TranscriptEntry
@@ -690,3 +837,7 @@ class CodexPlugin:
         # Sort by modification time, most recent first
         transcripts.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return transcripts
+
+
+    # Old hooks deleted: agentgit_build_scenes
+    # (replaced by simpler build_from_prompts approach)

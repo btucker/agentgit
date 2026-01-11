@@ -830,7 +830,7 @@ class TestPreprocessBatchEnhancement:
 
         calls = []
 
-        def mock_batch(prompt_responses, model):
+        def mock_batch(prompt_responses, model, progress_callback=None):
             calls.append((prompt_responses, model))
             return {}
 

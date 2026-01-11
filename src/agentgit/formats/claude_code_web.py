@@ -640,6 +640,9 @@ class ClaudeCodeWebPlugin:
         transcript = self._base_plugin.agentgit_parse_transcript(path, "claude_code_jsonl")
         if transcript:
             transcript.source_format = FORMAT_CLAUDE_CODE_WEB
+            # Web sessions don't have sessionId in entries, use filename
+            if not transcript.session_id:
+                transcript.session_id = path.stem
         return transcript
 
     @hookimpl
@@ -669,6 +672,16 @@ class ClaudeCodeWebPlugin:
             return []
         return self._delegate_with_format(
             lambda: self._base_plugin.agentgit_build_prompt_responses(transcript),
+            transcript
+        )
+
+    @hookimpl
+    def agentgit_build_conversation_rounds(self, transcript: "Transcript") -> list:
+        """Build conversation rounds - delegates to base plugin."""
+        if transcript.source_format != FORMAT_CLAUDE_CODE_WEB:
+            return []
+        return self._delegate_with_format(
+            lambda: self._base_plugin.agentgit_build_conversation_rounds(transcript),
             transcript
         )
 

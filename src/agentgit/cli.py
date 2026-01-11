@@ -89,14 +89,102 @@ def get_default_output_dir(transcript_path: Path) -> Path:
     )
 
 
+def find_transcript_by_branch_partial(branch_partial: str) -> Path | None:
+    """Find a transcript file by matching against session branch names.
+
+    Searches processed sessions for branches containing the partial string.
+
+    Args:
+        branch_partial: Partial branch name to match (e.g., "251231-add-support").
+
+    Returns:
+        Path to the matching transcript file, or None if not found.
+    """
+    from agentgit import discover_transcripts_enriched
+
+    repo_path = get_agentgit_repo_path()
+    if not repo_path or not (repo_path / ".git").exists():
+        return None
+
+    sessions_dir = repo_path / ".git" / "refs" / "sessions"
+    if not sessions_dir.exists():
+        return None
+
+    # Build mapping of session_id -> branch_name
+    session_branches: dict[str, str] = {}
+    for ref_file in sessions_dir.iterdir():
+        if not ref_file.is_file():
+            continue
+        session_id = ref_file.name
+        try:
+            ref_content = ref_file.read_text().strip()
+            if ref_content.startswith("ref: refs/heads/"):
+                branch_name = ref_content[len("ref: refs/heads/"):]
+                session_branches[session_id] = branch_name
+        except (OSError, IOError):
+            continue
+
+    # Find branches containing the partial
+    matches: list[tuple[str, str]] = []  # (session_id, branch_name)
+    branch_partial_lower = branch_partial.lower()
+    for session_id, branch_name in session_branches.items():
+        if branch_partial_lower in branch_name.lower():
+            matches.append((session_id, branch_name))
+
+    if not matches:
+        return None
+
+    if len(matches) > 1:
+        # Multiple matches - show them and let user choose
+        raise click.ClickException(
+            f"Multiple branches match '{branch_partial}':\n"
+            + "\n".join(f"  - {branch}" for _, branch in matches)
+            + "\nPlease be more specific."
+        )
+
+    session_id, branch_name = matches[0]
+
+    # Find the transcript file with this session ID
+    transcripts = discover_transcripts_enriched()
+    from agentgit.plugins import get_configured_plugin_manager
+
+    pm = get_configured_plugin_manager()
+
+    for t in transcripts:
+        transcript_id = pm.hook.agentgit_get_session_id_from_path(path=t.path)
+        if not transcript_id:
+            transcript_id = t.path.stem
+        if transcript_id == session_id:
+            return t.path
+
+    return None
+
+
 def resolve_transcripts(transcript: Path | None) -> list[Path]:
     """Resolve transcript paths, using auto-discovery if not provided.
 
-    If a transcript is explicitly provided, returns a single-item list.
+    If a transcript is explicitly provided and exists, returns a single-item list.
+    If transcript looks like a branch name partial, tries to find matching session.
     Otherwise, discovers all transcripts for the current project.
     """
     if transcript is not None:
-        return [transcript]
+        # If the path exists as a file, use it directly
+        if transcript.exists():
+            return [transcript]
+
+        # Try to interpret as a branch name partial
+        transcript_str = str(transcript)
+        # Only try branch matching if it doesn't look like a path
+        if "/" not in transcript_str and "\\" not in transcript_str:
+            matched_path = find_transcript_by_branch_partial(transcript_str)
+            if matched_path:
+                return [matched_path]
+
+        # If still not found, raise error with helpful message
+        raise click.ClickException(
+            f"'{transcript}' is not a file and doesn't match any session branch.\n"
+            "Use 'agit sessions' to see available sessions."
+        )
 
     from agentgit import discover_transcripts
 
@@ -220,15 +308,21 @@ def translate_paths_for_agentgit_repo(args: list[str], repo_path: Path) -> list[
     return [_translate_single_path(arg, repo_path, git_root) for arg in args]
 
 
-def run_git_passthrough(args: list[str]) -> None:
-    """Run a git command on the agentgit repo."""
+def run_git_passthrough(args: list[str], repo_path: "Path | None" = None) -> None:
+    """Run a git command on the agentgit repo.
+
+    Args:
+        args: Git command arguments (e.g., ["log", "--reverse", "branch"])
+        repo_path: Optional path to the repo. If not provided, auto-discovers.
+    """
     import os
     import shutil
     import subprocess
     import sys
     from pathlib import Path
 
-    repo_path = get_agentgit_repo_path()
+    if repo_path is None:
+        repo_path = get_agentgit_repo_path()
     if not repo_path or not repo_path.exists():
         raise click.ClickException(
             "No agentgit repository found. Run 'agentgit' first to create one."
@@ -403,7 +497,7 @@ def main() -> None:
 
 @main.command()
 @click.argument(
-    "transcript", type=click.Path(exists=True, path_type=Path), required=False
+    "transcript", type=click.Path(path_type=Path), required=False
 )
 @click.option(
     "-o",
@@ -626,26 +720,64 @@ def _batch_enhance_all_sessions(
         enhance_config: Enhancement configuration
         console: Rich console for output
     """
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+
     from agentgit.enhancers.llm import batch_generate_session_names
     from agentgit.enhance import preprocess_batch_enhancement
 
-    # Batch generate session names
-    console.print("[bold blue]Generating session names...[/bold blue]")
+    # Batch generate session names with progress bar
     sessions_for_batch = [
         (s["session_id"], s["parsed"].prompt_responses)
         for s in parsed_sessions
     ]
-    batch_generate_session_names(sessions_for_batch, enhance_config.model)
-    console.print(f"[green]✓[/green] Generated {len(parsed_sessions)} session names")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        # We don't know total batches upfront, so start indeterminate
+        task = progress.add_task("Generating session names...", total=None)
+
+        def name_progress_callback(batch_num: int, total_batches: int, items: int) -> None:
+            # batch_num=0 is the setup call, set total and show 0%
+            if batch_num == 0:
+                progress.update(task, total=total_batches, completed=0)
+            else:
+                progress.update(task, completed=batch_num)
+
+        batch_generate_session_names(
+            sessions_for_batch, enhance_config.model, progress_callback=name_progress_callback
+        )
+        progress.update(task, description="✓ Session names generated")
 
     # Batch enhance all prompt responses from all sessions together
-    console.print("[bold blue]Generating commit messages...[/bold blue]")
     all_prompt_responses = []
     for session in parsed_sessions:
         all_prompt_responses.extend(session["parsed"].prompt_responses)
 
-    preprocess_batch_enhancement(all_prompt_responses, enhance_config)
-    console.print(f"[green]✓[/green] Generated {len(all_prompt_responses)} commit messages")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Generating commit messages...", total=None)
+
+        def message_progress_callback(batch_num: int, total_batches: int, items: int) -> None:
+            # batch_num=0 is the setup call, set total and show 0%
+            if batch_num == 0:
+                progress.update(task, total=total_batches, completed=0)
+            else:
+                progress.update(task, completed=batch_num)
+
+        preprocess_batch_enhancement(
+            all_prompt_responses, enhance_config, progress_callback=message_progress_callback
+        )
+        progress.update(task, description="✓ Commit messages generated")
 
 
 def _run_process(
@@ -664,7 +796,7 @@ def _run_process(
     Args:
         reprocess: If True, rebuild from scratch instead of incremental.
     """
-    from agentgit import build_repo_grouped, parse_transcript
+    from agentgit import build_repo_from_prompts, parse_transcript
 
     output, effective_enhancer, effective_model, enhance_config = (
         _prepare_output_and_enhance_config(output, enhancer, enhance_model, transcripts)
@@ -681,9 +813,12 @@ def _run_process(
 
     console = Console()
 
+    # Track if repo already exists (for output message)
+    repo_existed = output.exists() and (output / ".git").exists()
+
     # Load processed operations from existing repo (if incremental)
     processed_ops = set()
-    if not reprocess and output.exists() and (output / ".git").exists():
+    if not reprocess and repo_existed:
         from git import Repo
         from agentgit.git_builder import get_processed_operations
         try:
@@ -698,6 +833,7 @@ def _run_process(
     parsed_sessions = []
     parse_errors = []
     skipped_sessions = []
+    skipped_no_prompts = []
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
@@ -709,7 +845,9 @@ def _run_process(
             try:
                 parsed = parse_transcript(transcript_path, plugin_type=plugin_type)
 
-                if not parsed.prompt_responses:
+                # Skip sessions with no prompts to process
+                if not parsed.prompts:
+                    skipped_no_prompts.append(transcript_path.name)
                     continue
 
                 # Extract agent name from format (e.g., "claude_code_jsonl" -> "claude-code")
@@ -721,15 +859,10 @@ def _run_process(
                 session_id = parsed.session_id or transcript_path.stem
 
                 # Check if this session is already fully processed
-                if not reprocess and processed_ops:
-                    all_operations = []
-                    for pr in parsed.prompt_responses:
-                        for turn in pr.turns:
-                            all_operations.extend(turn.operations)
-
-                    # Check if all operations are already processed
+                # Use parsed.operations (all extracted operations) not prompt_responses
+                if not reprocess and processed_ops and parsed.operations:
                     unprocessed_ops = []
-                    for op in all_operations:
+                    for op in parsed.operations:
                         op_id = op.tool_id if op.tool_id else f"ts:{op.timestamp}"
                         if op_id not in processed_ops:
                             unprocessed_ops.append(op)
@@ -762,6 +895,10 @@ def _run_process(
         console.print(f"[yellow]Warning: Skipped {len(parse_errors)} transcript(s) due to errors[/yellow]")
         for path, error in parse_errors[:3]:  # Show first 3 errors
             console.print(f"  [dim]{path.name}: {error}[/dim]")
+
+    # Report sessions with no prompts
+    if skipped_no_prompts:
+        console.print(f"[dim]Skipped {len(skipped_no_prompts)} session(s) with no prompts[/dim]")
 
     # Report skipped sessions
     if skipped_sessions:
@@ -813,10 +950,10 @@ def _run_process(
                     completed=i
                 )
 
-            # Build into session branch
-            repo, repo_path, _ = build_repo_grouped(
-                conversation_rounds=session["parsed"].conversation_rounds,
-                transcript=session["parsed"],
+            # Build into session branch - one commit per user prompt
+            parsed = session["parsed"]
+            repo, repo_path, _ = build_repo_from_prompts(
+                transcript=parsed,
                 output_dir=output,
                 author_name=author,
                 author_email=email,
@@ -845,7 +982,10 @@ def _run_process(
     # Count branches (sessions)
     session_branches = [b.name for b in repo.heads if b.name.startswith("sessions/")]
 
-    click.echo(f"Created git repository at: {repo_path}")
+    if repo_existed:
+        click.echo(f"Updated git repository at: {repo_path}")
+    else:
+        click.echo(f"Created git repository at: {repo_path}")
     click.echo(f"  Sessions (branches): {len(session_branches)}")
     click.echo(f"  Total prompts: {total_prompts}")
     click.echo(f"  Total operations: {total_operations}")
@@ -999,6 +1139,10 @@ def sessions(
             )
             return
 
+    # Sort transcripts by mtime ascending (oldest first) so numbers stay constant
+    # as new sessions are added (old sessions keep their numbers, new ones get higher numbers)
+    transcripts = sorted(transcripts, key=lambda x: x.mtime)
+
     # Display header
     console.print(
         Panel(f"[bold]agentgit sessions[/bold] - {header_path}", border_style="blue")
@@ -1008,11 +1152,18 @@ def sessions(
     # Build unified table - compact format
     count_label = "session" if len(transcripts) == 1 else "sessions"
     table = Table(title=f"{len(transcripts)} {count_label}")
-    table.add_column("#", style="dim", justify="right")
+    table.add_column("#", style="cyan", justify="right", no_wrap=True)
     table.add_column("Date", style="green", no_wrap=True)
+    table.add_column("Size", style="yellow", justify="right", no_wrap=True)
     table.add_column("Name", style="cyan", no_wrap=True, overflow="ellipsis", max_width=50)
     table.add_column("Agent", style="magenta", no_wrap=True)
     table.add_column("Branch", style="blue")
+
+    # Track session refs to create
+    session_refs: list[tuple[Path, str, int]] = []  # (output_dir, branch_name, number)
+
+    # Build rows with stable numbering (oldest=1), but we'll display in reverse order
+    rows: list[tuple[str, str, str, str, str, str]] = []
 
     for i, t in enumerate(transcripts, 1):
         # Use display name if available, otherwise path
@@ -1031,18 +1182,27 @@ def sessions(
         if output_dir.exists() and (output_dir / ".git").exists():
             # Find the branch for this transcript by reading its session ref
             try:
-                # Get the transcript's session ID from the filename
-                transcript_id = t.path.stem  # Filename without extension
+                from agentgit.plugins import get_configured_plugin_manager
+
+                pm = get_configured_plugin_manager()
+
+                # Get the transcript's session ID - try plugin hook first, fall back to filename
+                transcript_id = pm.hook.agentgit_get_session_id_from_path(path=t.path)
+                if not transcript_id:
+                    transcript_id = t.path.stem  # Filename without extension
 
                 # Check if a session ref file exists
                 session_ref_path = (
                     output_dir / ".git" / "refs" / "sessions" / transcript_id
                 )
+
                 if session_ref_path.exists():
                     # Read the symbolic ref and extract the branch name
                     ref_content = session_ref_path.read_text().strip()
                     if ref_content.startswith("ref: refs/heads/"):
                         full_branch = ref_content[len("ref: refs/heads/") :]
+                        # Track for creating session/N refs
+                        session_refs.append((output_dir, full_branch, i))
                         # Show only the date+name part (after "sessions/agent/")
                         # e.g. "sessions/claude_code/260104-my-session" -> "260104-my-session"
                         parts = full_branch.split("/")
@@ -1055,10 +1215,47 @@ def sessions(
         date_obj = datetime.fromtimestamp(t.mtime)
         date_str = date_obj.strftime("%m/%d %H:%M")
 
-        table.add_row(str(i), date_str, name, t.plugin_name, branch)
+        # Format file size
+        try:
+            size_bytes = t.path.stat().st_size
+            if size_bytes < 1024:
+                size_str = f"{size_bytes} B"
+            elif size_bytes < 1024 * 1024:
+                size_str = f"{size_bytes / 1024:.1f} KB"
+            else:
+                size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
+        except (OSError, IOError):
+            size_str = "-"
+
+        rows.append((str(i), date_str, size_str, name, t.plugin_name, branch))
+
+    # Add rows in reverse order (newest first) for display
+    for row in reversed(rows):
+        table.add_row(*row)
 
     console.print(table)
     console.print()
+
+    # Create session/N refs for easy access (e.g., `git checkout session/1`)
+    # Group refs by output_dir since all sessions for a project share the same repo
+    refs_by_repo: dict[Path, list[tuple[str, int]]] = {}
+    for output_dir, branch_name, num in session_refs:
+        if output_dir not in refs_by_repo:
+            refs_by_repo[output_dir] = []
+        refs_by_repo[output_dir].append((branch_name, num))
+
+    for output_dir, refs in refs_by_repo.items():
+        try:
+            for branch_name, num in refs:
+                ref_path = output_dir / ".git" / "refs" / "session" / str(num)
+                ref_path.parent.mkdir(parents=True, exist_ok=True)
+                # Write the commit SHA that the branch points to
+                branch_ref_path = output_dir / ".git" / "refs" / "heads" / branch_name
+                if branch_ref_path.exists():
+                    sha = branch_ref_path.read_text().strip()
+                    ref_path.write_text(sha + "\n")
+        except (OSError, IOError):
+            pass  # Silently ignore ref creation failures
 
     # If list-only mode, stop here
     if list_only:
@@ -1091,13 +1288,10 @@ def sessions(
 
     selected = transcripts[idx - 1]
 
-    # Process the selected transcript
-    console.print()
-    console.print(
-        f"[bold]Processing[/bold] {selected.display_name or selected.path.name}..."
-    )
-
+    # Process the selected transcript (usually a no-op if already processed)
     output_dir = get_default_output_dir(selected.path)
+    repo_existed = output_dir.exists() and (output_dir / ".git").exists()
+
     try:
         from agentgit import transcript_to_repo
 
@@ -1106,18 +1300,36 @@ def sessions(
             output_dir=output_dir,
         )
 
-        # Count commits and files
-        commit_count = sum(1 for _ in repo.iter_commits())
-        prompt_count = len(transcript.prompt_responses)
-        file_count = len(set(op.file_path for op in transcript.operations))
-
-        console.print(f"[green]Created git repository at[/green] {repo_path}")
-        console.print(f"  - {commit_count} commits ({prompt_count} prompts)")
-        console.print(f"  - {file_count} files modified")
+        if not repo_existed:
+            console.print(f"[green]Created git repository at[/green] {repo_path}")
 
     except Exception as e:
         console.print(f"[red]Error processing transcript:[/red] {e}")
         raise click.ClickException(str(e))
+
+    # Look up the branch for this session
+    from agentgit.plugins import get_configured_plugin_manager
+
+    pm = get_configured_plugin_manager()
+    transcript_id = pm.hook.agentgit_get_session_id_from_path(path=selected.path)
+    if not transcript_id:
+        transcript_id = selected.path.stem
+
+    session_ref_path = output_dir / ".git" / "refs" / "sessions" / transcript_id
+    branch = None
+
+    if session_ref_path.exists():
+        ref_content = session_ref_path.read_text().strip()
+        if ref_content.startswith("ref: refs/heads/"):
+            branch = ref_content[len("ref: refs/heads/"):]
+
+    if not branch:
+        console.print("[yellow]No branch found for this session[/yellow]")
+        return
+
+    # Show the git log for this session's branch
+    console.print()
+    run_git_passthrough(["log", "--reverse", branch], repo_path=output_dir)
 
 
 @main.group()

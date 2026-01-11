@@ -96,6 +96,66 @@ class TestClaudeCodePlugin:
         result = plugin.agentgit_detect_format(jsonl_file)
         assert result is None
 
+    def test_detect_format_with_file_history_snapshot_prefix(self, plugin, tmp_path):
+        """Should detect Claude Code format when file-history-snapshot is first entry.
+
+        Newer Claude Code sessions start with metadata entries like file-history-snapshot
+        before the actual user/assistant entries. The format detection should skip these
+        metadata entries and look for actual conversation content.
+        """
+        content = [
+            {"type": "file-history-snapshot", "data": {}},
+            {"type": "user", "timestamp": "2025-01-01T10:00:00.000Z", "message": {"content": "Hello"}},
+            {"type": "assistant", "timestamp": "2025-01-01T10:00:05.000Z", "message": {"content": "Hi"}},
+        ]
+
+        jsonl_path = tmp_path / "session.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        result = plugin.agentgit_detect_format(jsonl_path)
+        assert result == "claude_code_jsonl"
+
+    def test_detect_format_with_summary_prefix(self, plugin, tmp_path):
+        """Should detect Claude Code format when summary is first entry."""
+        content = [
+            {"type": "summary", "summary": "Previous conversation summary"},
+            {"type": "user", "timestamp": "2025-01-01T10:00:00.000Z", "message": {"content": "Continue"}},
+        ]
+
+        jsonl_path = tmp_path / "session.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        result = plugin.agentgit_detect_format(jsonl_path)
+        assert result == "claude_code_jsonl"
+
+    def test_detect_format_rejects_pure_api_call_session(self, plugin, tmp_path):
+        """Should reject sessions that are purely API calls (no interactive content).
+
+        API call sessions from the llm enhancer typically have:
+        1. queue-operation: dequeue as first entry
+        2. A single-shot prompt/response pattern
+        3. Content indicating it's a name generation request
+        """
+        content = [
+            {"type": "queue-operation", "operation": "dequeue", "timestamp": "2025-01-01T10:00:00.000Z"},
+            {"type": "user", "timestamp": "2025-01-01T10:00:01.000Z",
+             "message": {"content": "Generate concise, descriptive names for these coding sessions."}},
+            {"type": "assistant", "timestamp": "2025-01-01T10:00:02.000Z",
+             "message": {"content": [{"type": "text", "text": "[\"session-name\"]"}]}},
+        ]
+
+        jsonl_path = tmp_path / "session.jsonl"
+        with open(jsonl_path, "w") as f:
+            for line in content:
+                f.write(json.dumps(line) + "\n")
+
+        result = plugin.agentgit_detect_format(jsonl_path)
+        assert result is None
+
     def test_parse_transcript(self, plugin, sample_jsonl):
         """Should parse transcript correctly."""
         transcript = plugin.agentgit_parse_transcript(sample_jsonl, "claude_code_jsonl")
@@ -359,393 +419,8 @@ class TestClaudeCodeDiscovery:
         assert result[1].name == "old.jsonl"
 
 
-class TestBuildPromptResponses:
-    """Tests for agentgit_build_prompt_responses hook."""
 
-    def test_concatenates_consecutive_prompts_without_operations(self, plugin, tmp_path):
-        """Should concatenate prompts when no operations between them."""
-        content = [
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:00.000Z",
-                "message": {"content": "First part of the request"},
-            },
-            {
-                "type": "assistant",
-                "timestamp": "2025-01-01T10:00:05.000Z",
-                "message": {"content": [{"type": "text", "text": "Let me think..."}]},
-            },
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:10.000Z",
-                "message": {"content": "Second part - please also add tests"},
-            },
-            {
-                "type": "assistant",
-                "timestamp": "2025-01-01T10:00:15.000Z",
-                "message": {
-                    "content": [
-                        {"type": "text", "text": "I'll create the file."},
-                        {
-                            "type": "tool_use",
-                            "id": "toolu_001",
-                            "name": "Write",
-                            "input": {
-                                "file_path": "/test/hello.py",
-                                "content": "def hello(): pass",
-                            },
-                        },
-                    ]
-                },
-            },
-        ]
-
-        jsonl_path = tmp_path / "session.jsonl"
-        with open(jsonl_path, "w") as f:
-            for line in content:
-                f.write(json.dumps(line) + "\n")
-
-        transcript = plugin.agentgit_parse_transcript(jsonl_path, "claude_code_jsonl")
-        ops = plugin.agentgit_extract_operations(transcript)
-        transcript.operations = ops
-
-        prompt_responses = plugin.agentgit_build_prompt_responses(transcript)
-
-        # Should have only 1 prompt response with concatenated text
-        assert len(prompt_responses) == 1
-        assert "First part of the request" in prompt_responses[0].prompt.text
-        assert "Second part - please also add tests" in prompt_responses[0].prompt.text
-        # Should use the first prompt's timestamp
-        assert prompt_responses[0].prompt.timestamp == "2025-01-01T10:00:00.000Z"
-
-    def test_separate_prompts_when_operations_between(self, plugin, tmp_path):
-        """Should keep prompts separate when there are operations between them."""
-        content = [
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:00.000Z",
-                "message": {"content": "First request"},
-            },
-            {
-                "type": "assistant",
-                "timestamp": "2025-01-01T10:00:05.000Z",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": "toolu_001",
-                            "name": "Write",
-                            "input": {
-                                "file_path": "/test/file1.py",
-                                "content": "# file 1",
-                            },
-                        },
-                    ]
-                },
-            },
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:10.000Z",
-                "message": {"content": "Second request"},
-            },
-            {
-                "type": "assistant",
-                "timestamp": "2025-01-01T10:00:15.000Z",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": "toolu_002",
-                            "name": "Write",
-                            "input": {
-                                "file_path": "/test/file2.py",
-                                "content": "# file 2",
-                            },
-                        },
-                    ]
-                },
-            },
-        ]
-
-        jsonl_path = tmp_path / "session.jsonl"
-        with open(jsonl_path, "w") as f:
-            for line in content:
-                f.write(json.dumps(line) + "\n")
-
-        transcript = plugin.agentgit_parse_transcript(jsonl_path, "claude_code_jsonl")
-        ops = plugin.agentgit_extract_operations(transcript)
-        transcript.operations = ops
-
-        prompt_responses = plugin.agentgit_build_prompt_responses(transcript)
-
-        # Should have 2 separate prompt responses
-        assert len(prompt_responses) == 2
-        assert prompt_responses[0].prompt.text == "First request"
-        assert prompt_responses[1].prompt.text == "Second request"
-
-    def test_concatenates_multiple_consecutive_prompts(self, plugin, tmp_path):
-        """Should concatenate more than two consecutive prompts."""
-        content = [
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:00.000Z",
-                "message": {"content": "Part one"},
-            },
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:05.000Z",
-                "message": {"content": "Part two"},
-            },
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:10.000Z",
-                "message": {"content": "Part three"},
-            },
-            {
-                "type": "assistant",
-                "timestamp": "2025-01-01T10:00:15.000Z",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": "toolu_001",
-                            "name": "Write",
-                            "input": {
-                                "file_path": "/test/hello.py",
-                                "content": "# code",
-                            },
-                        },
-                    ]
-                },
-            },
-        ]
-
-        jsonl_path = tmp_path / "session.jsonl"
-        with open(jsonl_path, "w") as f:
-            for line in content:
-                f.write(json.dumps(line) + "\n")
-
-        transcript = plugin.agentgit_parse_transcript(jsonl_path, "claude_code_jsonl")
-        ops = plugin.agentgit_extract_operations(transcript)
-        transcript.operations = ops
-
-        prompt_responses = plugin.agentgit_build_prompt_responses(transcript)
-
-        # Should have only 1 prompt response with all three parts
-        assert len(prompt_responses) == 1
-        assert "Part one" in prompt_responses[0].prompt.text
-        assert "Part two" in prompt_responses[0].prompt.text
-        assert "Part three" in prompt_responses[0].prompt.text
-
-    def test_adds_context_for_short_prompt(self, plugin, tmp_path):
-        """Should add assistant context when user gives short response like 'yes'.
-
-        When there are no operations between prompts, they get concatenated.
-        The short follow-up prompt gets context added before concatenation.
-        """
-        content = [
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:00.000Z",
-                "message": {"content": "Help me refactor this code"},
-            },
-            {
-                "type": "assistant",
-                "timestamp": "2025-01-01T10:00:05.000Z",
-                "message": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "I can help refactor this. Should I also add unit tests?",
-                        }
-                    ]
-                },
-            },
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:10.000Z",
-                "message": {"content": "yes"},
-            },
-            {
-                "type": "assistant",
-                "timestamp": "2025-01-01T10:00:15.000Z",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": "toolu_001",
-                            "name": "Write",
-                            "input": {
-                                "file_path": "/test/code.py",
-                                "content": "# refactored",
-                            },
-                        },
-                    ]
-                },
-            },
-        ]
-
-        jsonl_path = tmp_path / "session.jsonl"
-        with open(jsonl_path, "w") as f:
-            for line in content:
-                f.write(json.dumps(line) + "\n")
-
-        transcript = plugin.agentgit_parse_transcript(jsonl_path, "claude_code_jsonl")
-        ops = plugin.agentgit_extract_operations(transcript)
-        transcript.operations = ops
-
-        prompt_responses = plugin.agentgit_build_prompt_responses(transcript)
-
-        # Since no operations between prompts, they are concatenated into one
-        # The short "yes" prompt gets context added
-        assert len(prompt_responses) == 1
-        prompt_text = prompt_responses[0].prompt.text
-        assert "Help me refactor this code" in prompt_text
-        assert "[Assistant context:" in prompt_text
-        assert "Should I also add unit tests?" in prompt_text
-        assert "yes" in prompt_text
-
-    def test_adds_context_for_numbered_selection(self, plugin, tmp_path):
-        """Should add context when user selects numbered items like 'let's do 2, 3, 4'.
-
-        When there are no operations between prompts, they get concatenated.
-        The numbered selection gets context added before concatenation.
-        """
-        content = [
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:00.000Z",
-                "message": {"content": "Review the code quality"},
-            },
-            {
-                "type": "assistant",
-                "timestamp": "2025-01-01T10:00:05.000Z",
-                "message": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": """Here are my recommendations:
-1. Split the large function
-2. Remove duplicate imports
-3. Add proper field instead of reusing
-4. Consolidate blob reading
-5. Extract repeated patterns""",
-                        }
-                    ]
-                },
-            },
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:10.000Z",
-                "message": {"content": "let's do 2, 3, 4"},
-            },
-            {
-                "type": "assistant",
-                "timestamp": "2025-01-01T10:00:15.000Z",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": "toolu_001",
-                            "name": "Edit",
-                            "input": {
-                                "file_path": "/test/code.py",
-                                "old_string": "import re",
-                                "new_string": "",
-                            },
-                        },
-                    ]
-                },
-            },
-        ]
-
-        jsonl_path = tmp_path / "session.jsonl"
-        with open(jsonl_path, "w") as f:
-            for line in content:
-                f.write(json.dumps(line) + "\n")
-
-        transcript = plugin.agentgit_parse_transcript(jsonl_path, "claude_code_jsonl")
-        ops = plugin.agentgit_extract_operations(transcript)
-        transcript.operations = ops
-
-        prompt_responses = plugin.agentgit_build_prompt_responses(transcript)
-
-        # Since no operations between prompts, they are concatenated into one
-        # The "let's do 2, 3, 4" gets context with the numbered list
-        assert len(prompt_responses) == 1
-        prompt_text = prompt_responses[0].prompt.text
-        assert "Review the code quality" in prompt_text
-        assert "[Assistant context:" in prompt_text
-        assert "1. Split the large function" in prompt_text
-        assert "2. Remove duplicate imports" in prompt_text
-        assert "let's do 2, 3, 4" in prompt_text
-
-    def test_no_context_for_detailed_prompt(self, plugin, tmp_path):
-        """Should NOT add context when user gives a detailed, standalone prompt."""
-        content = [
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:00.000Z",
-                "message": {"content": "Start a new project"},
-            },
-            {
-                "type": "assistant",
-                "timestamp": "2025-01-01T10:00:05.000Z",
-                "message": {
-                    "content": [
-                        {"type": "text", "text": "What kind of project?"},
-                        {
-                            "type": "tool_use",
-                            "id": "toolu_001",
-                            "name": "Write",
-                            "input": {"file_path": "/test/init.py", "content": ""},
-                        },
-                    ]
-                },
-            },
-            {
-                "type": "user",
-                "timestamp": "2025-01-01T10:00:10.000Z",
-                "message": {
-                    "content": "Please create a Python web server using FastAPI with endpoints for user authentication including login, logout, and password reset functionality"
-                },
-            },
-            {
-                "type": "assistant",
-                "timestamp": "2025-01-01T10:00:15.000Z",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": "toolu_002",
-                            "name": "Write",
-                            "input": {
-                                "file_path": "/test/server.py",
-                                "content": "# server",
-                            },
-                        },
-                    ]
-                },
-            },
-        ]
-
-        jsonl_path = tmp_path / "session.jsonl"
-        with open(jsonl_path, "w") as f:
-            for line in content:
-                f.write(json.dumps(line) + "\n")
-
-        transcript = plugin.agentgit_parse_transcript(jsonl_path, "claude_code_jsonl")
-        ops = plugin.agentgit_extract_operations(transcript)
-        transcript.operations = ops
-
-        prompt_responses = plugin.agentgit_build_prompt_responses(transcript)
-
-        # The detailed prompt should NOT have context added
-        assert len(prompt_responses) == 2
-        second_prompt = prompt_responses[1].prompt.text
-        assert "[Assistant context:" not in second_prompt
-        assert "FastAPI" in second_prompt
-
+# TestBuildPromptResponses deleted - tests for removed agentgit_build_prompt_responses hook
 
 class TestPromptNeedsContext:
     """Tests for _prompt_needs_context helper."""
@@ -784,6 +459,64 @@ class TestPromptNeedsContext:
             )
             is False
         )
+
+
+class TestIsSystemPrompt:
+    """Tests for _is_system_prompt method."""
+
+    def test_detects_continuation_prompt(self, plugin):
+        """Should detect session continuation messages."""
+        continuation_text = """This session is being continued from a previous conversation that ran out of context. The conversation is summarized below:
+
+Analysis:
+Let me analyze the conversation...
+
+Summary:
+1. User asked to implement feature X
+2. We were working on file Y"""
+
+        assert plugin._is_system_prompt(continuation_text) is True
+
+    def test_detects_partial_continuation_markers(self, plugin):
+        """Should detect any continuation marker."""
+        assert plugin._is_system_prompt(
+            "This session is being continued from a previous conversation"
+        ) is True
+        assert plugin._is_system_prompt(
+            "Some text about conversation that ran out of context here"
+        ) is True
+        assert plugin._is_system_prompt(
+            "The conversation is summarized below:"
+        ) is True
+
+    def test_detects_slash_commands(self, plugin):
+        """Should detect slash command executions."""
+        assert plugin._is_system_prompt(
+            "<command-name>/clear</command-name>\n<command-message>clear</command-message>"
+        ) is True
+        assert plugin._is_system_prompt(
+            "<command-name>/help</command-name>"
+        ) is True
+
+    def test_detects_command_output_markers(self, plugin):
+        """Should detect command output markers (with or without content)."""
+        assert plugin._is_system_prompt("<local-command-stdout></local-command-stdout>") is True
+        assert plugin._is_system_prompt("<local-command-stdout>Login interrupted</local-command-stdout>") is True
+
+    def test_detects_task_notifications(self, plugin):
+        """Should detect background task notifications."""
+        assert plugin._is_system_prompt(
+            "<task-notification>\n<task-id>abc123</task-id>\n</task-notification>"
+        ) is True
+
+    def test_normal_prompts_not_system(self, plugin):
+        """Normal user prompts should not be detected as system prompts."""
+        assert plugin._is_system_prompt("Add a new feature") is False
+        assert plugin._is_system_prompt("Fix the bug in auth.py") is False
+        assert plugin._is_system_prompt("yes") is False
+        assert plugin._is_system_prompt(
+            "Please continue working on the previous task"
+        ) is False
 
 
 class TestGetLastTimestamp:
@@ -952,3 +685,8 @@ class TestClaudeCodeAuthorInfo:
         result = plugin.agentgit_get_author_info(transcript)
 
         assert result is None
+
+
+
+# TestTaskToolGrouping and TestBuildScenesHookIntegration deleted
+# - tests for removed agentgit_build_scenes hook

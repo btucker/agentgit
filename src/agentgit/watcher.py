@@ -72,11 +72,10 @@ class TranscriptWatcher:
             except InvalidGitRepositoryError:
                 commits_before = 0
 
-            repo, _, _ = builder.build(
-                operations=transcript.operations,
+            repo, _, _ = builder.build_from_prompts(
+                transcript=transcript,
                 author_name=self.author_name,
                 author_email=self.author_email,
-                source_repo=self.source_repo,
                 incremental=True,
             )
 

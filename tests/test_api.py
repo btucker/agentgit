@@ -11,7 +11,6 @@ from agentgit import (
     OperationType,
     Prompt,
     Transcript,
-    build_repo,
     parse_transcript,
     transcript_to_repo,
 )
@@ -84,22 +83,7 @@ class TestPublicAPI:
         with pytest.raises(ValueError, match="Could not detect"):
             parse_transcript(txt_file)
 
-    def test_build_repo(self, tmp_path):
-        """Should build repo from operations."""
-        ops = [
-            FileOperation(
-                file_path="/project/hello.py",
-                operation_type=OperationType.WRITE,
-                timestamp="2025-01-01T00:00:00Z",
-                content="print('hello')",
-            )
-        ]
-
-        repo, repo_path, mapping = build_repo(ops, output_dir=tmp_path)
-
-        assert repo is not None
-        assert repo_path == tmp_path
-        assert (tmp_path / ".git").exists()
+    # test_build_repo deleted - old function replaced by build_repo_from_prompts
 
     def test_transcript_to_repo(self, sample_jsonl, tmp_path):
         """Should parse and build in one call."""
@@ -132,7 +116,6 @@ class TestExports:
         assert hasattr(agentgit, "TranscriptEntry")
         assert hasattr(agentgit, "Transcript")
         assert hasattr(agentgit, "OperationType")
-        assert hasattr(agentgit, "SourceCommit")
 
     def test_plugin_decorators_exported(self):
         """Plugin decorators should be exported."""
@@ -143,7 +126,7 @@ class TestExports:
         """Main functions should be exported."""
         assert hasattr(agentgit, "parse_transcript")
         assert hasattr(agentgit, "parse_transcripts")
-        assert hasattr(agentgit, "build_repo")
+        assert hasattr(agentgit, "build_repo_from_prompts")
         assert hasattr(agentgit, "transcript_to_repo")
         assert hasattr(agentgit, "format_commit_message")
         assert hasattr(agentgit, "discover_transcripts")

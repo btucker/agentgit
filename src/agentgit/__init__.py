@@ -13,15 +13,12 @@ from agentgit.core import (
     OperationType,
     Prompt,
     PromptResponse,
-    SourceCommit,
     Transcript,
     TranscriptEntry,
 )
 from agentgit.git_builder import (
     GitRepoBuilder,
     format_commit_message,
-    format_prompt_merge_message,
-    format_turn_commit_message,
 )
 from agentgit.plugins import get_configured_plugin_manager, hookimpl, hookspec
 
@@ -45,7 +42,6 @@ __all__ = [
     "TranscriptEntry",
     "Transcript",
     "OperationType",
-    "SourceCommit",
     "DiscoveredTranscript",
     # Plugin system
     "hookspec",
@@ -53,12 +49,9 @@ __all__ = [
     # Main functions
     "parse_transcript",
     "parse_transcripts",
-    "build_repo",
-    "build_repo_grouped",
+    "build_repo_from_prompts",
     "transcript_to_repo",
     "format_commit_message",
-    "format_turn_commit_message",
-    "format_prompt_merge_message",
     "discover_transcripts",
     "discover_transcripts_enriched",
     "find_git_root",
@@ -106,14 +99,6 @@ def parse_transcript(path: Path | str, plugin_type: str | None = None) -> Transc
             break
 
     transcript.operations = enriched_operations
-
-    # Build prompt_responses structure for grouped git history
-    for prompt_responses in pm.hook.agentgit_build_prompt_responses(transcript=transcript):
-        transcript.prompt_responses.extend(prompt_responses)
-
-    # Build conversation_rounds structure for conversational git history
-    for conversation_rounds in pm.hook.agentgit_build_conversation_rounds(transcript=transcript):
-        transcript.conversation_rounds.extend(conversation_rounds)
 
     return transcript
 
@@ -164,41 +149,7 @@ def parse_transcripts(
     )
 
 
-def build_repo(
-    operations: list[FileOperation],
-    output_dir: Path | None = None,
-    author_name: str = "Agent",
-    author_email: str = "agent@local",
-    source_repo: Path | None = None,
-    enhance_config: "EnhanceConfig | None" = None,
-) -> tuple[Repo, Path, dict[str, str]]:
-    """Build a git repository from file operations.
-
-    Args:
-        operations: List of FileOperation objects.
-        output_dir: Directory for the git repo. If None, creates a temp dir.
-        author_name: Name for git commits.
-        author_email: Email for git commits.
-        source_repo: Optional source repository to interleave commits from.
-        enhance_config: Optional configuration for generating commit messages.
-
-    Returns:
-        Tuple of (repo, repo_path, path_mapping).
-    """
-    builder = GitRepoBuilder(
-        output_dir=output_dir,
-        enhance_config=enhance_config,
-    )
-    return builder.build(
-        operations=operations,
-        author_name=author_name,
-        author_email=author_email,
-        source_repo=source_repo,
-    )
-
-
-def build_repo_grouped(
-    conversation_rounds: list["ConversationRound"],
+def build_repo_from_prompts(
     transcript: "Transcript",
     output_dir: Path | None = None,
     author_name: str = "Agent",
@@ -208,35 +159,36 @@ def build_repo_grouped(
     agent_name: str | None = None,
     incremental: bool = True,
 ) -> tuple[Repo, Path, dict[str, str]]:
-    """Build a git repository using conversational structure.
+    """Build a git repository with one commit per user prompt.
 
-    Each conversation round becomes a feature branch with commits for every entry,
-    then merges back to the session branch.
+    This is the simplified build method that creates exactly one commit
+    per user prompt, with all tool calls and reasoning rendered as markdown
+    in the commit body.
 
     Args:
-        conversation_rounds: List of ConversationRound objects from transcript.
-        transcript: The full transcript (needed for operation lookup).
+        transcript: The parsed transcript.
         output_dir: Directory for the git repo. If None, creates a temp dir.
         author_name: Name for git commits.
         author_email: Email for git commits.
         enhance_config: Optional configuration for generating commit messages.
         session_id: Optional session identifier. If provided, creates a session branch.
         agent_name: Optional agent/format name for branch naming (e.g., 'claude-code').
-        incremental: If True, skip already-processed entries. Default True.
+        incremental: If True, skip already-processed prompts. Default True.
 
     Returns:
         Tuple of (repo, repo_path, path_mapping).
     """
     # Generate session branch name if session_id is provided
     session_branch_name = None
-    if session_id and conversation_rounds:
+    if session_id and transcript.prompts:
         from agentgit.enhance import generate_session_branch_name
-        # Use conversation_rounds to get prompts for session naming
-        # Convert to PromptResponse format for compatibility with existing function
+
+        # Convert prompts to PromptResponse format for compatibility
         prompt_responses_for_naming = []
-        for round in conversation_rounds:
+        for prompt in transcript.prompts:
             from agentgit.core import PromptResponse
-            prompt_responses_for_naming.append(PromptResponse(prompt=round.prompt, turns=[]))
+
+            prompt_responses_for_naming.append(PromptResponse(prompt=prompt, turns=[]))
 
         session_branch_name = generate_session_branch_name(
             prompt_responses_for_naming, session_id, enhance_config, agent_name
@@ -248,8 +200,7 @@ def build_repo_grouped(
         session_branch_name=session_branch_name,
         session_id=session_id,
     )
-    return builder.build_from_conversation_rounds(
-        conversation_rounds=conversation_rounds,
+    return builder.build_from_prompts(
         transcript=transcript,
         author_name=author_name,
         author_email=author_email,
@@ -262,59 +213,41 @@ def transcript_to_repo(
     output_dir: Path | None = None,
     author_name: str = "Agent",
     author_email: str = "agent@local",
-    source_repo: Path | str | None = None,
     plugin_type: str | None = None,
-    use_grouped: bool = True,
 ) -> tuple[Repo, Path, Transcript]:
     """Parse a transcript and build a git repository.
 
-    Convenience function combining parse_transcript and build_repo.
+    Convenience function combining parse_transcript and build_repo_from_prompts.
 
     Args:
         transcript_path: Path to the transcript file.
         output_dir: Directory for the git repo. If None, creates a temp dir.
         author_name: Name for git commits.
         author_email: Email for git commits.
-        source_repo: Optional source repository to interleave commits from.
         plugin_type: Optional plugin type to use (e.g., 'claude_code').
             If not specified, auto-detects the format.
-        use_grouped: If True (default), use merge-based grouped structure.
-            If False, use flat structure with one commit per operation.
 
     Returns:
         Tuple of (repo, repo_path, transcript).
     """
     transcript = parse_transcript(transcript_path, plugin_type=plugin_type)
 
-    # Use grouped build if we have conversation_rounds and it's enabled
-    if use_grouped and transcript.conversation_rounds:
-        # Extract agent name from format (e.g., "claude_code_jsonl" -> "claude-code")
-        agent_name = None
-        if transcript.source_format:
-            agent_name = transcript.source_format.replace("_jsonl", "").replace("_web", "")
+    # Extract agent name from format (e.g., "claude_code_jsonl" -> "claude-code")
+    agent_name = None
+    if transcript.source_format:
+        agent_name = transcript.source_format.replace("_jsonl", "").replace("_web", "")
 
-        # Use session_id from transcript, or filename as fallback
-        session_id = transcript.session_id or Path(transcript_path).stem
+    # Use session_id from transcript, or filename as fallback
+    session_id = transcript.session_id or Path(transcript_path).stem
 
-        repo, repo_path, _ = build_repo_grouped(
-            conversation_rounds=transcript.conversation_rounds,
-            transcript=transcript,
-            output_dir=output_dir,
-            author_name=author_name,
-            author_email=author_email,
-            session_id=session_id,
-            agent_name=agent_name,
-        )
-    else:
-        # Fall back to flat structure
-        source_repo_path = Path(source_repo) if source_repo else None
-        repo, repo_path, _ = build_repo(
-            operations=transcript.operations,
-            output_dir=output_dir,
-            author_name=author_name,
-            author_email=author_email,
-            source_repo=source_repo_path,
-        )
+    repo, repo_path, _ = build_repo_from_prompts(
+        transcript=transcript,
+        output_dir=output_dir,
+        author_name=author_name,
+        author_email=author_email,
+        session_id=session_id,
+        agent_name=agent_name,
+    )
     return repo, repo_path, transcript
 
 

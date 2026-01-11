@@ -6,15 +6,13 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 
 from agentgit.core import (
     AssistantContext,
-    AssistantTurn,
-    ConversationRound,
     FileOperation,
     OperationType,
     Prompt,
-    PromptResponse,
     Transcript,
     TranscriptEntry,
 )
@@ -23,6 +21,14 @@ from agentgit.utils import extract_deleted_paths
 
 # Format identifier for Claude Code JSONL transcripts
 FORMAT_CLAUDE_CODE_JSONL = "claude_code_jsonl"
+
+# Tools to skip when rendering commit messages
+# These are either implicit in the git diff (file operations) or internal mechanics
+SKIP_TOOLS = {
+    "Read", "Write", "Edit", "Glob", "Grep", "LSP",
+    "NotebookEdit", "NotebookRead",
+    "TodoWrite", "AskUserQuestion",
+}
 
 
 def get_last_timestamp_from_jsonl(file_path: Path) -> float | None:
@@ -161,7 +167,8 @@ class ClaudeCodePlugin:
 
                 if entry_type == "user" and not entry.is_meta:
                     text = self._extract_text_from_content(message.get("content", ""))
-                    if text:
+                    # Skip system-generated prompts (commands, continuations, etc.)
+                    if text and not self._is_system_prompt(text):
                         prompts.append(
                             Prompt(
                                 text=text,
@@ -276,7 +283,13 @@ class ClaudeCodePlugin:
         operation: FileOperation,
         transcript: Transcript,
     ) -> FileOperation:
-        """Enrich operation with prompt and assistant context."""
+        """Enrich operation with prompt and assistant context.
+
+        Captures two levels of context:
+        1. Immediate context: thinking/text in the same message as the tool_use
+        2. Previous message context: the assistant message before the one with tool_use
+           (often the explanatory message that describes the approach)
+        """
         if transcript.source_format != FORMAT_CLAUDE_CODE_JSONL:
             return operation
 
@@ -291,8 +304,10 @@ class ClaudeCodePlugin:
         if current_prompt:
             operation.prompt = current_prompt
 
-        # Find assistant context (thinking/text) immediately before this tool use
+        # Find assistant context - track both current and previous message
         context = AssistantContext()
+        previous_assistant_text: str | None = None
+
         for entry in transcript.entries:
             if entry.timestamp > operation.timestamp:
                 break
@@ -300,20 +315,36 @@ class ClaudeCodePlugin:
             if entry.entry_type == "assistant":
                 content = entry.message.get("content", [])
                 if isinstance(content, list):
+                    # First pass: check if this entry contains our target tool_use
+                    # and collect the text from this entry
+                    entry_text: str | None = None
+                    entry_thinking: str | None = None
+                    has_target_tool = False
+
                     for block in content:
                         if isinstance(block, dict):
                             if block.get("type") == "thinking":
-                                context.thinking = block.get("thinking", "")
-                                context.timestamp = entry.timestamp
+                                entry_thinking = block.get("thinking", "")
                             elif block.get("type") == "text":
-                                context.text = block.get("text", "")
-                                context.timestamp = entry.timestamp
+                                entry_text = block.get("text", "")
                             elif block.get("type") == "tool_use":
                                 if block.get("id") == operation.tool_id:
-                                    if context.thinking or context.text:
-                                        operation.assistant_context = context
-                                    return operation
-                                context = AssistantContext()
+                                    has_target_tool = True
+
+                    if has_target_tool:
+                        # Found the entry with our tool_use
+                        # Use thinking/text from THIS entry for immediate context
+                        context.thinking = entry_thinking
+                        context.text = entry_text
+                        context.timestamp = entry.timestamp
+                        # Use text from PREVIOUS assistant entry for contextual summary
+                        context.previous_message_text = previous_assistant_text
+                        operation.assistant_context = context
+                        return operation
+                    else:
+                        # This is a previous assistant entry, save its text
+                        if entry_text:
+                            previous_assistant_text = entry_text
 
         return operation
 
@@ -428,6 +459,41 @@ class ClaudeCodePlugin:
 
         return False
 
+    def _is_system_prompt(self, text: str) -> bool:
+        """Check if a prompt is a system-generated message that shouldn't become a commit.
+
+        This filters out:
+        - Session continuation messages (injected when resuming from context overflow)
+        - Slash command executions (like /clear, /help)
+        - Command output markers
+
+        Returns True if the prompt should be skipped.
+        """
+        # Continuation prompts (session resumption)
+        continuation_markers = [
+            "This session is being continued from a previous conversation",
+            "conversation that ran out of context",
+            "The conversation is summarized below",
+        ]
+
+        for marker in continuation_markers:
+            if marker in text:
+                return True
+
+        # Slash command executions (wrapped in <command-name> tags)
+        if text.strip().startswith("<command-name>"):
+            return True
+
+        # Command output markers (local command stdout - these are CLI feedback, not user prompts)
+        if text.strip().startswith("<local-command-stdout>"):
+            return True
+
+        # Task notifications (background task completions)
+        if text.strip().startswith("<task-notification>"):
+            return True
+
+        return False
+
     @hookimpl
     def agentgit_get_project_name(self, transcript_path: Path) -> str | None:
         """Get the project name from a Claude Code transcript.
@@ -527,184 +593,36 @@ class ClaudeCodePlugin:
         }
 
     @hookimpl
-    def agentgit_build_prompt_responses(
-        self, transcript: Transcript
-    ) -> list[PromptResponse]:
-        """Build prompt-response structure grouping operations by assistant message."""
-        if transcript.source_format != FORMAT_CLAUDE_CODE_JSONL:
-            return []
+    def agentgit_format_tool(self, tool_name: str, tool_input: dict) -> str | None:
+        """Format a tool call as markdown for commit messages.
 
-        # Build a mapping of tool_id -> operation for quick lookup
-        tool_id_to_op: dict[str, FileOperation] = {}
-        for op in transcript.operations:
-            if op.tool_id:
-                tool_id_to_op[op.tool_id] = op
+        Renders Claude Code tool calls appropriately:
+        - Bash: as ```bash code blocks
+        - Task: as ### Agent: heading
+        - WebFetch/WebSearch: as markdown links
+        - File ops and internal tools: skipped (implicit in diff or not useful)
+        """
+        if tool_name in SKIP_TOOLS:
+            return None
 
-        prompt_responses: list[PromptResponse] = []
-        current_prompt: Prompt | None = None
-        current_turns: list[AssistantTurn] = []
-        # Track assistant text between user prompts for context
-        pending_assistant_text: list[str] = []
+        if tool_name == "Bash":
+            cmd = tool_input.get("command", "")
+            return f"```bash\n{cmd}\n```"
 
-        for entry in transcript.entries:
-            # New user prompt starts a new PromptResponse
-            if entry.entry_type == "user" and not entry.is_meta:
-                # Find or create the Prompt object for this entry
-                text = self._extract_text_from_content(entry.message.get("content", ""))
-                new_prompt: Prompt | None = None
-                for p in transcript.prompts:
-                    if p.timestamp == entry.timestamp:
-                        new_prompt = p
-                        break
-                if new_prompt is None and text:
-                    new_prompt = Prompt(
-                        text=text, timestamp=entry.timestamp, raw_entry=entry.raw_entry
-                    )
+        if tool_name == "Task":
+            desc = tool_input.get("description", "")
+            return f"### Agent: {desc}"
 
-                # Add assistant context if the prompt needs it
-                if new_prompt and pending_assistant_text:
-                    new_prompt = self._add_context_if_needed(
-                        new_prompt, pending_assistant_text
-                    )
+        if tool_name == "WebFetch":
+            url = tool_input.get("url", "")
+            return f"[{url}]({url})"
 
-                if current_prompt is not None:
-                    if current_turns:
-                        # Previous prompt had operations - save it and start fresh
-                        prompt_responses.append(
-                            PromptResponse(prompt=current_prompt, turns=current_turns)
-                        )
-                        current_prompt = new_prompt
-                        current_turns = []
-                        pending_assistant_text = []
-                    elif new_prompt:
-                        # No operations between prompts - concatenate them
-                        combined_text = current_prompt.text + "\n\n" + new_prompt.text
-                        current_prompt = Prompt(
-                            text=combined_text,
-                            timestamp=current_prompt.timestamp,  # Keep original timestamp
-                            raw_entry=current_prompt.raw_entry,
-                        )
-                else:
-                    current_prompt = new_prompt
-                    current_turns = []
-                    pending_assistant_text = []
+        if tool_name == "WebSearch":
+            query = tool_input.get("query", "")
+            return f"[Search: {query}](https://google.com/search?q={quote_plus(query)})"
 
-            # Assistant message - track text and create turns
-            elif entry.entry_type == "assistant" and current_prompt is not None:
-                # Collect assistant text for potential context
-                assistant_text = self._extract_text_from_content(
-                    entry.message.get("content", [])
-                )
-                if assistant_text:
-                    pending_assistant_text.append(assistant_text)
+        return None  # Skip unknown tools
 
-                turn = self._build_assistant_turn(entry, tool_id_to_op)
-                if turn.operations:  # Only add turns that have file operations
-                    current_turns.append(turn)
-                    # Clear pending text after operations - context is less relevant
-                    pending_assistant_text = []
-
-        # Don't forget the last prompt response
-        if current_prompt is not None and current_turns:
-            prompt_responses.append(
-                PromptResponse(prompt=current_prompt, turns=current_turns)
-            )
-
-        return prompt_responses
-
-    @hookimpl
-    def agentgit_build_conversation_rounds(
-        self, transcript: Transcript
-    ) -> list[ConversationRound]:
-        """Build conversation rounds grouping ALL entries by user prompt."""
-        if transcript.source_format != FORMAT_CLAUDE_CODE_JSONL:
-            return []
-
-        rounds: list[ConversationRound] = []
-        current_prompt: Prompt | None = None
-        current_entries: list[TranscriptEntry] = []
-        sequence = 0
-
-        for entry in transcript.entries:
-            # New user prompt starts a new round
-            if entry.entry_type == "user" and not entry.is_meta:
-                # Save previous round if it exists
-                if current_prompt is not None and current_entries:
-                    rounds.append(ConversationRound(
-                        prompt=current_prompt,
-                        entries=current_entries,
-                        sequence=sequence
-                    ))
-
-                # Start new round
-                sequence += 1
-
-                # Find or create the Prompt object for this entry
-                text = self._extract_text_from_content(entry.message.get("content", ""))
-                current_prompt = None
-                for p in transcript.prompts:
-                    if p.timestamp == entry.timestamp:
-                        current_prompt = p
-                        break
-
-                if current_prompt is None and text:
-                    # Create Prompt if not found in transcript.prompts
-                    current_prompt = Prompt(
-                        text=text,
-                        timestamp=entry.timestamp,
-                        raw_entry=entry.raw_entry
-                    )
-
-                # Initialize with this user entry
-                current_entries = [entry]
-            else:
-                # Add all other entries to current round
-                if current_prompt is not None:
-                    current_entries.append(entry)
-
-        # Don't forget the last round
-        if current_prompt is not None and current_entries:
-            rounds.append(ConversationRound(
-                prompt=current_prompt,
-                entries=current_entries,
-                sequence=sequence
-            ))
-
-        return rounds
-
-    def _build_assistant_turn(
-        self, entry: TranscriptEntry, tool_id_to_op: dict[str, FileOperation]
-    ) -> AssistantTurn:
-        """Build an AssistantTurn from an assistant entry."""
-        operations: list[FileOperation] = []
-        context = AssistantContext()
-
-        content = entry.message.get("content", [])
-        if not isinstance(content, list):
-            return AssistantTurn(timestamp=entry.timestamp, raw_entry=entry.raw_entry)
-
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-
-            block_type = block.get("type")
-            if block_type == "thinking":
-                context.thinking = block.get("thinking", "")
-                context.timestamp = entry.timestamp
-            elif block_type == "text":
-                context.text = block.get("text", "")
-                context.timestamp = entry.timestamp
-            elif block_type == "tool_use":
-                tool_id = block.get("id", "")
-                if tool_id in tool_id_to_op:
-                    operations.append(tool_id_to_op[tool_id])
-
-        return AssistantTurn(
-            operations=operations,
-            context=context if (context.thinking or context.text) else None,
-            timestamp=entry.timestamp,
-            raw_entry=entry.raw_entry,
-        )
 
     @hookimpl
     def agentgit_discover_transcripts(
